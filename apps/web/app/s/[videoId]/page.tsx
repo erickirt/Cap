@@ -214,7 +214,7 @@ export async function generateMetadata(
       ],
     },
     twitter: {
-      card: "summary_large_image",
+      card: "player",
       title: video.name + " | Cap Recording",
       description: "Watch this video on Cap",
       images: [
@@ -223,6 +223,18 @@ export async function generateMetadata(
           buildEnv.NEXT_PUBLIC_WEB_URL
         ).toString(),
       ],
+      players: {
+        playerUrl: new URL(
+          `/s/${videoId}`,
+          buildEnv.NEXT_PUBLIC_WEB_URL
+        ).toString(),
+        streamUrl: new URL(
+          `/api/playlist?userId=${video.ownerId}&videoId=${video.id}`,
+          buildEnv.NEXT_PUBLIC_WEB_URL
+        ).toString(),
+        width: 1280,
+        height: 720,
+      },
     },
     robots: robotsDirective,
   };
