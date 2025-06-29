@@ -21,19 +21,18 @@ import {
 } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 
-import Tooltip from "~/components/Tooltip";
 import Mode from "~/components/Mode";
+import Tooltip from "~/components/Tooltip";
 import { identifyUser, trackEvent } from "~/utils/analytics";
 import {
   createCameraMutation,
   createCurrentRecordingQuery,
   createLicenseQuery,
-  createOptionsQuery,
   createVideoDevicesQuery,
   getPermissions,
   listAudioDevices,
   listScreens,
-  listWindows,
+  listWindows
 } from "~/utils/queries";
 import {
   type CaptureScreen,
@@ -43,10 +42,10 @@ import {
   ScreenCaptureTarget,
 } from "~/utils/tauri";
 
-function getWindowSize(systemAudioRecording: boolean) {
+function getWindowSize() {
   return {
     width: 300,
-    height: 290 + (systemAudioRecording ? 50 : 0),
+    height: 340,
   };
 }
 
@@ -97,9 +96,7 @@ function Page() {
     const unlistenFocus = currentWindow.onFocusChanged(
       ({ payload: focused }) => {
         if (focused) {
-          const size = getWindowSize(
-            generalSettings.data?.systemAudioCapture ?? false
-          );
+          const size = getWindowSize();
 
           currentWindow.setSize(new LogicalSize(size.width, size.height));
         }
@@ -108,9 +105,7 @@ function Page() {
 
     // Listen for resize events
     const unlistenResize = currentWindow.onResized(() => {
-      const size = getWindowSize(
-        generalSettings.data?.systemAudioCapture ?? false
-      );
+      const size = getWindowSize();
 
       currentWindow.setSize(new LogicalSize(size.width, size.height));
     });
@@ -122,9 +117,7 @@ function Page() {
   });
 
   createEffect(() => {
-    const size = getWindowSize(
-      generalSettings.data?.systemAudioCapture ?? false
-    );
+    const size = getWindowSize();
     getCurrentWindow().setSize(new LogicalSize(size.width, size.height));
   });
 
@@ -301,17 +294,16 @@ function Page() {
                     await commands.showWindow("Upgrade");
                   }
                 }}
-                class={`text-[0.6rem] ${
-                  license.data?.type === "pro"
-                    ? "bg-[--blue-400] text-gray-1 dark:text-gray-12"
-                    : "bg-gray-3 cursor-pointer hover:bg-gray-5"
-                } rounded-lg px-1.5 py-0.5`}
+                class={`text-[0.6rem] ${license.data?.type === "pro"
+                  ? "bg-[--blue-400] text-gray-1 dark:text-gray-12"
+                  : "bg-gray-3 cursor-pointer hover:bg-gray-5"
+                  } rounded-lg px-1.5 py-0.5`}
               >
                 {license.data?.type === "commercial"
                   ? "Commercial"
                   : license.data?.type === "pro"
-                  ? "Pro"
-                  : "Personal"}
+                    ? "Pro"
+                    : "Personal"}
               </span>
             </Suspense>
           </ErrorBoundary>
@@ -342,7 +334,7 @@ function Page() {
             "flex flex-row items-center rounded-[0.5rem] relative border h-8 transition-all duration-500",
             (rawOptions.captureTarget.variant === "screen" ||
               rawOptions.captureTarget.variant === "area") &&
-              "ml-[2.4rem]"
+            "ml-[2.4rem]"
           )}
           style={{
             "transition-timing-function":
@@ -415,19 +407,18 @@ function Page() {
         </div>
       </div>
       <CameraSelect
-        disabled={setCamera.isPending}
         options={cameras}
         value={options.cameraLabel() ?? null}
         onChange={(v) => setCamera.mutate(v)}
       />
       <MicrophoneSelect
-        disabled={mics.isPending || setMicInput.isPending}
+        disabled={mics.isPending}
         options={mics.data ?? []}
         // this prevents options.micName() from suspending on initial load
         value={mics.isPending ? rawOptions.micName : options.micName() ?? null}
         onChange={(v) => setMicInput.mutate(v)}
       />
-      {generalSettings.data?.systemAudioCapture && <SystemAudio />}
+      <SystemAudio />
       <div class="flex items-center space-x-1 w-full">
         {rawOptions.mode === "instant" && !auth.data ? (
           <SignInButton>
@@ -484,7 +475,6 @@ function useRequestPermission() {
 }
 
 import { makePersisted } from "@solid-primitives/storage";
-import { UnlistenFn } from "@tauri-apps/api/event";
 import { CheckMenuItem, Menu, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import {
   getCurrentWebviewWindow,
@@ -498,8 +488,7 @@ import { Transition } from "solid-transition-group";
 import { SignInButton } from "~/components/SignInButton";
 import { authStore, generalSettingsStore } from "~/store";
 import { apiClient } from "~/utils/web-api";
-import { useWindowChrome, WindowChromeHeader } from "./Context";
-import { on } from "solid-js";
+import { WindowChromeHeader } from "./Context";
 import {
   RecordingOptionsProvider,
   useRecordingOptions,
@@ -584,8 +573,8 @@ function AreaSelectButton(props: {
         props.targetVariant === "area"
           ? "Remove selection"
           : areaSelection.pending
-          ? "Selecting area..."
-          : "Select area"
+            ? "Selecting area..."
+            : "Select area"
       }
       childClass="flex fixed flex-row items-center w-8 h-8"
     >
@@ -656,7 +645,7 @@ function AreaSelectButton(props: {
                 class={cx(
                   "w-[1rem] h-[1rem]",
                   areaSelection.pending &&
-                    "animate-gentle-bounce duration-1000 text-gray-12 mt-1"
+                  "animate-gentle-bounce duration-1000 text-gray-12 mt-1"
                 )}
               />
             </button>
@@ -980,8 +969,8 @@ function TargetSelectInfoPill<T>(props: {
       {!props.permissionGranted
         ? "Request Permission"
         : props.value !== null
-        ? "On"
-        : "Off"}
+          ? "On"
+          : "Off"}
     </InfoPill>
   );
 }

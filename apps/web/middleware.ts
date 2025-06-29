@@ -1,7 +1,7 @@
 import { db } from "@cap/database";
 import { organizations } from "@cap/database/schema";
-import { eq } from "drizzle-orm";
 import { buildEnv, serverEnv } from "@cap/env";
+import { eq } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import { NextRequest, NextResponse, userAgent } from "next/server";
 
@@ -22,23 +22,37 @@ const mainOrigins = [
 
 export async function middleware(request: NextRequest) {
   const url = new URL(request.url);
-  const hostname = url.hostname;
   const path = url.pathname;
 
-  if (
-    buildEnv.NEXT_PUBLIC_IS_CAP !== "true" &&
-    !(
-      path.startsWith("/s/") ||
-      path.startsWith("/dashboard") ||
-      path.startsWith("/onboarding") ||
-      path.startsWith("/api") ||
-      path.startsWith("/login") ||
-      path.startsWith("/invite") ||
-      path.startsWith("/self-hosting") ||
-      path.startsWith("/terms")
+  // Add anti-clickjacking headers for /login
+  if (path.startsWith("/login")) {
+    const response = NextResponse.next();
+    response.headers.set("X-Frame-Options", "SAMEORIGIN");
+    response.headers.set(
+      "Content-Security-Policy",
+      "frame-ancestors https://cap.so"
+    );
+    return response;
+  }
+
+  const hostname = url.hostname;
+
+  if (buildEnv.NEXT_PUBLIC_IS_CAP !== "true") {
+    if (
+      !(
+        path.startsWith("/s/") ||
+        path.startsWith("/dashboard") ||
+        path.startsWith("/onboarding") ||
+        path.startsWith("/api") ||
+        path.startsWith("/login") ||
+        path.startsWith("/invite") ||
+        path.startsWith("/self-hosting") ||
+        path.startsWith("/terms")
+      ) &&
+      process.env.NODE_ENV !== "development"
     )
-  ) {
-    return NextResponse.redirect(new URL("/login", url.origin));
+      return NextResponse.redirect(new URL("/login", url.origin));
+    else return NextResponse.next();
   }
 
   if (mainOrigins.some((d) => url.origin.startsWith(d))) {
@@ -54,7 +68,6 @@ export async function middleware(request: NextRequest) {
     if (!path.startsWith("/s/")) {
       const url = new URL(request.url);
       url.hostname = webUrl;
-      console.log({ url });
       return NextResponse.redirect(url);
     }
 
