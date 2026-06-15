@@ -373,8 +373,13 @@ pub fn setup<R: Runtime>(window: Window<R>, controls_inset: LogicalPosition<f64>
                     return existing;
                 }
 
-                let mut decl = ClassDecl::new("CapWindowDelegate", class!(NSObject))
-                    .expect("failed to register CapWindowDelegate");
+                let mut decl = match ClassDecl::new("CapWindowDelegate", class!(NSObject)) {
+                    Some(decl) => decl,
+                    None => {
+                        return Class::get("CapWindowDelegate")
+                            .expect("CapWindowDelegate should exist if already registered");
+                    }
+                };
 
                 decl.add_ivar::<id>("window");
                 decl.add_ivar::<*mut c_void>("app_box");
