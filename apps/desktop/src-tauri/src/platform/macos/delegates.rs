@@ -135,9 +135,9 @@ pub fn setup<R: Runtime>(window: Window<R>, controls_inset: LogicalPosition<f64>
                 // that was leaked via `Box::into_raw` when this delegate was created.
                 let app_box: *mut c_void = *this.get_ivar("app_box");
                 if !app_box.is_null() {
-                    drop(Box::from_raw(app_box as *mut WindowState<R>));
                     let this_mut = this as *const Object as *mut Object;
                     (*this_mut).set_ivar("app_box", std::ptr::null_mut::<c_void>());
+                    drop(Box::from_raw(app_box as *mut WindowState<R>));
                 }
 
                 // Restore the previous delegate before releasing this one, so any
