@@ -491,7 +491,10 @@ async fn run_cycles_test(
     }
 
     println!("\n=== Cycle Summary ===");
-    println!("{:>6} {:>14} {:>10}", "Cycle", "Footprint(MB)", "Delta prev");
+    println!(
+        "{:>6} {:>14} {:>10}",
+        "Cycle", "Footprint(MB)", "Delta prev"
+    );
     let mut prev = baseline;
     for (i, f) in results.iter().enumerate() {
         let delta = f - prev;
@@ -551,8 +554,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match mode {
         "full" => {
-            run_memory_test(duration, include_camera, include_mic, fragmented, use_oop_muxer)
-                .await?;
+            run_memory_test(
+                duration,
+                include_camera,
+                include_mic,
+                fragmented,
+                use_oop_muxer,
+            )
+            .await?;
         }
         "screen-only" => {
             run_memory_test(duration, false, false, fragmented, use_oop_muxer).await?;
@@ -587,8 +596,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(8);
 
-            run_cycles_test(cycles, cycle_duration, include_camera, include_mic, fragmented)
-                .await?;
+            run_cycles_test(
+                cycles,
+                cycle_duration,
+                include_camera,
+                include_mic,
+                fragmented,
+            )
+            .await?;
         }
         _ => {
             println!("Cap Memory Leak Detector");
@@ -607,10 +622,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  --no-camera         Disable camera");
             println!("  --no-mic            Disable microphone");
             println!("  --no-fragmented     Disable fragmented MP4 encoding");
-            println!("  --cycles <n>        Number of record start/stop cycles (default: 8, cycles mode)");
-            println!("  --cycle-duration <secs>  Recording duration per cycle (default: 8, cycles mode)");
+            println!(
+                "  --cycles <n>        Number of record start/stop cycles (default: 8, cycles mode)"
+            );
+            println!(
+                "  --cycle-duration <secs>  Recording duration per cycle (default: 8, cycles mode)"
+            );
             println!("  --oop-muxer         Use the out-of-process cap-muxer for fragmented MP4");
-            println!("                      (requires cap-muxer binary; set CAP_MUXER_BIN or build it)");
+            println!(
+                "                      (requires cap-muxer binary; set CAP_MUXER_BIN or build it)"
+            );
             println!();
             println!("Examples:");
             println!("  # Test full pipeline with camera, mic, fragmented MP4 for 2 minutes");
