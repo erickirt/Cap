@@ -368,7 +368,7 @@ pub fn setup<R: Runtime>(window: Window<R>, controls_inset: LogicalPosition<f64>
         // be baked into the shared class for all `R`.
         fn get_or_register_delegate_class<R: Runtime>() -> &'static Class {
             static CLASS: std::sync::OnceLock<&'static Class> = std::sync::OnceLock::new();
-            *CLASS.get_or_init(|| {
+            CLASS.get_or_init(|| {
                 let mut decl = ClassDecl::new("CapWindowDelegate", class!(NSObject))
                     .expect("CapWindowDelegate class already registered");
 
