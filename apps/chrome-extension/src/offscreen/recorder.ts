@@ -205,6 +205,51 @@ const throwIfStartCanceled = () => {
 	}
 };
 
+// Plays the pre-roll countdown on the recorded/active tab and waits for it to
+// run its course before the caller starts the MediaRecorder. The animation
+// lives in the page overlay; this side only owns the timing, so the recording
+// begins the instant the countdown ends and the count never lands in the
+// captured frames. A stop request resolves the wait early via
+// `countdownResolve` so cancelling does not block for the full duration.
+const runStartCountdown = async (request: StartRecordingRequest) => {
+	const { enabled, seconds } = request.settings.countdown;
+	if (!enabled || seconds <= 0) return;
+	const durationMs = seconds * 1000;
+
+	// The offscreen document cannot call chrome.tabs; the service worker relays
+	// the countdown to the recorded tab's content overlay. Fire-and-forget: a
+	// tab that cannot show the overlay (e.g. a chrome:// page) just leaves the
+	// screen blank for the wait, which still keeps the count out of the capture.
+	chrome.runtime.sendMessage(
+		{
+			target: "service-worker",
+			type: "show-countdown",
+			tabId: request.tabId,
+			seconds,
+			durationMs,
+		} satisfies ServiceWorkerRequest,
+		() => {
+			void chrome.runtime.lastError;
+		},
+	);
+
+	countdownInProgress = true;
+	try {
+		await new Promise<void>((resolve) => {
+			const finish = () => {
+				window.clearTimeout(timer);
+				countdownResolve = null;
+				resolve();
+			};
+			const timer = window.setTimeout(finish, durationMs);
+			countdownResolve = finish;
+		});
+	} finally {
+		countdownInProgress = false;
+		countdownResolve = null;
+	}
+};
+
 const stopTracks = (stream: MediaStream) => {
 	for (const track of stream.getTracks()) {
 		track.stop();
@@ -351,16 +396,59 @@ const tabCaptureConstraints = (streamId: string, includeAudio: boolean) =>
 		},
 	}) as unknown as MediaStreamConstraints;
 
-const getDisplayStream = (
+const requestDisplayMedia = (
+	options: Partial<ExtendedDisplayMediaStreamOptions>,
+) =>
+	navigator.mediaDevices.getDisplayMedia(options as DisplayMediaStreamOptions);
+
+const getDisplayStream = async (
 	mode: Exclude<RecordingMode, "tab" | "camera">,
 	includeAudio: boolean,
 ) => {
 	const preferences = DISPLAY_MODE_PREFERENCES[mode];
-	return navigator.mediaDevices.getDisplayMedia({
-		...preferences,
-		video: DISPLAY_MEDIA_VIDEO_CONSTRAINTS,
-		audio: includeAudio,
-	});
+	const video = DISPLAY_MEDIA_VIDEO_CONSTRAINTS;
+
+	try {
+		return await requestDisplayMedia({
+			...preferences,
+			video,
+			audio: includeAudio,
+		});
+	} catch (error) {
+		if (isUserCancellationError(error)) throw error;
+
+		// Some browsers/OSes reject the advanced surface preferences
+		// (monitorTypeSurfaces, surfaceSwitching, preferCurrentTab, …) or a
+		// system-audio request the picker cannot satisfy. Fall back the way the
+		// dashboard recorder does instead of failing the whole capture.
+		if (shouldRetryDisplayMediaWithoutPreferences(error)) {
+			try {
+				return await requestDisplayMedia({ video, audio: includeAudio });
+			} catch (retryError) {
+				if (
+					includeAudio &&
+					shouldRetryDisplayMediaWithoutPreferences(retryError)
+				) {
+					return requestDisplayMedia({ video, audio: false });
+				}
+				throw retryError;
+			}
+		}
+
+		if (includeAudio) {
+			try {
+				return await requestDisplayMedia({
+					...preferences,
+					video,
+					audio: false,
+				});
+			} catch {
+				throw error;
+			}
+		}
+
+		throw error;
+	}
 };
 
 const getMainStream = async (request: StartRecordingRequest) => {
