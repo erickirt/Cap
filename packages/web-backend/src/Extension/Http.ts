@@ -266,10 +266,7 @@ export const ExtensionHttpLive = HttpApiBuilder.group(
 							}
 						} else {
 							const origin = request.headers.origin;
-							if (
-								origin !== undefined &&
-								origin !== new URL(serverEnv().WEB_URL).origin
-							) {
+							if (origin !== new URL(serverEnv().WEB_URL).origin) {
 								return yield* new HttpApiError.BadRequest();
 							}
 						}

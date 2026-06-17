@@ -375,12 +375,7 @@ app.post(
 					// either way.
 					yield* Effect.gen(function* () {
 						const [bucket] = yield* Storage.getAccessForVideo(video);
-						const multipart = bucket.multipart as typeof bucket.multipart & {
-							abort: (
-								...args: Parameters<typeof bucket.multipart.complete>
-							) => ReturnType<typeof bucket.multipart.complete>;
-						};
-						yield* multipart.abort(fileKey, uploadId);
+						yield* bucket.multipart.abort(fileKey, uploadId);
 						yield* db.use((db) =>
 							db
 								.delete(Db.videoUploads)
@@ -744,15 +739,9 @@ app.post("/abort", abortRequestValidator, (c) => {
 		const [video] = maybeVideo.value;
 
 		const [bucket] = yield* Storage.getAccessForVideo(video);
-		type MultipartWithAbort = typeof bucket.multipart & {
-			abort: (
-				...args: Parameters<typeof bucket.multipart.complete>
-			) => ReturnType<typeof bucket.multipart.complete>;
-		};
-		const multipart = bucket.multipart as MultipartWithAbort;
 
 		console.log(`Aborting multipart upload ${uploadId} for key: ${fileKey}`);
-		yield* multipart.abort(fileKey, uploadId);
+		yield* bucket.multipart.abort(fileKey, uploadId);
 
 		yield* db.use((db) =>
 			db.delete(Db.videoUploads).where(eq(Db.videoUploads.videoId, videoId)),
