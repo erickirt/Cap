@@ -47,8 +47,11 @@ import {
 	toSessionDescriptionInit,
 	waitForIceGatheringComplete,
 } from "../shared/webrtc";
+import { ConfirmOverlay } from "./confirm-overlay";
+import { CountdownOverlay } from "./countdown-overlay";
 import overlayCss from "./overlay.css?inline";
 import { RecordingBarOverlay } from "./recording-bar";
+import { replayStartupMessages, setStartupMessages } from "./startup-messages";
 
 const ROOT_ID = "cap-extension-recorder-overlay";
 const WINDOW_PADDING = 20;
@@ -145,25 +148,6 @@ type PreviewParentMessage =
 
 const classNames = (...values: Array<string | false | null | undefined>) =>
 	values.filter(Boolean).join(" ");
-
-// Messages the bootstrap content script acknowledged while this module was
-// still being fetched. Each message-handling component replays them through
-// its own handler exactly once when it registers its runtime listener, so
-// the panel toggle or webcam settings push that triggered the lazy load is
-// not dropped.
-let startupMessages: readonly unknown[] = [];
-
-const replayStartupMessages = (
-	handleMessage: (
-		message: unknown,
-		sender: chrome.runtime.MessageSender,
-		sendResponse: (response?: unknown) => void,
-	) => boolean | undefined,
-) => {
-	for (const message of startupMessages) {
-		handleMessage(message, {} as chrome.runtime.MessageSender, () => undefined);
-	}
-};
 
 const isPreviewEventRelay = (value: unknown): value is PreviewEventRelay => {
 	if (!value || typeof value !== "object") return false;
@@ -1664,6 +1648,8 @@ function OverlayApp() {
 			/>
 			<RecorderPanelOverlay onOpenChange={setRecorderPanelOpen} />
 			<RecordingBarOverlay recorderPanelOpen={recorderPanelOpen} />
+			<CountdownOverlay />
+			<ConfirmOverlay />
 			{isDragging ? (
 				<button
 					type="button"
@@ -1749,7 +1735,7 @@ let initialized = false;
 export const init = (pendingMessages: readonly unknown[] = []) => {
 	if (initialized) return;
 	initialized = true;
-	startupMessages = pendingMessages;
+	setStartupMessages(pendingMessages);
 	if (document.documentElement) {
 		mountOverlay();
 	} else {
