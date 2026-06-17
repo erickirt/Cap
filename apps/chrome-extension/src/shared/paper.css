@@ -99,10 +99,11 @@ p {
 	line-height: 0;
 }
 
-.page-nav-brand img {
-	width: 26px;
-	height: 26px;
-	border-radius: 7px;
+.page-nav-brand .page-nav-logo {
+	display: block;
+	height: 24px;
+	width: auto;
+	color: var(--ink);
 }
 
 .page-nav-brand:focus-visible {
