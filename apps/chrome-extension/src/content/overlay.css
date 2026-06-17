@@ -798,3 +798,299 @@
 		transform: translateX(-50%) translateY(0) scale(1);
 	}
 }
+
+/* Pre-roll countdown: a full-screen takeover that counts 3, 2, 1 before the
+   recording begins. */
+.cap-extension-countdown {
+	position: fixed;
+	inset: 0;
+	z-index: 2147483647;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 28px;
+	pointer-events: auto;
+	background: radial-gradient(
+		120% 120% at 50% 45%,
+		rgba(12, 14, 20, 0.62) 0%,
+		rgba(8, 9, 13, 0.82) 100%
+	);
+	backdrop-filter: blur(10px) saturate(120%);
+	-webkit-backdrop-filter: blur(10px) saturate(120%);
+	color: #fff;
+	font-family:
+		Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+		"Segoe UI", sans-serif;
+	animation: cap-countdown-backdrop-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+	will-change: opacity;
+}
+
+.cap-extension-countdown.is-leaving {
+	animation: cap-countdown-backdrop-out 220ms ease-in both;
+	pointer-events: none;
+}
+
+.cap-extension-countdown-sr {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	border: 0;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
+.cap-extension-countdown-stage {
+	position: relative;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: min(52vmin, 460px);
+	height: min(52vmin, 460px);
+}
+
+.cap-extension-countdown-ring {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	transform: rotate(-90deg);
+	overflow: visible;
+}
+
+.cap-extension-countdown-ring-track {
+	fill: none;
+	stroke: rgba(255, 255, 255, 0.14);
+	stroke-width: 4;
+}
+
+.cap-extension-countdown-ring-progress {
+	fill: none;
+	stroke: #fff;
+	stroke-width: 4;
+	stroke-linecap: round;
+	/* 2 * pi * r (r = 54) */
+	stroke-dasharray: 339.292;
+	filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.45));
+	animation: cap-countdown-ring-drain var(--cap-countdown-step, 1000ms) linear
+		both;
+}
+
+.cap-extension-countdown-number {
+	position: relative;
+	font-size: clamp(140px, 30vmin, 360px);
+	font-weight: 700;
+	line-height: 1;
+	letter-spacing: -0.02em;
+	font-variant-numeric: tabular-nums;
+	text-shadow: 0 8px 40px rgba(0, 0, 0, 0.45);
+	animation: cap-countdown-pop var(--cap-countdown-step, 1000ms)
+		cubic-bezier(0.22, 1, 0.36, 1) both;
+	will-change: transform, opacity;
+}
+
+.cap-extension-countdown-hint {
+	font-size: 14px;
+	font-weight: 500;
+	letter-spacing: 0.01em;
+	color: rgba(255, 255, 255, 0.62);
+	animation: cap-countdown-backdrop-in 360ms ease-out both;
+}
+
+@keyframes cap-countdown-backdrop-in {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
+}
+
+@keyframes cap-countdown-backdrop-out {
+	from {
+		opacity: 1;
+	}
+	to {
+		opacity: 0;
+	}
+}
+
+@keyframes cap-countdown-pop {
+	0% {
+		transform: scale(0.55);
+		opacity: 0;
+	}
+	18% {
+		transform: scale(1.04);
+		opacity: 1;
+	}
+	30% {
+		transform: scale(1);
+		opacity: 1;
+	}
+	72% {
+		transform: scale(1);
+		opacity: 1;
+	}
+	100% {
+		transform: scale(1.32);
+		opacity: 0;
+	}
+}
+
+@keyframes cap-countdown-ring-drain {
+	from {
+		stroke-dashoffset: 0;
+	}
+	to {
+		stroke-dashoffset: 339.292;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.cap-extension-countdown-number {
+		animation: cap-countdown-backdrop-in 200ms ease-out both;
+	}
+	.cap-extension-countdown-ring-progress {
+		animation-timing-function: linear;
+	}
+}
+
+/* Shared confirm prompt (no mic / no sound) — a floating card centered over
+   the page that the user must answer before recording starts. */
+.cap-extension-confirm {
+	position: fixed;
+	inset: 0;
+	z-index: 2147483647;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 24px;
+	pointer-events: auto;
+	font-family:
+		Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+		"Segoe UI", sans-serif;
+	animation: cap-countdown-backdrop-in 160ms ease-out both;
+}
+
+.cap-extension-confirm-backdrop {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	margin: 0;
+	padding: 0;
+	border: 0;
+	cursor: default;
+	background: rgba(8, 9, 13, 0.5);
+	backdrop-filter: blur(4px);
+	-webkit-backdrop-filter: blur(4px);
+}
+
+.cap-extension-confirm-card {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 12px;
+	width: min(340px, 100%);
+	padding: 24px;
+	border-radius: 18px;
+	background: #fff;
+	color: #18181b;
+	text-align: center;
+	box-shadow:
+		0 1px 2px rgba(0, 0, 0, 0.08),
+		0 12px 40px rgba(0, 0, 0, 0.28);
+	animation: cap-confirm-card-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.cap-extension-confirm-icon {
+	width: 26px;
+	height: 26px;
+	padding: 9px;
+	box-sizing: content-box;
+	border-radius: 9999px;
+	background: #fde8e8;
+	color: #dc2626;
+}
+
+.cap-extension-confirm-title {
+	margin: 0;
+	font-size: 16px;
+	font-weight: 600;
+	line-height: 1.25;
+	color: #18181b;
+}
+
+.cap-extension-confirm-message {
+	margin: 0;
+	font-size: 13.5px;
+	font-weight: 400;
+	line-height: 1.45;
+	color: #52525b;
+}
+
+.cap-extension-confirm-actions {
+	display: flex;
+	gap: 10px;
+	width: 100%;
+	margin-top: 6px;
+}
+
+.cap-extension-confirm-button {
+	flex: 1 1 0;
+	min-width: 0;
+	height: 40px;
+	padding: 0 16px;
+	border-radius: 9999px;
+	border: 1px solid transparent;
+	font-family: inherit;
+	font-size: 14px;
+	font-weight: 500;
+	line-height: 1;
+	white-space: nowrap;
+	cursor: pointer;
+	transition:
+		background-color 150ms ease,
+		border-color 150ms ease;
+}
+
+.cap-extension-confirm-button:focus-visible {
+	outline: 2px solid #2563eb;
+	outline-offset: 2px;
+}
+
+.cap-extension-confirm-button.is-secondary {
+	background: #f4f4f5;
+	border-color: #e4e4e7;
+	color: #27272a;
+}
+
+.cap-extension-confirm-button.is-secondary:hover {
+	background: #e4e4e7;
+}
+
+.cap-extension-confirm-button.is-primary {
+	background: #18181b;
+	color: #fafafa;
+}
+
+.cap-extension-confirm-button.is-primary:hover {
+	background: #27272a;
+}
+
+@keyframes cap-confirm-card-in {
+	from {
+		opacity: 0;
+		transform: translateY(8px) scale(0.96);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0) scale(1);
+	}
+}
