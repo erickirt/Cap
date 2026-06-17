@@ -292,7 +292,8 @@ const createMockCapServer = async () => {
 			sendJson(response, 404, {
 				error: `Unhandled ${request.method} ${url.pathname}`,
 			});
-		} catch {
+		} catch (error) {
+			console.error("Mock server request failed", error);
 			sendJson(response, 500, {
 				error: "Mock server request failed",
 			});
