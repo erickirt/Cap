@@ -33,6 +33,7 @@ import type {
 } from "../shared/types";
 import { DEFAULT_MICROPHONE_DEVICE_ID } from "../shared/types";
 import { CameraSelector } from "./components/camera-selector";
+import { DashboardButton } from "./components/dashboard-button";
 import { HowItWorksButton } from "./components/how-it-works-button";
 import { MicrophoneSelector } from "./components/microphone-selector";
 import { RecorderHeader } from "./components/recorder-header";
@@ -513,6 +514,13 @@ function App() {
 		});
 	};
 
+	const openDashboard = () => {
+		chrome.tabs.create({
+			url: `${settings.apiBaseUrl}/dashboard`,
+			active: true,
+		});
+	};
+
 	const closePanel = () => {
 		if (busy) return;
 		// Closing the recorder tears down every piece of Cap UI: the panel,
@@ -547,14 +555,19 @@ function App() {
 	if (!embedAuthorized) return null;
 
 	return (
-		<main className="flex w-[300px] justify-center">
+		<main className="flex w-full justify-center">
 			<div
 				className={clsx(
-					"relative flex justify-center flex-col w-[300px] p-[1rem] pt-[3.25rem] gap-[0.75rem] text-[0.875rem] font-[400] text-[--text-primary] min-h-[440px]",
+					"relative flex justify-center flex-col w-full p-[1rem] pt-[3.25rem] gap-[0.75rem] text-[0.875rem] font-[400] text-[--text-primary] min-h-[440px]",
 					signedOut ? "bg-[--paper]" : "bg-gray-2",
 				)}
 			>
-				{auth && <SettingsButton onClick={() => void openOptions()} />}
+				{auth && (
+					<div className="absolute right-3 top-3 z-10 flex gap-2">
+						<DashboardButton onClick={openDashboard} />
+						<SettingsButton onClick={() => void openOptions()} />
+					</div>
+				)}
 				<RecorderHeader
 					isBusy={busy || recordingActive}
 					isPro={isPro}
@@ -660,7 +673,7 @@ function App() {
 								{status.message}
 							</div>
 						)}
-						<div className="cap-fade-up cap-fade-up-6">
+						<div className="cap-fade-up cap-fade-up-6 flex justify-center">
 							<HowItWorksButton onClick={() => void openHowItWorks()} />
 						</div>
 						{failedRecordingsCount > 0 && (

@@ -185,7 +185,7 @@ label {
 
 body {
 	margin: 0;
-	width: 300px;
+	width: 100%;
 	color: var(--text-primary);
 	background: var(--gray-2);
 }
