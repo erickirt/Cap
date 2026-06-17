@@ -44,6 +44,7 @@ import type {
 	ExtensionAuth,
 	ExtensionSettings,
 	MicrophoneDevice,
+	MicrophoneWarningVariant,
 	OffscreenRequest,
 	OffscreenResponse,
 	OverlayMessage,
@@ -1103,6 +1104,83 @@ const requireSignedInState = async () => {
 	};
 };
 
+// Pending floating-confirm prompts keyed by requestId; the recorded tab's
+// overlay resolves them via a "confirm-result" request. Falls back to cancel
+// after the timeout so a start never hangs forever on a prompt the user walked
+// away from.
+const recordingConfirmWaiters = new Map<string, (confirmed: boolean) => void>();
+const CONFIRM_DECISION_TIMEOUT_MS = 2 * 60 * 1000;
+
+const resolveRecordingConfirmation = (
+	requestId: string,
+	confirmed: boolean,
+) => {
+	const waiter = recordingConfirmWaiters.get(requestId);
+	if (!waiter) return;
+	recordingConfirmWaiters.delete(requestId);
+	waiter(confirmed);
+};
+
+// Shows the floating confirm prompt on the recorded tab and waits for the
+// user's decision. If the prompt cannot be shown (no tab, restricted page),
+// the recording proceeds rather than being blocked by UI that never appeared.
+const requestRecordingConfirmation = async (
+	tabId: number | undefined,
+	variant: MicrophoneWarningVariant,
+): Promise<boolean> => {
+	if (tabId === undefined) return true;
+
+	const requestId = crypto.randomUUID();
+	let settle: (confirmed: boolean) => void = () => undefined;
+	const decision = new Promise<boolean>((resolve) => {
+		settle = resolve;
+	});
+	const timer = globalThis.setTimeout(() => {
+		recordingConfirmWaiters.delete(requestId);
+		settle(false);
+	}, CONFIRM_DECISION_TIMEOUT_MS);
+	// Register before sending so a fast click cannot resolve before the waiter
+	// exists.
+	recordingConfirmWaiters.set(requestId, (confirmed) => {
+		globalThis.clearTimeout(timer);
+		settle(confirmed);
+	});
+
+	const delivered = await sendOverlay(tabId, {
+		type: "overlay-confirm",
+		requestId,
+		variant,
+	});
+	if (!delivered) {
+		globalThis.clearTimeout(timer);
+		recordingConfirmWaiters.delete(requestId);
+		return true;
+	}
+	return decision;
+};
+
+// Decides whether a recording start needs a mic warning. The silence check
+// runs in the offscreen document, which has reliable mic access.
+const resolveMicWarning = async (
+	settings: ExtensionSettings,
+): Promise<MicrophoneWarningVariant | null> => {
+	if (!settings.microphoneWarning.enabled) return null;
+	if (!settings.microphone.enabled) return "no-mic";
+	const response = await sendOffscreen({
+		target: "offscreen",
+		type: "probe-microphone",
+		microphone: settings.microphone,
+	}).catch(() => null);
+	if (
+		response?.ok &&
+		response.micProbe?.available &&
+		!response.micProbe.hasSound
+	) {
+		return "no-sound";
+	}
+	return null;
+};
+
 const startRecording = async (mode: RecordingMode) => {
 	const { settings, auth, bootstrap } = await requireSignedInState();
 	externalCaptureAutoPipPending = false;
@@ -1121,6 +1199,23 @@ const startRecording = async (mode: RecordingMode) => {
 	}
 	const tab = await getActiveTab();
 	const tabId = tab?.id;
+
+	// Shared mic gate: every start path (panel button and the floating bar)
+	// funnels through here, so the warning is consistent. Run it before any
+	// capture setup so declining leaves nothing to tear down.
+	const micWarning = await resolveMicWarning(recordingSettings);
+	if (micWarning) {
+		const confirmed = await requestRecordingConfirmation(tabId, micWarning);
+		if (!confirmed) {
+			externalCaptureAutoPipPending = false;
+			return {
+				ok: false,
+				canceled: true,
+				error: "Recording canceled",
+			} satisfies OffscreenResponse;
+		}
+	}
+
 	const tabStreamId =
 		mode === "tab" && tabId !== undefined
 			? await getTabStreamId(tabId)
