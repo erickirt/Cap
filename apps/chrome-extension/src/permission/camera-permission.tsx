@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { CapBrand, DoodleBoilFilter } from "../shared/cap-brand";
+import { toCameraDevices } from "../shared/devices";
 import { mountPageNav } from "../shared/page-nav";
 import { rememberCameraSelection } from "../shared/preferences";
 import { sendServiceWorkerMessage } from "../shared/runtime";
@@ -35,18 +36,6 @@ const headlines: Record<Status, { title: string; lede: string }> = {
 		lede: "Allow access once so Cap can show your camera preview and record your voice.",
 	},
 };
-
-const toCameraDevices = (devices: MediaDeviceInfo[]): CameraDevice[] =>
-	devices
-		.filter(
-			(device) =>
-				device.kind === "videoinput" && device.deviceId.trim().length > 0,
-		)
-		.map((device, index) => ({
-			deviceId: device.deviceId,
-			groupId: device.groupId,
-			label: device.label?.trim() || `Camera ${index + 1}`,
-		}));
 
 const stopStream = (stream: MediaStream) => {
 	for (const track of stream.getTracks()) {
