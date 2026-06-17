@@ -33,6 +33,7 @@ const footerLinks = {
 		{ label: "Testimonials", href: "/testimonials" },
 		{ label: "FAQs", href: "/faq" },
 		{ label: "Self-hosting", href: "/self-hosting" },
+		{ label: "Support", href: "/support" },
 		{ label: "Email Support", href: "mailto:hello@cap.so" },
 		{ label: "Trust Portal", href: "https://trust.cap.so" },
 		{
