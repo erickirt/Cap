@@ -20,6 +20,7 @@ import {
 	RecordingSpool,
 	recoverRecordingSpoolSession,
 	selectRecordingPipeline,
+	shouldRetryDisplayMediaWithoutPreferences,
 	type VideoId,
 } from "@cap/recorder-core";
 
@@ -53,6 +54,7 @@ import type {
 	RecordingMode,
 	RecordingStatus,
 	RecordingStatusBroadcast,
+	ServiceWorkerRequest,
 	StartRecordingRequest,
 	UploadSummary,
 	WebcamSettings,
