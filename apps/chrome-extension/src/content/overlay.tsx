@@ -60,13 +60,20 @@ const BAR_HEIGHT = 52;
 // iframe src), so token checks alone cannot authenticate window messages.
 // Frames we embed always run on the extension origin; require it too.
 const EXTENSION_ORIGIN = new URL(chrome.runtime.getURL("")).origin;
-const PREVIEW_TOKEN =
-	crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36)}`;
+const createSecureToken = () => {
+	if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+	const bytes = new Uint8Array(16);
+	crypto.getRandomValues(bytes);
+	return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
+		"",
+	);
+};
+
+const PREVIEW_TOKEN = createSecureToken();
 const PREVIEW_URL = chrome.runtime.getURL("camera-preview.html");
 const PREVIEW_SRC = `${PREVIEW_URL}#${encodeURIComponent(PREVIEW_TOKEN)}`;
 const PREVIEW_ERROR_DELAY_MS = 1200;
-const PANEL_TOKEN =
-	crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36)}`;
+const PANEL_TOKEN = createSecureToken();
 const PANEL_URL = chrome.runtime.getURL("popup.html");
 const PANEL_SRC = `${PANEL_URL}#${encodeURIComponent(PANEL_TOKEN)}`;
 const PANEL_WIDTH = 300;
