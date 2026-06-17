@@ -1,4 +1,4 @@
-import { Pause, Play, Square, X } from "lucide-react";
+import { Pause, Pencil, Play, Square, X } from "lucide-react";
 import {
 	type PointerEvent as ReactPointerEvent,
 	useCallback,
@@ -31,6 +31,7 @@ import type {
 	RecordingStatus,
 	SharedRecordingState,
 } from "../shared/types";
+import { DrawingOverlay } from "./drawing-overlay";
 
 const EDGE_PADDING = 16;
 const BOTTOM_OFFSET = 28;
@@ -114,6 +115,7 @@ export function RecordingBarOverlay({
 		useState<OverlayPosition | null>(null);
 	const [isDragging, setIsDragging] = useState(false);
 	const [busy, setBusy] = useState(false);
+	const [drawing, setDrawing] = useState(false);
 	const [now, setNow] = useState(() => Date.now());
 	const dragOffsetRef = useRef({ x: 0, y: 0 });
 	const barRef = useRef<HTMLDivElement>(null);
@@ -277,6 +279,13 @@ export function RecordingBarOverlay({
 	const ready = signedIn && !active && recorderPanelOpen && !readyDismissed;
 	const visible = active || ready;
 
+	// Drawing is reachable only from a visible bar, so once the bar hides
+	// (recording stopped and the ready bar dismissed) tear the canvas down too
+	// rather than leaving an invisible surface armed to swallow page clicks.
+	useEffect(() => {
+		if (!visible) setDrawing(false);
+	}, [visible]);
+
 	useEffect(() => {
 		if (!active) return;
 		setNow(Date.now());
@@ -432,67 +441,86 @@ export function RecordingBarOverlay({
 		})).catch(() => undefined);
 	}, []);
 
+	const toggleDrawing = useCallback(() => setDrawing((value) => !value), []);
+	const stopDrawing = useCallback(() => setDrawing(false), []);
+
 	if (!visible) return null;
 
 	if (status === null) {
 		return (
-			<div
-				ref={barRef}
-				className={classNames(
-					"cap-extension-control-bar",
-					isDragging && "is-dragging",
-				)}
-				role="toolbar"
-				aria-label="Cap recording controls"
-				style={{
-					left: `${position?.x ?? EDGE_PADDING}px`,
-					top: position ? `${position.y}px` : "50%",
-					visibility: position ? "visible" : "hidden",
-				}}
-				onPointerDown={handlePointerDown}
-			>
-				<div className="cap-extension-control-bar-info">
-					<img
-						className="cap-extension-control-bar-logo"
-						src={LOGO_URL}
-						alt=""
-						draggable={false}
-					/>
-					<div className="cap-extension-control-bar-text">
-						<span className="cap-extension-control-bar-title">
-							Ready to record
-						</span>
-						<span className="cap-extension-control-bar-subtitle">
-							<span
-								className="cap-extension-control-bar-dot is-ready"
-								aria-hidden
-							/>
-							Cap
-						</span>
+			<>
+				<div
+					ref={barRef}
+					className={classNames(
+						"cap-extension-control-bar",
+						isDragging && "is-dragging",
+					)}
+					role="toolbar"
+					aria-label="Cap recording controls"
+					style={{
+						left: `${position?.x ?? EDGE_PADDING}px`,
+						top: position ? `${position.y}px` : "50%",
+						visibility: position ? "visible" : "hidden",
+					}}
+					onPointerDown={handlePointerDown}
+				>
+					<div className="cap-extension-control-bar-info">
+						<img
+							className="cap-extension-control-bar-logo"
+							src={LOGO_URL}
+							alt=""
+							draggable={false}
+						/>
+						<div className="cap-extension-control-bar-text">
+							<span className="cap-extension-control-bar-title">
+								Ready to record
+							</span>
+							<span className="cap-extension-control-bar-subtitle">
+								<span
+									className="cap-extension-control-bar-dot is-ready"
+									aria-hidden
+								/>
+								Cap
+							</span>
+						</div>
+					</div>
+					<div className="cap-extension-control-bar-divider" aria-hidden />
+					<div className="cap-extension-control-bar-actions" data-controls>
+						<button
+							type="button"
+							className="cap-extension-control-bar-pill is-start"
+							disabled={busy}
+							onClick={startRecording}
+						>
+							<Play size={14} fill="currentColor" strokeWidth={0} aria-hidden />
+							Start recording
+						</button>
+						<button
+							type="button"
+							className={classNames(
+								"cap-extension-control-bar-icon-button",
+								drawing && "is-active",
+							)}
+							aria-label="Draw on the page"
+							aria-pressed={drawing}
+							title="Draw on the page"
+							onClick={toggleDrawing}
+						>
+							<Pencil size={18} aria-hidden />
+						</button>
+						<button
+							type="button"
+							className="cap-extension-control-bar-icon-button is-quiet"
+							aria-label="Hide recording bar"
+							title="Hide bar"
+							onClick={dismissReadyBar}
+						>
+							<X size={20} aria-hidden />
+						</button>
 					</div>
 				</div>
-				<div className="cap-extension-control-bar-divider" aria-hidden />
-				<div className="cap-extension-control-bar-actions" data-controls>
-					<button
-						type="button"
-						className="cap-extension-control-bar-pill is-start"
-						disabled={busy}
-						onClick={startRecording}
-					>
-						<Play size={14} fill="currentColor" strokeWidth={0} aria-hidden />
-						Start recording
-					</button>
-					<button
-						type="button"
-						className="cap-extension-control-bar-icon-button is-quiet"
-						aria-label="Hide recording bar"
-						title="Hide bar"
-						onClick={dismissReadyBar}
-					>
-						<X size={20} aria-hidden />
-					</button>
-				</div>
-			</div>
+				<DrawingOverlay active={drawing} onClose={stopDrawing} />
+			</>
 		);
 	}
 
@@ -510,57 +538,73 @@ export function RecordingBarOverlay({
 	// While recording the bar is a fixed rail pinned to the middle left of the
 	// page: just the clock and Stop, identical in every tab.
 	return (
-		<div
-			className="cap-extension-recording-rail"
-			role="toolbar"
-			aria-label="Cap recording controls"
-		>
+		<>
 			<div
-				className={classNames(
-					"cap-extension-recording-rail-timer",
-					isWarning && "is-warning",
-				)}
+				className="cap-extension-recording-rail"
+				role="toolbar"
+				aria-label="Cap recording controls"
 			>
-				<span
+				<div
 					className={classNames(
-						"cap-extension-control-bar-dot",
-						isCreating
-							? "is-creating"
-							: isPaused
-								? "is-paused"
-								: "is-recording",
+						"cap-extension-recording-rail-timer",
+						isWarning && "is-warning",
 					)}
-					aria-hidden
-				/>
-				<span className="cap-extension-recording-rail-time">
-					{formatDuration(displayMs)}
-				</span>
+				>
+					<span
+						className={classNames(
+							"cap-extension-control-bar-dot",
+							isCreating
+								? "is-creating"
+								: isPaused
+									? "is-paused"
+									: "is-recording",
+						)}
+						aria-hidden
+					/>
+					<span className="cap-extension-recording-rail-time">
+						{formatDuration(displayMs)}
+					</span>
+				</div>
+				<button
+					type="button"
+					className="cap-extension-control-bar-icon-button"
+					aria-label={isPaused ? "Resume recording" : "Pause recording"}
+					title={isPaused ? "Resume" : "Pause"}
+					disabled={busy || isCreating}
+					onClick={() =>
+						sendControl(isPaused ? "resume-recording" : "pause-recording")
+					}
+				>
+					{isPaused ? (
+						<Play size={19} fill="currentColor" strokeWidth={0} aria-hidden />
+					) : (
+						<Pause size={19} fill="currentColor" strokeWidth={0} aria-hidden />
+					)}
+				</button>
+				<button
+					type="button"
+					className={classNames(
+						"cap-extension-control-bar-icon-button",
+						drawing && "is-active",
+					)}
+					aria-label="Draw on the page"
+					aria-pressed={drawing}
+					title="Draw on the page"
+					onClick={toggleDrawing}
+				>
+					<Pencil size={19} aria-hidden />
+				</button>
+				<button
+					type="button"
+					className="cap-extension-control-bar-pill is-stop"
+					disabled={busy}
+					onClick={() => sendControl("stop-recording")}
+				>
+					<Square size={13} fill="currentColor" strokeWidth={0} aria-hidden />
+					Stop
+				</button>
 			</div>
-			<button
-				type="button"
-				className="cap-extension-control-bar-icon-button"
-				aria-label={isPaused ? "Resume recording" : "Pause recording"}
-				title={isPaused ? "Resume" : "Pause"}
-				disabled={busy || isCreating}
-				onClick={() =>
-					sendControl(isPaused ? "resume-recording" : "pause-recording")
-				}
-			>
-				{isPaused ? (
-					<Play size={19} fill="currentColor" strokeWidth={0} aria-hidden />
-				) : (
-					<Pause size={19} fill="currentColor" strokeWidth={0} aria-hidden />
-				)}
-			</button>
-			<button
-				type="button"
-				className="cap-extension-control-bar-pill is-stop"
-				disabled={busy}
-				onClick={() => sendControl("stop-recording")}
-			>
-				<Square size={13} fill="currentColor" strokeWidth={0} aria-hidden />
-				Stop
-			</button>
-		</div>
+			<DrawingOverlay active={drawing} onClose={stopDrawing} />
+		</>
 	);
 }
