@@ -1,9 +1,9 @@
 import { PictureInPicture } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { toCameraDevices } from "../shared/devices";
 import { sendServiceWorkerMessage } from "../shared/runtime";
 import type {
-	CameraDevice,
 	CameraPreviewErrorReason,
 	CameraPreviewEvent,
 	WebcamPreviewFrame,
@@ -221,18 +221,6 @@ const getCameraErrorDetails = (
 type AutoPictureInPictureVideo = HTMLVideoElement & {
 	autoPictureInPicture?: boolean;
 };
-
-const toCameraDevices = (devices: MediaDeviceInfo[]): CameraDevice[] =>
-	devices
-		.filter(
-			(device) =>
-				device.kind === "videoinput" && device.deviceId.trim().length > 0,
-		)
-		.map((device, index) => ({
-			deviceId: device.deviceId,
-			groupId: device.groupId,
-			label: device.label?.trim() || `Camera ${index + 1}`,
-		}));
 
 const publishCameraDevices = async () => {
 	const devices = toCameraDevices(
