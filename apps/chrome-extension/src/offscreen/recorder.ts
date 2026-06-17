@@ -26,6 +26,7 @@ import {
 	deleteInstantRecording,
 	updateUploadProgress,
 } from "../shared/api";
+import { toCameraDevices, toMicrophoneDevices } from "../shared/devices";
 import { isOffscreenRequest } from "../shared/messages";
 import {
 	loadAuth,
@@ -1403,6 +1404,19 @@ const runFailedUploadRetry = async (
 	}
 };
 
+// This document is a top-level extension page, so once the extension origin
+// holds the camera/mic grant (the same grant that lets recording getUserMedia
+// run here without a prompt) enumerateDevices() returns full labels — unlike
+// the recorder panel, which Chrome treats as a cross-origin iframe and strips
+// device labels from.
+const enumerateMediaDevices = async () => {
+	const devices = await navigator.mediaDevices.enumerateDevices();
+	return {
+		cameras: toCameraDevices(devices),
+		microphones: toMicrophoneDevices(devices),
+	};
+};
+
 const connectCameraPreview = async (request: ConnectCameraPreviewRequest) => {
 	disconnectCameraPreview(request.sessionId);
 	const stream = await getCameraPreviewStream(request.settings);
@@ -1478,6 +1492,10 @@ const handleRequest = async (
 
 	if (message.type === "retry-upload") {
 		return { ok: true, status: await retryFailedUpload(message.videoId) };
+	}
+
+	if (message.type === "enumerate-devices") {
+		return { ok: true, devices: await enumerateMediaDevices() };
 	}
 
 	return { ok: true, status };
