@@ -435,6 +435,9 @@ function App() {
 			if (response.settings) applySettings(response.settings);
 		});
 
+	// The microphone warning (no mic / no sound) is handled centrally in the
+	// service worker so the panel and the floating recording bar share one
+	// flow; a declined warning comes back as a cancellation.
 	const start = () =>
 		run(async () => {
 			if (cameraRequired) {
@@ -446,8 +449,8 @@ function App() {
 				mode,
 			});
 			if (!response.ok) {
-				// Dismissing the capture picker is a deliberate action, not a
-				// failure worth surfacing.
+				// Dismissing the capture picker or the mic warning is a deliberate
+				// action, not a failure worth surfacing.
 				if (response.canceled) return;
 				throw new Error(response.error);
 			}
