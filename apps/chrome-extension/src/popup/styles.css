@@ -231,6 +231,11 @@ body {
 	animation: cap-fade-up 0.45s ease both;
 }
 
+/* Drill-in sheet (device pickers) sliding over the recorder panel. */
+.cap-sheet-in {
+	animation: cap-sheet-in 0.2s ease both;
+}
+
 .cap-fade-up-1 {
 	animation-delay: 0.06s;
 }
@@ -452,6 +457,17 @@ body {
 	}
 }
 
+@keyframes cap-sheet-in {
+	from {
+		opacity: 0;
+		transform: translateX(14px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
 @keyframes cap-draw {
 	to {
 		stroke-dashoffset: 0;
@@ -495,6 +511,7 @@ body {
 	}
 
 	.cap-fade-up,
+	.cap-sheet-in,
 	.cap-signin-ring,
 	.cap-signin-dot,
 	.cap-signin-spark {
