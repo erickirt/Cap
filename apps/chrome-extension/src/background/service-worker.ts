@@ -1766,6 +1766,26 @@ const handleRequest = async (
 		return { ok: true };
 	}
 
+	if (message.type === "confirm-result") {
+		resolveRecordingConfirmation(message.requestId, message.confirmed);
+		return { ok: true };
+	}
+
+	if (message.type === "show-countdown") {
+		// Relay the offscreen recorder's countdown to the recorded tab. Inject
+		// the overlay if it is not there yet; a tab that cannot host it (e.g. a
+		// chrome:// page) just shows nothing while the recorder waits out the
+		// same countdown, so the count is still kept out of the capture.
+		if (message.tabId !== undefined) {
+			void sendOverlay(message.tabId, {
+				type: "overlay-countdown",
+				seconds: message.seconds,
+				durationMs: message.durationMs,
+			}).catch(() => undefined);
+		}
+		return { ok: true };
+	}
+
 	if (message.type === "recording-capture-source") {
 		await handleCaptureSource(message.source);
 		return { ok: true };
