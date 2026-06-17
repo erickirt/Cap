@@ -28,6 +28,8 @@ export const isOffscreenRequest = (
 export const isOverlayMessage = (message: unknown): message is OverlayMessage =>
 	hasType(message) &&
 	(message.type === "overlay-settings" ||
+		message.type === "overlay-countdown" ||
+		message.type === "overlay-confirm" ||
 		message.type === "overlay-enter-auto-pip" ||
 		message.type === "overlay-exit-auto-pip" ||
 		message.type === "overlay-hide" ||
