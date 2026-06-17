@@ -82,6 +82,13 @@ export const defaultSettings: ExtensionSettings = {
 	sounds: {
 		enabled: true,
 	},
+	countdown: {
+		enabled: true,
+		seconds: 3,
+	},
+	microphoneWarning: {
+		enabled: true,
+	},
 };
 
 const defaultMediaAccessState: MediaAccessState = {
@@ -162,6 +169,10 @@ export const loadSettings = async () => {
 			...saved.systemAudio,
 		},
 		sounds: normalizeSoundSettings(saved.sounds),
+		countdown: normalizeCountdownSettings(saved.countdown),
+		microphoneWarning: normalizeMicrophoneWarningSettings(
+			saved.microphoneWarning,
+		),
 	};
 };
 
@@ -659,6 +670,51 @@ const normalizeSoundSettings = (
 			typeof sounds.enabled === "boolean"
 				? sounds.enabled
 				: defaultSettings.sounds.enabled,
+	};
+};
+
+// Only 3/5/10 are offered in the UI, but any positive integer is accepted so a
+// hand-edited or future value is not silently reset to the default.
+const ALLOWED_COUNTDOWN_SECONDS = [3, 5, 10];
+
+const normalizeCountdownSettings = (
+	value: unknown,
+): ExtensionSettings["countdown"] => {
+	const countdown =
+		value && typeof value === "object"
+			? (value as Partial<ExtensionSettings["countdown"]>)
+			: {};
+	const seconds =
+		typeof countdown.seconds === "number" &&
+		Number.isFinite(countdown.seconds) &&
+		countdown.seconds > 0
+			? Math.round(countdown.seconds)
+			: defaultSettings.countdown.seconds;
+
+	return {
+		enabled:
+			typeof countdown.enabled === "boolean"
+				? countdown.enabled
+				: defaultSettings.countdown.enabled,
+		seconds: ALLOWED_COUNTDOWN_SECONDS.includes(seconds)
+			? seconds
+			: defaultSettings.countdown.seconds,
+	};
+};
+
+const normalizeMicrophoneWarningSettings = (
+	value: unknown,
+): ExtensionSettings["microphoneWarning"] => {
+	const warning =
+		value && typeof value === "object"
+			? (value as Partial<ExtensionSettings["microphoneWarning"]>)
+			: {};
+
+	return {
+		enabled:
+			typeof warning.enabled === "boolean"
+				? warning.enabled
+				: defaultSettings.microphoneWarning.enabled,
 	};
 };
 

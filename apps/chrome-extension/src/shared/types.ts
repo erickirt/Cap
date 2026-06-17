@@ -88,6 +88,24 @@ export type SoundSettings = {
 	enabled: boolean;
 };
 
+// Pre-roll countdown shown on the recorded/active tab right before the first
+// frame is captured. `seconds` doubles as the number it counts down from.
+export type CountdownSettings = {
+	enabled: boolean;
+	seconds: number;
+};
+
+// Whether to interrupt a recording start with a confirm prompt when the mic is
+// off or producing no sound. The check runs in the offscreen recorder and the
+// prompt shows as a floating overlay on the recorded tab.
+export type MicrophoneWarningSettings = {
+	enabled: boolean;
+};
+
+// "no-mic" — recording with the microphone disabled; "no-sound" — a mic is
+// selected but the offscreen probe heard nothing from it.
+export type MicrophoneWarningVariant = "no-mic" | "no-sound";
+
 export type ExtensionSettings = {
 	apiBaseUrl: string;
 	capture: CapturePreferences;
@@ -95,6 +113,8 @@ export type ExtensionSettings = {
 	microphone: MicrophoneSettings;
 	systemAudio: SystemAudioSettings;
 	sounds: SoundSettings;
+	countdown: CountdownSettings;
+	microphoneWarning: MicrophoneWarningSettings;
 };
 
 export type ExtensionAuth = {
@@ -233,6 +253,22 @@ export type EnumerateDevicesRequest = {
 	type: "enumerate-devices";
 };
 
+// Opens the selected mic briefly and listens for any signal, so the recorder
+// can warn before starting. Runs in the offscreen document because its
+// AudioContext is not gated by the page autoplay policy the way a popup's is.
+export type ProbeMicrophoneRequest = {
+	target: "offscreen";
+	type: "probe-microphone";
+	microphone: MicrophoneSettings;
+};
+
+export type MicrophoneProbeResult = {
+	// False when the mic could not be opened at all (no device/permission).
+	available: boolean;
+	// True when any sound cleared the silence threshold during the probe.
+	hasSound: boolean;
+};
+
 export type MediaDeviceList = {
 	cameras: CameraDevice[];
 	microphones: MicrophoneDevice[];
@@ -249,7 +285,8 @@ export type OffscreenRequest =
 	| DisconnectCameraPreviewsRequest
 	| AcknowledgeErrorRequest
 	| RetryUploadRequest
-	| EnumerateDevicesRequest;
+	| EnumerateDevicesRequest
+	| ProbeMicrophoneRequest;
 
 export type OffscreenResponse =
 	| {
@@ -257,6 +294,7 @@ export type OffscreenResponse =
 			status?: RecordingStatus;
 			answer?: RTCSessionDescriptionInit;
 			devices?: MediaDeviceList;
+			micProbe?: MicrophoneProbeResult;
 	  }
 	| {
 			ok: false;
@@ -396,6 +434,24 @@ export type ServiceWorkerRequest =
 			target: "service-worker";
 			type: "retry-upload";
 			videoId: string;
+	  }
+	| {
+			// Offscreen recorder → service worker → recorded tab's content overlay.
+			// The offscreen document has no chrome.tabs access, so the worker
+			// relays the countdown to the tab on its behalf.
+			target: "service-worker";
+			type: "show-countdown";
+			tabId?: number;
+			seconds: number;
+			durationMs: number;
+	  }
+	| {
+			// The recorded tab's confirm overlay reports the user's decision back to
+			// the service worker, which is blocking the recording start on it.
+			target: "service-worker";
+			type: "confirm-result";
+			requestId: string;
+			confirmed: boolean;
 	  };
 
 export type ServiceWorkerResponse =
@@ -426,6 +482,22 @@ export type OverlayMessage =
 			type: "overlay-settings";
 			settings: WebcamSettings;
 			recording: boolean;
+	  }
+	| {
+			// Play the pre-roll countdown over the page. `durationMs` mirrors the
+			// time the offscreen recorder waits before capturing, so the animation
+			// finishes just before the first recorded frame.
+			type: "overlay-countdown";
+			seconds: number;
+			durationMs: number;
+	  }
+	| {
+			// Floating confirm prompt shown in the middle of the recorded/active
+			// tab before a recording starts. The decision returns to the service
+			// worker via a "confirm-result" request keyed by requestId.
+			type: "overlay-confirm";
+			requestId: string;
+			variant: MicrophoneWarningVariant;
 	  }
 	| {
 			type: "overlay-enter-auto-pip";

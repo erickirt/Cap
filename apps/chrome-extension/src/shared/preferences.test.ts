@@ -36,6 +36,13 @@ const settings: ExtensionSettings = {
 	sounds: {
 		enabled: true,
 	},
+	countdown: {
+		enabled: true,
+		seconds: 3,
+	},
+	microphoneWarning: {
+		enabled: true,
+	},
 };
 
 describe("camera preferences", () => {
