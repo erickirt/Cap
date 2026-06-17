@@ -326,9 +326,17 @@ type PanelFrameMessage =
 const isPanelFrameMessage = (value: unknown): value is PanelFrameMessage => {
 	if (!value || typeof value !== "object") return false;
 	const candidate = value as Partial<PanelFrameMessage>;
+	if (
+		candidate.source !== "cap-extension-panel" ||
+		candidate.token !== PANEL_TOKEN
+	) {
+		return false;
+	}
+	if (candidate.type === "dismiss") return true;
 	return (
-		candidate.source === "cap-extension-panel" &&
-		candidate.token === PANEL_TOKEN
+		candidate.type === "size" &&
+		typeof candidate.height === "number" &&
+		Number.isFinite(candidate.height)
 	);
 };
 

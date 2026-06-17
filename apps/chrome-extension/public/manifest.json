@@ -34,10 +34,10 @@
 		"storage",
 		"tabCapture"
 	],
-	"host_permissions": ["<all_urls>"],
+	"host_permissions": ["http://*/*", "https://*/*", "file:///*"],
 	"content_scripts": [
 		{
-			"matches": ["<all_urls>"],
+			"matches": ["http://*/*", "https://*/*", "file:///*"],
 			"js": ["assets/content-bootstrap.js"],
 			"run_at": "document_idle"
 		}
@@ -45,11 +45,11 @@
 	"web_accessible_resources": [
 		{
 			"resources": ["icons/*", "content/overlay.js"],
-			"matches": ["<all_urls>"]
+			"matches": ["http://*/*", "https://*/*", "file:///*"]
 		},
 		{
 			"resources": ["camera-preview.html", "popup.html"],
-			"matches": ["<all_urls>"],
+			"matches": ["http://*/*", "https://*/*", "file:///*"],
 			"use_dynamic_url": true
 		}
 	]
