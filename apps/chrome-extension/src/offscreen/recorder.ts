@@ -137,6 +137,13 @@ let startInProgress = false;
 // Lets a stop request abort a start that is still in the "creating" phase
 // (capture picker open, server round-trips pending).
 let startCancelRequested = false;
+// True only while the pre-roll countdown is running (capture is fully set up
+// but no frame has been recorded yet). A stop request during this window is a
+// cancellation, not a real recording stop.
+let countdownInProgress = false;
+// Resolves the in-progress countdown wait early so a cancel takes effect
+// immediately instead of after the full countdown elapses.
+let countdownResolve: (() => void) | null = null;
 // Mirrors startInProgress for retries: a retry upload must not run while a
 // recording starts (or vice versa), or its terminal status write would
 // clobber the live session's state machine.
@@ -954,6 +961,14 @@ const startRecording = async (request: StartRecordingRequest) => {
 		const recorder = new MediaRecorder(recordingStream, {
 			mimeType: pipeline.mimeType,
 		});
+
+		// Pre-roll countdown is the last step before capture: the picker and every
+		// server round-trip are already done, so recording begins the moment the
+		// count ends. `startedAt` is read afterwards so the countdown is excluded
+		// from the recording duration.
+		await runStartCountdown(request);
+		throwIfStartCanceled();
+
 		const startedAt = Date.now();
 		const plan = request.bootstrap.plan;
 		const maxDurationMs =
@@ -1327,6 +1342,16 @@ const getCurrentUploadSnapshot = () =>
 			};
 
 async function stopRecording() {
+	// A stop during the pre-roll countdown cancels the start before any frame is
+	// captured. Resolving the countdown wait lets startRecording's
+	// throwIfStartCanceled tear down the half-built session (streams, server
+	// recording, spool) instead of finalizing an empty recording.
+	if (countdownInProgress) {
+		startCancelRequested = true;
+		countdownResolve?.();
+		return status;
+	}
+
 	const recording = activeRecording;
 	if (!recording) {
 		// A stop while the start sequence is still running (capture picker
