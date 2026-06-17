@@ -492,6 +492,26 @@ function App() {
 									<option value="full">Full</option>
 								</select>
 							</label>
+							<label className="field">
+								<span>Countdown</span>
+								<select
+									value={String(settings.countdown.seconds)}
+									disabled={!settings.countdown.enabled}
+									onChange={(event) =>
+										setSettings({
+											...settings,
+											countdown: {
+												...settings.countdown,
+												seconds: Number(event.currentTarget.value),
+											},
+										})
+									}
+								>
+									<option value="3">3 seconds</option>
+									<option value="5">5 seconds</option>
+									<option value="10">10 seconds</option>
+								</select>
+							</label>
 						</div>
 						<div className="checks">
 							<DoodleCheckbox
@@ -541,6 +561,32 @@ function App() {
 										...settings,
 										sounds: {
 											...settings.sounds,
+											enabled: checked,
+										},
+									})
+								}
+							/>
+							<DoodleCheckbox
+								label="Show countdown before recording"
+								checked={settings.countdown.enabled}
+								onChange={(checked) =>
+									setSettings({
+										...settings,
+										countdown: {
+											...settings.countdown,
+											enabled: checked,
+										},
+									})
+								}
+							/>
+							<DoodleCheckbox
+								label="Warn about microphone issues"
+								checked={settings.microphoneWarning.enabled}
+								onChange={(checked) =>
+									setSettings({
+										...settings,
+										microphoneWarning: {
+											...settings.microphoneWarning,
 											enabled: checked,
 										},
 									})
