@@ -43,6 +43,7 @@ import type {
 	CameraPreviewEventRelay,
 	ExtensionAuth,
 	ExtensionSettings,
+	MicrophoneDevice,
 	OffscreenRequest,
 	OffscreenResponse,
 	OverlayMessage,
@@ -66,6 +67,7 @@ const START_PREVIEW_READY_TIMEOUT_MS = 8000;
 let bootstrapCache: BootstrapData | null = null;
 let recordingStatus: RecordingStatus = { phase: "idle" };
 let cameraDevicesCache: CameraDevice[] = [];
+let microphoneDevicesCache: MicrophoneDevice[] = [];
 let uploadProgressTabId: number | null = null;
 let activePreviewTabId: number | null = null;
 let pendingPreviewTabId: number | null = null;
@@ -935,6 +937,31 @@ const broadcastCameraDevices = (devices: CameraDevice[]) => {
 	);
 };
 
+// The recorder panel is a cross-origin iframe, so its own enumerateDevices()
+// returns no labelled devices even when the grant exists. Enumerate in the
+// offscreen document instead (a top-level extension page that keeps the grant)
+// and cache the result. Empty results never overwrite a populated cache: a
+// transient enumeration that loses labels must not wipe known devices.
+const refreshMediaDevicesFromOffscreen = async () => {
+	try {
+		const response = await sendOffscreen({
+			target: "offscreen",
+			type: "enumerate-devices",
+		});
+		if (response.ok && response.devices) {
+			if (response.devices.cameras.length > 0) {
+				cameraDevicesCache = response.devices.cameras;
+				broadcastCameraDevices(cameraDevicesCache);
+			}
+			if (response.devices.microphones.length > 0) {
+				microphoneDevicesCache = response.devices.microphones;
+			}
+		}
+	} catch {
+		// Fall back to whatever is already cached.
+	}
+};
+
 const getUploadProgressUrl = (videoId: string) => {
 	const url = new URL(chrome.runtime.getURL("uploading.html"));
 	url.searchParams.set("videoId", videoId);
@@ -1421,6 +1448,7 @@ const handleRequest = async (
 			authError: state.authError,
 			bootstrap: state.bootstrap ?? undefined,
 			cameraDevices: cameraDevicesCache,
+			microphoneDevices: microphoneDevicesCache,
 			settings: state.settings,
 			status: recordingStatus,
 		};
@@ -1438,9 +1466,23 @@ const handleRequest = async (
 		return { ok: true, cameraDevices: cameraDevicesCache };
 	}
 
+	if (message.type === "get-media-devices") {
+		await refreshMediaDevicesFromOffscreen();
+		return {
+			ok: true,
+			cameraDevices: cameraDevicesCache,
+			microphoneDevices: microphoneDevicesCache,
+		};
+	}
+
 	if (message.type === "camera-devices-updated") {
-		cameraDevicesCache = message.devices;
-		broadcastCameraDevices(cameraDevicesCache);
+		// Pages that enumerate from a context without device labels (the camera
+		// preview iframe) publish an empty list; let it through only when nothing
+		// is cached yet so it cannot wipe a populated list.
+		if (message.devices.length > 0 || cameraDevicesCache.length === 0) {
+			cameraDevicesCache = message.devices;
+			broadcastCameraDevices(cameraDevicesCache);
+		}
 		return { ok: true, cameraDevices: cameraDevicesCache };
 	}
 
