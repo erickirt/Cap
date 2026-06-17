@@ -861,6 +861,10 @@ const startRecording = async (request: StartRecordingRequest) => {
 		const pipeline = selectRecordingPipeline(hasAudio);
 		if (!pipeline) throw new Error("No supported recorder format is available");
 
+		const { videoCodec, audioCodec } = describeRecordingCodecs(
+			pipeline.mimeType,
+			hasAudio,
+		);
 		const creation = await createInstantRecording({
 			settings: request.settings,
 			auth: request.auth,
@@ -870,8 +874,8 @@ const startRecording = async (request: StartRecordingRequest) => {
 				resolution: `${width}x${height}`,
 				width,
 				height,
-				videoCodec: pipeline.mimeType.includes("webm") ? "vp9" : "h264",
-				audioCodec: hasAudio ? "opus" : undefined,
+				videoCodec,
+				audioCodec,
 				supportsUploadProgress: true,
 			},
 		});
