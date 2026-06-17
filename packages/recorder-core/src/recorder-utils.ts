@@ -215,6 +215,43 @@ export const selectRecordingPipeline = (
 	);
 };
 
+// Derive the codec labels that get attached to the upload as object metadata
+// from the codecs the recorder actually negotiated, rather than assuming vp9 /
+// opus for every webm container. A platform that only encodes vp8 (some
+// Chromebooks) would otherwise be mislabelled, and an mp4 fallback carries aac,
+// not opus.
+export const describeRecordingCodecs = (
+	mimeType: string,
+	hasAudio: boolean,
+): { videoCodec: string; audioCodec: string | undefined } => {
+	const lowerType = mimeType.toLowerCase();
+	const codecsMatch = lowerType.match(/codecs\s*=\s*"?([^"]+)"?/);
+	const codecs = (codecsMatch?.[1] ?? "")
+		.split(",")
+		.map((codec) => codec.trim())
+		.filter(Boolean);
+	const isWebm = lowerType.includes("webm");
+	const hasCodec = (prefix: string) =>
+		codecs.some((codec) => codec.startsWith(prefix));
+
+	let videoCodec: string;
+	if (hasCodec("vp9")) videoCodec = "vp9";
+	else if (hasCodec("vp8")) videoCodec = "vp8";
+	else if (hasCodec("avc1") || hasCodec("h264")) videoCodec = "h264";
+	else videoCodec = isWebm ? "vp8" : "h264";
+
+	if (!hasAudio) {
+		return { videoCodec, audioCodec: undefined };
+	}
+
+	let audioCodec: string;
+	if (hasCodec("opus")) audioCodec = "opus";
+	else if (hasCodec("mp4a") || hasCodec("aac")) audioCodec = "aac";
+	else audioCodec = isWebm ? "opus" : "aac";
+
+	return { videoCodec, audioCodec };
+};
+
 export const isUserCancellationError = (error: unknown): boolean => {
 	if (!(error instanceof DOMException)) return false;
 	return error.name === "NotAllowedError" || error.name === "AbortError";
