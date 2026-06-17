@@ -1,6 +1,7 @@
 import clsx from "clsx";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { toCameraDevices, toMicrophoneDevices } from "../shared/devices";
 import {
 	reconcileRememberedDevices,
 	rememberCameraSelection,
@@ -77,30 +78,6 @@ const isRecordingStatus = (
 	status.phase === "paused" ||
 	status.phase === "uploading";
 
-const toCameraDevices = (devices: MediaDeviceInfo[]): CameraDevice[] =>
-	devices
-		.filter(
-			(device) =>
-				device.kind === "videoinput" && device.deviceId.trim().length > 0,
-		)
-		.map((device, index) => ({
-			deviceId: device.deviceId,
-			groupId: device.groupId,
-			label: device.label?.trim() || `Camera ${index + 1}`,
-		}));
-
-const toMicrophoneDevices = (devices: MediaDeviceInfo[]): MicrophoneDevice[] =>
-	devices
-		.filter(
-			(device) =>
-				device.kind === "audioinput" && device.deviceId.trim().length > 0,
-		)
-		.map((device, index) => ({
-			deviceId: device.deviceId,
-			groupId: device.groupId,
-			label: device.label?.trim() || `Microphone ${index + 1}`,
-		}));
-
 function App() {
 	// This page is web accessible, so any site can put it in an iframe and
 	// overlay it for clickjacking. When embedded, render nothing until the
@@ -156,33 +133,55 @@ function App() {
 	}, []);
 
 	const loadDevices = useCallback(async () => {
-		if (!navigator.mediaDevices?.enumerateDevices) {
-			return;
+		let cameras: CameraDevice[] = [];
+		let microphones: MicrophoneDevice[] = [];
+
+		if (navigator.mediaDevices?.enumerateDevices) {
+			try {
+				const devices = await navigator.mediaDevices.enumerateDevices();
+				cameras = toCameraDevices(devices);
+				microphones = toMicrophoneDevices(devices);
+			} catch {
+				// The offscreen fallback below covers the failure.
+			}
 		}
 
-		try {
-			const devices = await navigator.mediaDevices.enumerateDevices();
-			const cameras = toCameraDevices(devices);
-			const microphones = toMicrophoneDevices(devices);
-			setCameraDevices(cameras);
-			setMicDevices(microphones);
-			if (cameras.length > 0 || microphones.length > 0) {
-				const nextAccess = await updateMediaAccessState({
-					...(cameras.length > 0 ? { camera: true } : {}),
-					...(microphones.length > 0 ? { microphone: true } : {}),
-				});
-				setMediaAccess(nextAccess);
+		// This panel usually runs as a cross-origin iframe inside the host page,
+		// where Chrome withholds device labels from enumerateDevices() even though
+		// the extension origin holds the camera/mic grant. Ask the offscreen
+		// document (a top-level extension page that keeps the grant) for whichever
+		// list came up empty.
+		if (cameras.length === 0 || microphones.length === 0) {
+			const response = await sendServiceWorkerMessage({
+				target: "service-worker",
+				type: "get-media-devices",
+			}).catch(() => null);
+			if (response?.ok) {
+				if (cameras.length === 0 && response.cameraDevices) {
+					cameras = response.cameraDevices;
+				}
+				if (microphones.length === 0 && response.microphoneDevices) {
+					microphones = response.microphoneDevices;
+				}
 			}
-			const reconciled = reconcileRememberedDevices(
-				settingsRef.current,
-				cameras,
-				microphones,
-			);
-			if (reconciled !== settingsRef.current) {
-				await updateSettings(reconciled);
-			}
-		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
+		}
+
+		setCameraDevices(cameras);
+		setMicDevices(microphones);
+		if (cameras.length > 0 || microphones.length > 0) {
+			const nextAccess = await updateMediaAccessState({
+				...(cameras.length > 0 ? { camera: true } : {}),
+				...(microphones.length > 0 ? { microphone: true } : {}),
+			});
+			setMediaAccess(nextAccess);
+		}
+		const reconciled = reconcileRememberedDevices(
+			settingsRef.current,
+			cameras,
+			microphones,
+		);
+		if (reconciled !== settingsRef.current) {
+			await updateSettings(reconciled);
 		}
 	}, [updateSettings]);
 
@@ -271,6 +270,8 @@ function App() {
 				setBootstrap(response.bootstrap ?? null);
 				if (response.authError) setError(response.authError);
 				if (response.cameraDevices) setCameraDevices(response.cameraDevices);
+				if (response.microphoneDevices)
+					setMicDevices(response.microphoneDevices);
 				if (response.settings) applySettings(response.settings);
 				if (response.status) setStatus(response.status);
 			})
@@ -383,6 +384,8 @@ function App() {
 					// the stored failure is surfaced here or never.
 					if (response.authError) setError(response.authError);
 					if (response.cameraDevices) setCameraDevices(response.cameraDevices);
+					if (response.microphoneDevices)
+						setMicDevices(response.microphoneDevices);
 					if (response.settings) applySettings(response.settings);
 					if (response.status) setStatus(response.status);
 				})
