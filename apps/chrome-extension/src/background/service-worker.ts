@@ -22,6 +22,7 @@ import {
 	loadPendingAuth,
 	loadSettings,
 	loadSharedRecordingState,
+	loadSharedUiState,
 	loadUploadProgressTabId,
 	loadWebcamPreviewDismissed,
 	registerOverlayToken,
@@ -767,6 +768,16 @@ const getRecorderPanelTabs = async (actionTab?: chrome.tabs.Tab) => {
 };
 
 const openRecorderPanel = async (actionTab?: chrome.tabs.Tab) => {
+	// Clicking the action toggles the recorder UI. When it is already open,
+	// close it through the same path as the panel's own close button so the
+	// camera preview is torn down too — a blind panel-toggle would hide the
+	// panel and recording bar but leave the camera window stranded.
+	const sharedUi = await loadSharedUiState().catch(() => null);
+	if (sharedUi?.panelOpen) {
+		await closeAllExtensionUi();
+		return;
+	}
+
 	const currentStatus = await syncRecordingStatus().catch(
 		() => recordingStatus,
 	);
