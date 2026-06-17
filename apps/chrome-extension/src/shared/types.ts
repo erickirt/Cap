@@ -228,6 +228,16 @@ export type RetryUploadRequest = {
 	videoId: string;
 };
 
+export type EnumerateDevicesRequest = {
+	target: "offscreen";
+	type: "enumerate-devices";
+};
+
+export type MediaDeviceList = {
+	cameras: CameraDevice[];
+	microphones: MicrophoneDevice[];
+};
+
 export type OffscreenRequest =
 	| StartRecordingRequest
 	| StopRecordingRequest
@@ -238,13 +248,15 @@ export type OffscreenRequest =
 	| DisconnectCameraPreviewRequest
 	| DisconnectCameraPreviewsRequest
 	| AcknowledgeErrorRequest
-	| RetryUploadRequest;
+	| RetryUploadRequest
+	| EnumerateDevicesRequest;
 
 export type OffscreenResponse =
 	| {
 			ok: true;
 			status?: RecordingStatus;
 			answer?: RTCSessionDescriptionInit;
+			devices?: MediaDeviceList;
 	  }
 	| {
 			ok: false;
@@ -274,6 +286,13 @@ export type ServiceWorkerRequest =
 	| {
 			target: "service-worker";
 			type: "get-camera-devices";
+	  }
+	| {
+			// Asks the offscreen document (a top-level extension page that holds the
+			// camera/mic grant) to enumerate devices, since the recorder panel runs
+			// as a cross-origin iframe where Chrome withholds device labels.
+			target: "service-worker";
+			type: "get-media-devices";
 	  }
 	| {
 			target: "service-worker";
@@ -389,6 +408,7 @@ export type ServiceWorkerResponse =
 			authError?: string | null;
 			bootstrap?: BootstrapData;
 			cameraDevices?: CameraDevice[];
+			microphoneDevices?: MicrophoneDevice[];
 			status?: RecordingStatus;
 			settings?: ExtensionSettings;
 			plan?: RecordingPlan;
