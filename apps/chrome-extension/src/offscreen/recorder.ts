@@ -45,6 +45,7 @@ import {
 import type {
 	ConnectCameraPreviewRequest,
 	ExtensionSettings,
+	MicrophoneProbeResult,
 	MicrophoneSettings,
 	OffscreenRequest,
 	OffscreenResponse,
@@ -507,6 +508,68 @@ const getMicrophoneStream = async (
 		return await navigator.mediaDevices.getUserMedia(constraints);
 	} catch {
 		return null;
+	}
+};
+
+// How long a probe listens before declaring the mic silent, and the peak
+// amplitude (time-domain, 0..1) that counts as sound. A muted/dead device
+// flat-lines near 0; a working mic's noise floor clears this threshold, so it
+// only flags an effectively-silent input.
+const MIC_PROBE_WINDOW_MS = 1200;
+const MIC_PROBE_SAMPLE_INTERVAL_MS = 50;
+const MIC_SOUND_MIN_PEAK = 0.0015;
+
+// Opens the selected mic and listens for any signal so the recorder can warn
+// before starting. Resolves as soon as sound is heard; only a genuinely silent
+// mic waits out the full window. Unlike a popup, the offscreen AudioContext is
+// not blocked by the page autoplay policy, so the analyser actually runs.
+const probeMicrophone = async (
+	microphone: MicrophoneSettings,
+): Promise<MicrophoneProbeResult> => {
+	if (!microphone.enabled) return { available: false, hasSound: false };
+
+	let stream: MediaStream;
+	try {
+		stream = await navigator.mediaDevices.getUserMedia({
+			audio: getAudioConstraint(microphone),
+			video: false,
+		});
+	} catch {
+		return { available: false, hasSound: false };
+	}
+
+	const context = new AudioContext();
+	try {
+		if (context.state === "suspended") {
+			await context.resume().catch(() => undefined);
+		}
+		const source = context.createMediaStreamSource(stream);
+		const analyser = context.createAnalyser();
+		analyser.fftSize = 2048;
+		source.connect(analyser);
+		const buffer = new Float32Array(analyser.fftSize);
+
+		const deadline = performance.now() + MIC_PROBE_WINDOW_MS;
+		let peak = 0;
+		while (performance.now() < deadline) {
+			analyser.getFloatTimeDomainData(buffer);
+			for (let i = 0; i < buffer.length; i += 1) {
+				const amplitude = Math.abs(buffer[i]);
+				if (amplitude > peak) peak = amplitude;
+			}
+			if (peak >= MIC_SOUND_MIN_PEAK) break;
+			await new Promise<void>((resolve) => {
+				window.setTimeout(resolve, MIC_PROBE_SAMPLE_INTERVAL_MS);
+			});
+		}
+		return { available: true, hasSound: peak >= MIC_SOUND_MIN_PEAK };
+	} catch {
+		// If the measurement itself fails, do not block the recording with a
+		// false silence warning.
+		return { available: true, hasSound: true };
+	} finally {
+		stopTracks(stream);
+		await context.close().catch(() => undefined);
 	}
 };
 
@@ -1586,6 +1649,10 @@ const handleRequest = async (
 
 	if (message.type === "enumerate-devices") {
 		return { ok: true, devices: await enumerateMediaDevices() };
+	}
+
+	if (message.type === "probe-microphone") {
+		return { ok: true, micProbe: await probeMicrophone(message.microphone) };
 	}
 
 	return { ok: true, status };
