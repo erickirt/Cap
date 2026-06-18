@@ -700,6 +700,30 @@ fn is_position_on_any_screen(pos_x: f64, pos_y: f64) -> bool {
     false
 }
 
+// Recovers a window that ended up entirely off every connected display (e.g. the
+// monitor it was on got disconnected), which otherwise leaves it open but unreachable.
+fn recenter_window_if_offscreen(window: &WebviewWindow) {
+    let Ok(position) = window.outer_position() else {
+        return;
+    };
+    let Ok(size) = window.outer_size() else {
+        return;
+    };
+    let scale = window.scale_factor().unwrap_or(1.0);
+
+    let on_screen = Display::list()
+        .iter()
+        .any(|display| display.intersects(position, size, scale));
+    if on_screen {
+        return;
+    }
+
+    let monitor = CursorMonitorInfo::get();
+    let (pos_x, pos_y) =
+        monitor.center_position(size.width as f64 / scale, size.height as f64 / scale);
+    let _ = window.set_position(tauri::LogicalPosition::new(pos_x, pos_y));
+}
+
 fn ensure_settings_window_bounds(window: &WebviewWindow) {
     const MIN_W: f64 = 780.0;
     const MIN_H: f64 = 560.0;
@@ -1328,6 +1352,10 @@ impl ShowCapWindow {
 
                 if let Self::Onboarding = self {
                     let _ = window.set_ignore_cursor_events(false);
+                }
+
+                if matches!(self, Self::Main { .. } | Self::Settings { .. }) {
+                    recenter_window_if_offscreen(&window);
                 }
 
                 window.show().ok();
