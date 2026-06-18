@@ -777,6 +777,18 @@ fn sanitize_filename_component_neutralizes_traversal_and_reserved_chars() {
         "Slack _ #general"
     );
     assert_eq!(sanitize_filename_component("plain title"), "plain title");
+    assert_eq!(sanitize_filename_component("{image_path}"), "_image_path_");
+    assert_eq!(sanitize_filename_component("report.  "), "report");
+    assert_eq!(
+        sanitize_filename_component("trailing dots..."),
+        "trailing dots"
+    );
+    assert_eq!(
+        sanitize_filename_component(&"a".repeat(200))
+            .chars()
+            .count(),
+        128
+    );
 }
 
 #[test]

@@ -428,14 +428,24 @@ pub fn load_store_from_json(value: &serde_json::Value) -> Option<AutomationsStor
 /// target directory (path traversal) or produce an invalid name. Replacing separators keeps the value
 /// a single component, so directories in the resolved path can only come from the user-authored template.
 pub fn sanitize_filename_component(value: &str) -> String {
-    value
+    let sanitized: String = value
         .chars()
         .map(|c| match c {
             '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            // Braces are template markers; replacing them stops a window title like `{image_path}`
+            // from acting as a live variable when the substituted value is run through a second
+            // template pass (e.g. notifications compose the filename and body templates).
+            '{' | '}' => '_',
             other if other.is_control() => '_',
             other => other,
         })
-        .collect()
+        .take(128)
+        .collect();
+
+    // Windows rejects filenames ending in a space or '.', so trim those after clamping the length.
+    sanitized
+        .trim_end_matches(|c: char| c == ' ' || c == '.')
+        .to_string()
 }
 
 /// Build a single shell command line from a program and its arguments, quoting each token so that
