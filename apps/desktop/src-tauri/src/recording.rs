@@ -2573,6 +2573,8 @@ pub async fn take_screenshot(
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     }
 
+    let automation_target = target.clone();
+
     let image = capture_screenshot(target)
         .await
         .map_err(|e| format!("Failed to capture screenshot: {e}"))?;
@@ -2701,6 +2703,12 @@ pub async fn take_screenshot(
                     path: image_path_for_emit.clone(),
                 }
                 .emit(&app_handle);
+
+                crate::automation::run_screenshot_automations(
+                    app_handle.clone(),
+                    image_path_for_emit.clone(),
+                    &automation_target,
+                );
 
                 notifications::send_notification(
                     &app_handle,
@@ -2876,6 +2884,63 @@ async fn handle_recording_end(
     Ok(())
 }
 
+fn compute_studio_duration_secs(recording_dir: &std::path::Path) -> f64 {
+    let Ok(meta) = RecordingMeta::load_for_project(recording_dir) else {
+        return 0.0;
+    };
+    let Some(studio_meta) = meta.studio_meta() else {
+        return 0.0;
+    };
+    ProjectRecordingsMeta::new(&recording_dir.to_path_buf(), studio_meta)
+        .map(|r| r.duration())
+        .unwrap_or(0.0)
+}
+
+async fn apply_post_studio_editor_behaviour(
+    app: &AppHandle,
+    recording_dir: PathBuf,
+    duration_secs: f64,
+) {
+    let default = GeneralSettingsStore::get(app)
+        .ok()
+        .flatten()
+        .map(|v| v.post_studio_recording_behaviour)
+        .unwrap_or(PostStudioRecordingBehaviour::OpenEditor);
+
+    match crate::automation::studio_recording_editor_behaviour(
+        app,
+        &recording_dir,
+        duration_secs,
+        default,
+    ) {
+        Some(PostStudioRecordingBehaviour::OpenEditor) => {
+            let _ = ShowCapWindow::Editor {
+                project_path: recording_dir,
+            }
+            .show(app)
+            .await;
+        }
+        Some(PostStudioRecordingBehaviour::ShowOverlay) => {
+            let _ = ShowCapWindow::RecordingsOverlay.show(app).await;
+
+            let app = AppHandle::clone(app);
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(1000)).await;
+                let _ = NewStudioRecordingAdded {
+                    path: recording_dir,
+                }
+                .emit(&app);
+            });
+        }
+        None => {
+            let _ = NewStudioRecordingAdded {
+                path: recording_dir,
+            }
+            .emit(app);
+        }
+    }
+}
+
 // runs when a recording successfully finishes
 async fn handle_recording_finish(
     app: &AppHandle,
@@ -2911,34 +2976,8 @@ async fn handle_recording_finish(
                 let finalizing_state = app.state::<FinalizingRecordings>();
                 finalizing_state.start_finalizing(recording_dir.clone());
 
-                let post_behaviour = GeneralSettingsStore::get(app)
-                    .ok()
-                    .flatten()
-                    .map(|v| v.post_studio_recording_behaviour)
-                    .unwrap_or(PostStudioRecordingBehaviour::OpenEditor);
-
-                match post_behaviour {
-                    PostStudioRecordingBehaviour::OpenEditor => {
-                        let _ = ShowCapWindow::Editor {
-                            project_path: recording_dir.clone(),
-                        }
-                        .show(app)
-                        .await;
-                    }
-                    PostStudioRecordingBehaviour::ShowOverlay => {
-                        let _ = ShowCapWindow::RecordingsOverlay.show(app).await;
-
-                        let app_clone = AppHandle::clone(app);
-                        let recording_dir_clone = recording_dir.clone();
-                        tokio::spawn(async move {
-                            tokio::time::sleep(Duration::from_millis(1000)).await;
-                            let _ = NewStudioRecordingAdded {
-                                path: recording_dir_clone,
-                            }
-                            .emit(&app_clone);
-                        });
-                    }
-                }
+                let duration = compute_studio_duration_secs(&recording_dir);
+                apply_post_studio_editor_behaviour(app, recording_dir.clone(), duration).await;
 
                 AppSounds::StopRecording.play();
 
@@ -2961,8 +3000,17 @@ async fn handle_recording_finish(
                     )
                     .await;
 
-                    if let Err(e) = result {
-                        error!("Failed to finalize recording: {e}");
+                    match result {
+                        Ok(()) => {
+                            let duration =
+                                compute_studio_duration_secs(&recording_dir_for_finalize);
+                            crate::automation::run_studio_recording_automations(
+                                app.clone(),
+                                recording_dir_for_finalize.clone(),
+                                duration,
+                            );
+                        }
+                        Err(e) => error!("Failed to finalize recording: {e}"),
                     }
 
                     app.state::<FinalizingRecordings>()
@@ -3079,6 +3127,12 @@ async fn handle_recording_finish(
 
                     if upload_succeeded {
                         info!("Segment upload succeeded");
+                        crate::automation::run_upload_completed_automations(
+                            app.clone(),
+                            recording_dir.clone(),
+                            Some(video_upload_info.link.clone()),
+                            Some(video_upload_info.id.clone()),
+                        );
                     } else {
                         crate::upload::emit_upload_complete(&app, &video_upload_info.id);
                     }
@@ -3137,6 +3191,8 @@ async fn handle_recording_finish(
         }
     };
 
+    let instant_share = sharing.as_ref().map(|s| (s.link.clone(), s.id.clone()));
+
     if let RecordingMetaInner::Instant(_) = &meta_inner
         && let Ok(mut meta) = RecordingMeta::load_for_project(&recording_dir).map_err(|err| {
             error!("Failed to load recording meta while saving finished recording: {err}")
@@ -3148,34 +3204,27 @@ async fn handle_recording_finish(
             .map_err(|e| format!("Failed to save recording meta: {e}"))?;
     }
 
-    if let RecordingMetaInner::Studio(_) = meta_inner {
-        match GeneralSettingsStore::get(app)
-            .ok()
-            .flatten()
-            .map(|v| v.post_studio_recording_behaviour)
-            .unwrap_or(PostStudioRecordingBehaviour::OpenEditor)
-        {
-            PostStudioRecordingBehaviour::OpenEditor => {
-                let _ = ShowCapWindow::Editor {
-                    project_path: recording_dir,
-                }
-                .show(app)
-                .await;
-            }
-            PostStudioRecordingBehaviour::ShowOverlay => {
-                let _ = ShowCapWindow::RecordingsOverlay.show(app).await;
-
-                let app = AppHandle::clone(app);
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(1000)).await;
-
-                    let _ = NewStudioRecordingAdded {
-                        path: recording_dir.clone(),
-                    }
-                    .emit(&app);
-                });
-            }
+    if let RecordingMetaInner::Instant(_) = &meta_inner {
+        let (link, id) = match instant_share {
+            Some((link, id)) => (Some(link), Some(id)),
+            None => (None, None),
         };
+        crate::automation::run_instant_recording_automations(
+            app.clone(),
+            recording_dir.clone(),
+            link,
+            id,
+        );
+    }
+
+    if let RecordingMetaInner::Studio(_) = meta_inner {
+        let duration = compute_studio_duration_secs(&recording_dir);
+        crate::automation::run_studio_recording_automations(
+            app.clone(),
+            recording_dir.clone(),
+            duration,
+        );
+        apply_post_studio_editor_behaviour(app, recording_dir, duration).await;
     }
 
     // Play sound to indicate recording has stopped
