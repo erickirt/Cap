@@ -258,13 +258,21 @@ impl AutomationHost for DesktopAutomationHost {
     }
 
     async fn open_file(&self, ctx: &TriggerContext) -> Result<(), String> {
+        use tauri_plugin_opener::OpenerExt;
+
         let path = ctx
             .image_path
             .as_ref()
             .or(ctx.output_path.as_ref())
             .ok_or("No file path available to open")?;
 
-        reveal_path(path)
+        let path_str = path.to_str().ok_or("Invalid path")?;
+        self.app
+            .opener()
+            .open_path(path_str, None::<String>)
+            .map_err(|e| format!("Failed to open file: {e}"))?;
+
+        Ok(())
     }
 
     async fn run_command(
