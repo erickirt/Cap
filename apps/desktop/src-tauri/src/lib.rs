@@ -4,6 +4,7 @@ mod api;
 mod audio;
 mod audio_meter;
 mod auth;
+mod automation;
 mod camera;
 mod camera_legacy;
 #[cfg(target_os = "macos")]
@@ -2130,9 +2131,8 @@ pub struct NewStudioRecordingAdded {
     path: PathBuf,
 }
 
-#[derive(specta::Type, tauri_specta::Event, Debug, Clone, Serialize)]
+#[derive(Deserialize, specta::Type, tauri_specta::Event, Debug, Clone, Serialize)]
 pub struct RecordingDeleted {
-    #[allow(unused)]
     path: PathBuf,
 }
 
@@ -4338,6 +4338,11 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
             recovery::find_incomplete_recordings,
             recovery::recover_recording,
             recovery::discard_incomplete_recording,
+            automation::get_automations,
+            automation::set_automations,
+            automation::test_automation,
+            automation::automation_should_open_screenshot_editor,
+            automation::list_automation_capabilities,
         ])
         .events(tauri_specta::collect_events![
             RecordingOptionsChanged,
@@ -4374,7 +4379,20 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
         .typ::<general_settings::GeneralSettingsStore>()
         .typ::<recording_settings::RecordingSettingsStore>()
         .typ::<cap_flags::Flags>()
-        .typ::<crate::window_exclusion::WindowExclusion>();
+        .typ::<crate::window_exclusion::WindowExclusion>()
+        .typ::<cap_automation::AutomationsStore>()
+        .typ::<cap_automation::AutomationRule>()
+        .typ::<cap_automation::Trigger>()
+        .typ::<cap_automation::Condition>()
+        .typ::<cap_automation::Action>()
+        .typ::<cap_automation::ExportProfile>()
+        .typ::<cap_automation::MatchMode>()
+        .typ::<cap_automation::CaptureTargetKind>()
+        .typ::<cap_automation::AutomationRecordingMode>()
+        .typ::<cap_automation::ClipboardSource>()
+        .typ::<cap_automation::ExportFormat>()
+        .typ::<cap_automation::AutomationExportCompression>()
+        .typ::<cap_automation::ExportDestination>();
 
     #[cfg(debug_assertions)]
     if let Err(err) = specta_builder.export(
@@ -4774,6 +4792,23 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
                     prewarmer.request(event.force).await;
                 } else {
                     warn!("ScreenCapturePrewarmer state unavailable during prewarm request");
+                }
+            });
+
+            RecordingStarted::listen_any_spawn(&app, async |_event, app| {
+                crate::automation::run_recording_started_automations(app);
+            });
+
+            RecordingDeleted::listen_any_spawn(&app, async |event, app| {
+                crate::automation::run_recording_deleted_automations(app, event.path);
+            });
+
+            import::VideoImportProgress::listen_any_spawn(&app, async |event, app| {
+                if matches!(event.stage, import::ImportStage::Complete) {
+                    crate::automation::run_video_imported_automations(
+                        app,
+                        std::path::PathBuf::from(event.project_path),
+                    );
                 }
             });
 

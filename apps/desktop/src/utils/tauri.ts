@@ -411,6 +411,21 @@ async recoverRecording(projectPath: string) : Promise<string> {
 },
 async discardIncompleteRecording(projectPath: string) : Promise<null> {
     return await TAURI_INVOKE("discard_incomplete_recording", { projectPath });
+},
+async getAutomations() : Promise<AutomationsStore> {
+    return await TAURI_INVOKE("get_automations");
+},
+async setAutomations(store: AutomationsStore) : Promise<null> {
+    return await TAURI_INVOKE("set_automations", { store });
+},
+async testAutomation(ruleId: string) : Promise<AutomationTestReport> {
+    return await TAURI_INVOKE("test_automation", { ruleId });
+},
+async automationShouldOpenScreenshotEditor(target: ScreenCaptureTarget) : Promise<boolean> {
+    return await TAURI_INVOKE("automation_should_open_screenshot_editor", { target });
+},
+async listAutomationCapabilities() : Promise<string[]> {
+    return await TAURI_INVOKE("list_automation_capabilities");
 }
 }
 
@@ -477,6 +492,7 @@ videoImportProgress: "video-import-progress"
 
 /** user-defined types **/
 
+export type Action = { type: "copyToClipboard"; source?: ClipboardSource } | { type: "saveToLocation"; dir: string; filenameTemplate?: string | null } | { type: "export"; profile: ExportProfile; destination?: ExportDestination } | { type: "upload"; organizationId?: string | null; copyLink?: boolean; openInBrowser?: boolean } | { type: "revealInFileManager" } | { type: "openFile" } | { type: "runCommand"; program: string; args?: string[]; cwd?: string | null; env?: { [key in string]: string }; useShell?: boolean } | { type: "webhook"; url: string; method?: string; headers?: { [key in string]: string }; bodyTemplate?: string | null } | { type: "recognizeTextToClipboard" } | { type: "notify"; titleTemplate?: string; bodyTemplate?: string } | { type: "openEditor" } | { type: "skipEditor" } | { type: "applyPreset"; name: string } | { type: "deleteLocalFiles" }
 export type Annotation = { id: string; type: AnnotationType; x: number; y: number; width: number; height: number; strokeColor: string; strokeWidth: number; fillColor: string; opacity: number; rotation: number; text: string | null; maskType?: MaskType | null; maskLevel?: number | null }
 export type AnnotationType = "arrow" | "circle" | "rectangle" | "text" | "mask"
 export type AppTheme = "system" | "light" | "dark"
@@ -510,6 +526,12 @@ export type AudioInputLevelChange = number
 export type AudioMeta = { path: string; start_time?: number | null; device_id?: string | null; gap_summary?: AudioGapSummary | null }
 export type AuthSecret = { api_key: string } | { token: string; expires: number }
 export type AuthStore = { secret: AuthSecret; user_id: string | null; plan: Plan | null; organizations?: Organization[]; organizations_updated_at?: number | null }
+export type AutomationActionCheck = { actionType: string; capability: string; supported: boolean }
+export type AutomationExportCompression = "maximum" | "social" | "web" | "potato"
+export type AutomationRecordingMode = "studio" | "instant"
+export type AutomationRule = { id: string; name: string; enabled?: boolean; trigger: Trigger; matchMode?: MatchMode; conditions?: Condition[]; actions?: Action[] }
+export type AutomationTestReport = { ruleId: string; ruleName: string; actionChecks: AutomationActionCheck[] }
+export type AutomationsStore = { version?: number; rules?: AutomationRule[] }
 export type BackgroundBlurConfig = { mode: BackgroundBlurMode }
 export type BackgroundBlurMode = "off" | "light" | "heavy"
 export type BackgroundConfiguration = { source: BackgroundSource; blur: number; padding: number; rounding: number; roundingType: CornerStyle; inset: number; crop: Crop | null; shadow: number; advancedShadow: ShadowConfiguration | null; border: BorderConfiguration | null }
@@ -534,6 +556,7 @@ export type CaptionWord = { text: string; start: number; end: number }
 export type CaptionsData = { segments: CaptionSegment[]; settings: CaptionSettings }
 export type CaptureDisplay = { id: DisplayId; name: string; refresh_rate: number }
 export type CaptureDisplayWithThumbnail = { id: DisplayId; name: string; refresh_rate: number; thumbnail: string | null }
+export type CaptureTargetKind = "display" | "window" | "area"
 export type CaptureWindow = { id: WindowId; owner_name: string; name: string; bounds: LogicalBounds; refresh_rate: number; bundle_identifier: string | null }
 export type CaptureWindowWithThumbnail = { id: WindowId; owner_name: string; name: string; bounds: LogicalBounds; refresh_rate: number; thumbnail: string | null; app_icon: string | null; bundle_identifier: string | null }
 export type CliInstallStatus = { installDir: string; shimPath: string; targetPath: string; installed: boolean; onPath: boolean; conflict: string | null; pathEntry: string; shellCommand: string; 
@@ -545,7 +568,9 @@ pathConfigured: boolean }
 export type ClickSpringConfig = { tension: number; mass: number; friction: number }
 export type ClipConfiguration = { index: number; offsets: ClipOffsets }
 export type ClipOffsets = { camera?: number; mic?: number; system_audio?: number }
+export type ClipboardSource = "raw" | "rendered"
 export type CommercialLicense = { licenseKey: string; expiryDate: number | null; refresh: number; activatedOn: number }
+export type Condition = { type: "captureTargetIs"; target: CaptureTargetKind } | { type: "recordingModeIs"; mode: AutomationRecordingMode } | { type: "durationAtLeast"; secs: number } | { type: "durationAtMost"; secs: number } | { type: "windowTitleContains"; pattern: string } | { type: "organizationIs"; id: string }
 export type CornerStyle = "squircle" | "rounded"
 export type Crop = { position: XY<number>; size: XY<number> }
 export type CurrentRecording = { target: CurrentRecordingTarget; mode: RecordingMode; status: RecordingStatus }
@@ -564,9 +589,12 @@ export type DownloadProgress = { progress: number; message: string }
 export type EditorPreviewQuality = "quarter" | "half" | "full"
 export type EditorStateChanged = { playhead_position: number }
 export type ExportCompression = "Maximum" | "Social" | "Web" | "Potato"
+export type ExportDestination = "projectFolder" | { customPath: { dir: string } }
 export type ExportEstimates = { duration_seconds: number; estimated_time_seconds: number; estimated_size_mb: number }
+export type ExportFormat = "mp4" | "gif" | "mov"
 export type ExportPreviewResult = { jpeg_base64: string; estimated_size_mb: number; actual_width: number; actual_height: number; frame_render_time_ms: number; total_frames: number }
 export type ExportPreviewSettings = { fps: number; resolution_base: XY<number>; compression_bpp: number; cursor_only?: boolean }
+export type ExportProfile = { format: ExportFormat; fps?: number; resolutionBase?: XY<number>; compression?: AutomationExportCompression | null; presetName?: string | null }
 export type ExportSettings = ({ format: "Mp4" } & Mp4ExportSettings) | ({ format: "Gif" } & GifExportSettings) | ({ format: "Mov" } & MovExportSettings)
 export type FileType = "recording" | "screenshot"
 export type Flags = { captions: boolean }
@@ -608,6 +636,7 @@ export type MaskScalarKeyframe = { time: number; value: number }
 export type MaskSegment = { start: number; end: number; track?: number; enabled?: boolean; maskType: MaskKind; center: XY<number>; size: XY<number>; feather?: number; opacity?: number; pixelation?: number; darkness?: number; fadeDuration?: number; keyframes?: MaskKeyframes }
 export type MaskType = "blur" | "pixelate"
 export type MaskVectorKeyframe = { time: number; x: number; y: number }
+export type MatchMode = "all" | "any"
 export type MicrophoneDeviceSettings = { sampleRate: number | null; channels: number | null }
 export type MicrophoneFormatInfo = { sampleRate: number; channels: number }
 export type MicrophoneInfo = { name: string; sampleRate: number; channels: number; formats: MicrophoneFormatInfo[] }
@@ -682,6 +711,7 @@ export type TextSegment = { start: number; end: number; track?: number; enabled?
 export type TimelineConfiguration = { segments: TimelineSegment[]; zoomSegments: ZoomSegment[]; sceneSegments?: SceneSegment[]; maskSegments?: MaskSegment[]; textSegments?: TextSegment[]; captionSegments?: CaptionTrackSegment[]; keyboardSegments?: KeyboardTrackSegment[] }
 export type TimelineSegment = { recordingSegment?: number; timescale: number; start: number; end: number }
 export type TranscriptionEngine = "Whisper" | "Parakeet"
+export type Trigger = "screenshotTaken" | "studioRecordingFinished" | "instantRecordingFinished" | "recordingStarted" | "uploadCompleted" | "videoImported" | "recordingDeleted"
 export type UploadMeta = { state: "MultipartUpload"; video_id: string; file_path: string; pre_created_video: VideoUploadInfo; recording_dir: string } | { state: "SinglePartUpload"; video_id: string; recording_dir: string; file_path: string; screenshot_path: string } | { state: "SegmentUpload"; video_id: string; pre_created_video: VideoUploadInfo; recording_dir: string } | { state: "Failed"; error: string } | { state: "Complete" }
 export type UploadMode = { Initial: { pre_created_video: VideoUploadInfo | null } } | "Reupload"
 export type UploadProgress = { progress: number }

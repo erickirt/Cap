@@ -30,6 +30,7 @@ import {
 } from "~/utils/web-api";
 import IconLucideTerminal from "~icons/lucide/terminal";
 import IconLucideUserRound from "~icons/lucide/user-round";
+import IconLucideZap from "~icons/lucide/zap";
 
 const USER_PROFILE_CACHE_GC_MS = 2 * 60 * 60 * 1000;
 const USER_PROFILE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -215,6 +216,11 @@ export default function Settings(props: RouteSectionProps) {
 			href: "screenshots",
 			name: "Screenshots",
 			icon: IconLucideImage,
+		},
+		{
+			href: "automations",
+			name: "Automations",
+			icon: IconLucideZap,
 		},
 		{
 			href: "transcription",

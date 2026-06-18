@@ -2,6 +2,7 @@ pub mod gif;
 pub mod mov;
 pub mod mp4;
 pub mod preview;
+pub mod settings;
 
 use cap_editor::SegmentMedia;
 use cap_project::{

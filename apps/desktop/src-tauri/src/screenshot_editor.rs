@@ -757,9 +757,18 @@ pub async fn create_screenshot_editor_instance(
 /// that cost into background startup time; the compiled pipelines are cached on the
 /// shared device, so the first editor open renders immediately.
 pub async fn prewarm_screenshot_renderer() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static PREWARMED: AtomicBool = AtomicBool::new(false);
+    if PREWARMED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
     let Some(gpu) = gpu_context::get_shared_gpu().await else {
         return;
     };
+
+    let _ = tokio::task::spawn_blocking(cap_rendering::prewarm_fonts).await;
 
     let started = Instant::now();
 
@@ -950,6 +959,35 @@ pub async fn recognize_screenshot_text(
     }
 
     Ok(result)
+}
+
+pub async fn recognize_text_from_image_path(path: &std::path::Path) -> Result<String, String> {
+    let dynamic = image::open(path).map_err(|e| format!("Failed to open image for OCR: {e}"))?;
+    let rgba = dynamic.to_rgba8();
+    let width = rgba.width();
+    let height = rgba.height();
+
+    if width == 0 || height == 0 {
+        return Err("Image is empty".to_string());
+    }
+
+    let rgba_bytes = rgba.into_raw();
+    let mut bgra = vec![0u8; rgba_bytes.len()];
+    for (src, dst) in rgba_bytes.chunks_exact(4).zip(bgra.chunks_exact_mut(4)) {
+        dst[0] = src[2];
+        dst[1] = src[1];
+        dst[2] = src[0];
+        dst[3] = src[3];
+    }
+
+    let image = ScreenshotOcrImage {
+        bgra,
+        width,
+        height,
+    };
+
+    let result = recognize_screenshot_ocr_image(image).await?;
+    Ok(result.text)
 }
 
 fn clamp_screenshot_ocr_region(
