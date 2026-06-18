@@ -1,4 +1,7 @@
-use std::process::{Command, Output};
+use std::process::Command;
+
+#[cfg(not(windows))]
+use std::process::Output;
 
 use serde::Serialize;
 
