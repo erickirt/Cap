@@ -2651,7 +2651,13 @@ pub async fn take_screenshot(
     meta.save_for_project()
         .map_err(|e| format!("Failed to save recording meta: {e}"))?;
 
-    cap_project::ProjectConfiguration::default()
+    let mut screenshot_config = cap_project::ProjectConfiguration::default();
+    screenshot_config.background.source = cap_project::BackgroundSource::Color {
+        value: [255, 255, 255],
+        alpha: 0,
+    };
+    screenshot_config.background.shadow = 0.0;
+    screenshot_config
         .write(&project_file_path)
         .map_err(|e| format!("Failed to save project config: {e}"))?;
 
