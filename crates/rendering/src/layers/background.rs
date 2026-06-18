@@ -7,6 +7,8 @@ use wgpu::{include_wgsl, util::DeviceExt};
 
 use crate::{ProjectUniforms, RenderVideoConstants, RenderingError, create_shader_render_pipeline};
 
+const MAX_BACKGROUND_DIMENSION: u32 = 2560;
+
 #[derive(PartialEq, Debug, Clone, Copy, Serialize, Deserialize, Type)]
 pub struct Gradient {
     start: [f32; 4],
@@ -152,6 +154,28 @@ impl BackgroundLayer {
                                         return Ok(());
                                     }
                                 };
+                                let max_dimension = MAX_BACKGROUND_DIMENSION
+                                    .min(device.limits().max_texture_dimension_2d);
+                                let (source_width, source_height) = img.dimensions();
+                                let img = if source_width > max_dimension
+                                    || source_height > max_dimension
+                                {
+                                    tracing::info!(
+                                        "Downscaling background image '{}' from {}x{} to fit within {}px",
+                                        path,
+                                        source_width,
+                                        source_height,
+                                        max_dimension
+                                    );
+                                    img.resize(
+                                        max_dimension,
+                                        max_dimension,
+                                        image::imageops::FilterType::Triangle,
+                                    )
+                                } else {
+                                    img
+                                };
+
                                 let rgba = img.to_rgba8();
                                 let dimensions = img.dimensions();
 
