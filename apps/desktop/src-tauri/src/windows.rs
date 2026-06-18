@@ -1595,8 +1595,26 @@ impl ShowCapWindow {
                     window_builder = window_builder.inner_size(100.0, 100.0).position(0.0, 0.0);
                 }
 
+                #[cfg(target_os = "linux")]
+                {
+                    let position = display.raw_handle().physical_position().unwrap();
+                    let size = display.physical_size().unwrap();
+                    window_builder = window_builder
+                        .inner_size(size.width(), size.height())
+                        .position(position.x(), position.y());
+                }
+
                 let window = window_builder.build()?;
                 lock_window_text_scale(&window);
+
+                #[cfg(target_os = "linux")]
+                {
+                    use tauri::{LogicalSize, PhysicalPosition};
+                    let position = display.raw_handle().physical_position().unwrap();
+                    let size = display.physical_size().unwrap();
+                    let _ = window.set_position(PhysicalPosition::new(position.x(), position.y()));
+                    let _ = window.set_size(LogicalSize::new(size.width(), size.height()));
+                }
 
                 #[cfg(windows)]
                 {
@@ -2297,8 +2315,26 @@ impl ShowCapWindow {
                         .position(bounds.position().x(), bounds.position().y());
                 }
 
+                #[cfg(target_os = "linux")]
+                if let Some(bounds) = display.raw_handle().physical_bounds() {
+                    window_builder = window_builder
+                        .inner_size(bounds.size().width(), bounds.size().height())
+                        .position(bounds.position().x(), bounds.position().y());
+                }
+
                 let window = window_builder.build()?;
                 lock_window_text_scale(&window);
+
+                #[cfg(target_os = "linux")]
+                if let Some(bounds) = display.raw_handle().physical_bounds() {
+                    use tauri::{LogicalSize, PhysicalPosition};
+                    let _ = window.set_position(PhysicalPosition::new(
+                        bounds.position().x(),
+                        bounds.position().y(),
+                    ));
+                    let _ = window
+                        .set_size(LogicalSize::new(bounds.size().width(), bounds.size().height()));
+                }
 
                 #[cfg(target_os = "macos")]
                 crate::platform::set_window_level(
@@ -2638,6 +2674,13 @@ impl ShowCapWindow {
         #[cfg(windows)]
         {
             builder = builder.decorations(false).zoom_hotkeys_enabled(false);
+        }
+
+        // Linux has no native macOS-style traffic lights, so we drop the window
+        // manager decorations and draw our own chrome (matching the macOS layout).
+        #[cfg(target_os = "linux")]
+        {
+            builder = builder.decorations(false);
         }
 
         builder
