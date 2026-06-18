@@ -111,7 +111,7 @@ const UpgradeModalImpl = ({
 		{
 			icon: <Database className={iconStyling} />,
 			title: "Custom storage",
-			description: "Connect your own S3 bucket",
+			description: "Connect your own Google Drive or S3 bucket",
 		},
 		{
 			icon: <Shield className={iconStyling} />,
