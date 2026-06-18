@@ -2,7 +2,7 @@
 "use client";
 
 import { Button } from "@cap/ui";
-import { faPlay } from "@fortawesome/free-solid-svg-icons";
+import { faArrowRight, faPlay } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
@@ -11,6 +11,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { Fragment, useEffect, useState, useTransition } from "react";
 import { sendDownloadLink } from "@/actions/send-download-link";
+import { LoomMark } from "@/components/icons/LoomMark";
 import { LogoMarquee } from "@/components/ui/LogoMarquee";
 import {
 	getDownloadButtonText,
@@ -398,6 +399,26 @@ const Header = ({ serverHomepageCopyVariant = "" }: HeaderProps) => {
 								}
 							/>
 						</div>
+					</motion.div>
+
+					<motion.div
+						className="flex justify-center mb-3 md:justify-start"
+						initial="hidden"
+						animate="visible"
+						custom={5}
+						variants={fadeIn}
+					>
+						<Link
+							href="/migrate-from-loom"
+							className="inline-flex gap-2 items-center text-sm font-medium transition-colors group text-gray-11 hover:text-gray-12"
+						>
+							<LoomMark size={15} />
+							Coming from Loom? Bring your library with you
+							<FontAwesomeIcon
+								icon={faArrowRight}
+								className="size-3 text-gray-9 transition-transform group-hover:translate-x-0.5"
+							/>
+						</Link>
 					</motion.div>
 
 					<motion.p
