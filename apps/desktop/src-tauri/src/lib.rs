@@ -5728,6 +5728,8 @@ async fn create_editor_instance_impl(
 
     wait_for_recording_ready(&app, &path).await?;
 
+    recording::spawn_heal_oversized_desktop_background_snapshots(path.clone());
+
     let shared_device =
         gpu_context::get_shared_gpu()
             .await
