@@ -18,7 +18,7 @@ use ffmpeg::{
 };
 use image::ImageEncoder;
 use relative_path::{Component as RelativeComponent, RelativePathBuf};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::{
     collections::HashMap,
@@ -43,7 +43,7 @@ const KEYBOARD_IMPORT_EXTENSIONS: &[&str] = &["bin", "json"];
 const CURSOR_EVENTS_IMPORT_EXTENSIONS: &[&str] = &["json"];
 const MAX_IMAGE_DIMENSION: u32 = 16_384;
 
-#[derive(Serialize, Type, Clone, Debug)]
+#[derive(Serialize, Deserialize, Type, Clone, Debug)]
 pub enum ImportStage {
     Probing,
     Converting,
@@ -52,7 +52,7 @@ pub enum ImportStage {
     Failed,
 }
 
-#[derive(Serialize, Type, tauri_specta::Event, Clone, Debug)]
+#[derive(Serialize, Deserialize, Type, tauri_specta::Event, Clone, Debug)]
 pub struct VideoImportProgress {
     pub project_path: String,
     pub stage: ImportStage,
