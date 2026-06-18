@@ -64,14 +64,6 @@ const RESIZE_HANDLE_HEIGHT = 16;
 const MIN_PLAYER_HEIGHT = MIN_PLAYER_CONTENT_HEIGHT + RESIZE_HANDLE_HEIGHT;
 const TIMELINE_RESIZE_GRIP_MARKS = [0, 1, 2] as const;
 
-function logCropProfile(
-	stage: string,
-	data: Record<string, number | string | boolean | null> = {},
-) {
-	if (!import.meta.env.DEV) return;
-	console.info("[crop-profile]", stage, data);
-}
-
 function getEditorErrorMessage(error: unknown) {
 	return error instanceof Error ? error.message : String(error);
 }
@@ -699,14 +691,11 @@ function Dialogs() {
 
 	return (
 		<Dialog.Root
-			size={(() => {
-				const d = dialog();
-				if ("type" in d && d.type === "crop") return "lg";
-				return "sm";
-			})()}
+			size="sm"
 			contentClass={(() => {
 				const d = dialog();
 				if ("type" in d && d.type === "export") return "max-w-[740px]";
+				if ("type" in d && d.type === "crop") return "max-w-[1180px]";
 				return "";
 			})()}
 			open={isDialogType()}
@@ -852,207 +841,187 @@ function Dialogs() {
 							})()}
 						>
 							{(dialog) => {
-								const { setProject: setState, editorInstance } =
-									useEditorContext();
+								const {
+									setProject: setState,
+									editorInstance,
+									editorState,
+									canvasControls,
+									latestFrame,
+									previewResolutionBase,
+								} = useEditorContext();
 								const display = editorInstance.recordings.segments[0].display;
 
 								let cropperRef: CropperRef | undefined;
+								let previewCanvas: HTMLCanvasElement | undefined;
 								const [crop, setCrop] = createSignal(CROP_ZERO);
 								const [aspect, setAspect] = createSignal<Ratio | null>(null);
 
-								const initialPreviewUrl = dialog().previewUrl ?? null;
-								const [frameBlobUrl, setFrameBlobUrl] = createSignal<
-									string | null
-								>(initialPreviewUrl);
-								const [frameSource, setFrameSource] = createSignal<
-									"captured-preview" | "accurate-frame" | "screenshot"
-								>(initialPreviewUrl ? "captured-preview" : "screenshot");
-								const cropOpenedAt = performance.now();
+								const [frameUrl, setFrameUrl] = createSignal<string | null>(
+									null,
+								);
+								const [frameLoaded, setFrameLoaded] = createSignal(false);
+								const [frameError, setFrameError] = createSignal(false);
+								const [previewReady, setPreviewReady] = createSignal(false);
 								const screenshotSrc = convertFileSrc(
 									`${editorInstance.path}/screenshots/display.jpg`,
 								);
 
 								let cancelled = false;
-								let frameLoadDelayTimeoutId:
-									| ReturnType<typeof globalThis.setTimeout>
-									| undefined;
-								let frameLoadTimeoutId:
-									| ReturnType<typeof globalThis.setTimeout>
-									| undefined;
-								let frameLoadIdleId: number | undefined;
-								let accurateFrameRequested = false;
-								const idleWindow = globalThis as typeof globalThis & {
-									requestIdleCallback?: (
-										callback: () => void,
-										options?: { timeout?: number },
-									) => number;
-									cancelIdleCallback?: (handle: number) => void;
-								};
 
-								const clearScheduledAccurateFrame = () => {
-									if (frameLoadDelayTimeoutId !== undefined) {
-										globalThis.clearTimeout(frameLoadDelayTimeoutId);
-										frameLoadDelayTimeoutId = undefined;
-									}
-									if (frameLoadIdleId !== undefined) {
-										idleWindow.cancelIdleCallback?.(frameLoadIdleId);
-										frameLoadIdleId = undefined;
-									}
-									if (frameLoadTimeoutId !== undefined) {
-										globalThis.clearTimeout(frameLoadTimeoutId);
-										frameLoadTimeoutId = undefined;
-									}
-								};
-
-								const setPreviewBlob = (
-									blob: Blob,
-									source: "accurate-frame",
-								) => {
-									const nextUrl = URL.createObjectURL(blob);
-									const previousUrl = frameBlobUrl();
-									setFrameBlobUrl(nextUrl);
-									setFrameSource(source);
-									if (previousUrl) {
-										URL.revokeObjectURL(previousUrl);
-									}
-								};
-
-								const requestAccurateFrame = (reason: string) => {
-									if (accurateFrameRequested || cancelled) return;
-
-									clearScheduledAccurateFrame();
-
-									accurateFrameRequested = true;
-									const frameRequestStartedAt = performance.now();
-									logCropProfile("accurate-frame-request-start", {
-										elapsedMs: Number(
-											(frameRequestStartedAt - cropOpenedAt).toFixed(2),
-										),
-										reason,
-									});
-
-									void commands
-										.getDisplayFrameForCropping(FPS)
-										.then((pngBytes) => {
-											if (cancelled) return;
-
-											setPreviewBlob(
-												new Blob([new Uint8Array(pngBytes)], {
-													type: "image/png",
+								// The crop must operate on the raw display recording (no
+								// padding/background/zoom baked in), decoded at the current
+								// playhead so it matches what the user is looking at.
+								void commands
+									.getDisplayFrameForCropping(FPS)
+									.then((bytes) => {
+										if (cancelled) return;
+										setFrameUrl(
+											URL.createObjectURL(
+												new Blob([new Uint8Array(bytes)], {
+													type: "image/jpeg",
 												}),
-												"accurate-frame",
-											);
-											logCropProfile("accurate-frame-request-finish", {
-												elapsedMs: Number(
-													(performance.now() - cropOpenedAt).toFixed(2),
-												),
-												requestMs: Number(
-													(performance.now() - frameRequestStartedAt).toFixed(
-														2,
-													),
-												),
-												reason,
-											});
-										})
-										.catch((error: unknown) => {
-											if (cancelled) return;
-											console.warn("Display frame fetch failed:", error);
-											logCropProfile("accurate-frame-request-failed", {
-												elapsedMs: Number(
-													(performance.now() - cropOpenedAt).toFixed(2),
-												),
-												requestMs: Number(
-													(performance.now() - frameRequestStartedAt).toFixed(
-														2,
-													),
-												),
-												message:
-													error instanceof Error
-														? error.message
-														: String(error),
-												reason,
-											});
-										});
-								};
-
-								const scheduleAccurateFrame = (
-									reason: string,
-									options: {
-										delayMs?: number;
-										idleTimeoutMs: number;
-										fallbackDelayMs: number;
-									},
-								) => {
-									const queueIdleFrame = () => {
-										const loadFrame = () => requestAccurateFrame(reason);
-
-										if (idleWindow.requestIdleCallback) {
-											frameLoadIdleId = idleWindow.requestIdleCallback(
-												() => {
-													frameLoadIdleId = undefined;
-													loadFrame();
-												},
-												{
-													timeout: options.idleTimeoutMs,
-												},
-											);
-											return;
-										}
-
-										frameLoadTimeoutId = globalThis.setTimeout(() => {
-											frameLoadTimeoutId = undefined;
-											loadFrame();
-										}, options.fallbackDelayMs);
-									};
-
-									if (!options.delayMs) {
-										queueIdleFrame();
-										return;
-									}
-
-									frameLoadDelayTimeoutId = globalThis.setTimeout(() => {
-										frameLoadDelayTimeoutId = undefined;
-										if (cancelled || accurateFrameRequested) return;
-										queueIdleFrame();
-									}, options.delayMs);
-								};
-
-								onMount(() => {
-									logCropProfile("dialog-mounted", {
-										elapsedMs: Number(
-											(performance.now() - cropOpenedAt).toFixed(2),
-										),
-										recordingDurationSec: Math.round(
-											editorInstance.recordingDuration,
-										),
+											),
+										);
+									})
+									.catch((error: unknown) => {
+										if (cancelled) return;
+										console.warn("Display frame fetch failed:", error);
+										setFrameError(true);
 									});
 
-									if (initialPreviewUrl) {
-										logCropProfile("accurate-frame-skipped", {
-											elapsedMs: Number(
-												(performance.now() - cropOpenedAt).toFixed(2),
-											),
-											recordingDurationSec: Math.round(
-												editorInstance.recordingDuration,
-											),
-											reason: "current-preview-available",
-										});
-										return;
-									}
-
-									scheduleAccurateFrame("immediate", {
-										idleTimeoutMs: 500,
-										fallbackDelayMs: 16,
-									});
+								const [viewport, setViewport] = createSignal({
+									w: window.innerWidth,
+									h: window.innerHeight,
 								});
+								const onViewportResize = () =>
+									setViewport({
+										w: window.innerWidth,
+										h: window.innerHeight,
+									});
+								window.addEventListener("resize", onViewportResize);
+
+								const boxSize = createMemo(() => {
+									const { w: vw, h: vh } = viewport();
+									const ratio = display.width / display.height;
+									const maxW = Math.min(vw * 0.4, 520);
+									const maxH = Math.min(vh * 0.5, 520);
+									let w = maxW;
+									let h = w / ratio;
+									if (h > maxH) {
+										h = maxH;
+										w = h * ratio;
+									}
+									return { w: Math.round(w), h: Math.round(h) };
+								});
+
+								const currentFrameNumber = () =>
+									Math.max(
+										Math.floor(
+											(editorState.previewTime ?? editorState.playbackTime) *
+												FPS,
+										),
+										0,
+									);
+
+								const drawPreview = () => {
+									if (
+										previewCanvas &&
+										canvasControls()?.drawLatestFrameToCanvas(previewCanvas)
+									) {
+										if (!previewReady()) setPreviewReady(true);
+									}
+								};
+
+								// Render the live composited preview through the real GPU
+								// pipeline so it is pixel-accurate. Updates are single-flighted
+								// to keep dragging smooth under load.
+								let configUpdateInFlight = false;
+								let pendingConfig: {
+									config: ReturnType<typeof getPreviewProjectConfig>;
+									frameNumber: number;
+									resolutionBase: ReturnType<typeof previewResolutionBase>;
+								} | null = null;
+
+								const flushConfig = async () => {
+									if (configUpdateInFlight) return;
+									const next = pendingConfig;
+									if (!next) return;
+									pendingConfig = null;
+									configUpdateInFlight = true;
+									try {
+										await commands.updateProjectConfigInMemory(
+											next.config,
+											next.frameNumber,
+											FPS,
+											next.resolutionBase,
+										);
+									} catch (e) {
+										console.error("[Crop] preview render failed:", e);
+									} finally {
+										configUpdateInFlight = false;
+										if (pendingConfig) void flushConfig();
+									}
+								};
+
+								const queueConfig = (bounds: CropBounds | null) => {
+									const config = getPreviewProjectConfig(project, editorState);
+									if (bounds) {
+										config.background = {
+											...config.background,
+											crop: {
+												position: { x: bounds.x, y: bounds.y },
+												size: { x: bounds.width, y: bounds.height },
+											},
+										};
+									}
+									pendingConfig = {
+										config,
+										frameNumber: currentFrameNumber(),
+										resolutionBase: previewResolutionBase(),
+									};
+									void flushConfig();
+								};
+
+								const throttledConfig = throttle(queueConfig, 1000 / FPS);
+								const trailingConfig = debounce(queueConfig, 1000 / FPS + 16);
+
+								let lastPushed: CropBounds = {
+									x: dialog().position.x,
+									y: dialog().position.y,
+									width: dialog().size.x,
+									height: dialog().size.y,
+								};
+
+								createEffect(
+									on(
+										crop,
+										(bounds) => {
+											if (bounds.width <= 0 || bounds.height <= 0) return;
+											if (
+												bounds.x === lastPushed.x &&
+												bounds.y === lastPushed.y &&
+												bounds.width === lastPushed.width &&
+												bounds.height === lastPushed.height
+											)
+												return;
+											lastPushed = bounds;
+											throttledConfig(bounds);
+											trailingConfig(bounds);
+										},
+										{ defer: true },
+									),
+								);
+
+								createEffect(on(latestFrame, () => drawPreview()));
 
 								onCleanup(() => {
 									cancelled = true;
-									clearScheduledAccurateFrame();
-									const url = frameBlobUrl();
-									if (url) {
-										URL.revokeObjectURL(url);
-									}
+									window.removeEventListener("resize", onViewportResize);
+									throttledConfig.clear();
+									trailingConfig.clear();
+									const url = frameUrl();
+									if (url) URL.revokeObjectURL(url);
+									queueConfig(null);
 								});
 
 								const initialBounds = {
@@ -1201,51 +1170,110 @@ function Dialogs() {
 											</div>
 										</Dialog.Header>
 										<Dialog.Content>
-											<div class="flex flex-row justify-center">
-												<div class="rounded-sm divide-black-transparent-10">
-													<Cropper
-														ref={cropperRef}
-														onCropChange={setCrop}
-														aspectRatio={aspect() ?? undefined}
-														targetSize={{ x: display.width, y: display.height }}
-														initialCrop={initialBounds}
-														snapToRatioEnabled={snapToRatio()}
-														useBackdropFilter={true}
-														allowLightMode={true}
-														onContextMenu={(e) => showCropOptionsMenu(e, true)}
+											<div class="flex flex-row gap-3 justify-center items-stretch">
+												<div class="flex flex-col gap-2.5">
+													<span class="px-1 text-[11px] font-medium tracking-wide uppercase text-gray-10">
+														Crop area
+													</span>
+													<div
+														class="overflow-hidden relative rounded-xl border shadow-sm border-gray-3 bg-gray-3"
+														style={{
+															width: `${boxSize().w}px`,
+															height: `${boxSize().h}px`,
+														}}
 													>
-														<img
-															class="shadow-sm pointer-events-none max-h-[70vh]"
-															alt="Current frame"
-															onError={() => {
-																const failedSource = frameSource();
-																logCropProfile("preview-image-failed", {
-																	elapsedMs: Number(
-																		(performance.now() - cropOpenedAt).toFixed(
-																			2,
-																		),
-																	),
-																	source: failedSource,
-																});
-																requestAccurateFrame(
-																	failedSource === "screenshot"
-																		? "screenshot-load-failed"
-																		: "preview-load-failed",
-																);
-															}}
-															onLoad={() =>
-																logCropProfile("preview-image-loaded", {
-																	elapsedMs: Number(
-																		(performance.now() - cropOpenedAt).toFixed(
-																			2,
-																		),
-																	),
-																	source: frameSource(),
-																})
-															}
-															src={frameBlobUrl() ?? screenshotSrc}
+														<div
+															class="w-full h-full transition-opacity duration-200"
+															classList={{ "opacity-0": !frameLoaded() }}
+														>
+															<Cropper
+																ref={cropperRef}
+																onCropChange={setCrop}
+																aspectRatio={aspect() ?? undefined}
+																targetSize={{
+																	x: display.width,
+																	y: display.height,
+																}}
+																initialCrop={initialBounds}
+																snapToRatioEnabled={snapToRatio()}
+																useBackdropFilter={true}
+																allowLightMode={true}
+																onContextMenu={(e) =>
+																	showCropOptionsMenu(e, true)
+																}
+															>
+																<img
+																	class="block w-full h-full pointer-events-none select-none"
+																	alt="Current frame"
+																	onError={() => {
+																		const url = frameUrl();
+																		if (url) {
+																			setFrameUrl(null);
+																			URL.revokeObjectURL(url);
+																		}
+																		setFrameError(true);
+																	}}
+																	onLoad={() => setFrameLoaded(true)}
+																	src={
+																		frameUrl() ??
+																		(frameError() ? screenshotSrc : undefined)
+																	}
+																/>
+															</Cropper>
+														</div>
+														<Show when={!frameLoaded()}>
+															<div class="flex absolute inset-0 z-40 flex-col gap-3 justify-center items-center bg-gray-3">
+																<div class="rounded-full border-2 animate-spin size-7 border-gray-5 border-t-blue-9" />
+																<span class="text-xs font-medium text-gray-10">
+																	Loading frame…
+																</span>
+															</div>
+														</Show>
+													</div>
+												</div>
+
+												<div
+													class="flex justify-center items-center self-end text-gray-8"
+													style={{ height: `${boxSize().h}px` }}
+												>
+													<svg
+														aria-hidden="true"
+														viewBox="0 0 24 24"
+														fill="none"
+														stroke="currentColor"
+														stroke-width="2"
+														stroke-linecap="round"
+														stroke-linejoin="round"
+														class="size-5"
+													>
+														<path d="m9 18 6-6-6-6" />
+													</svg>
+												</div>
+
+												<div class="flex flex-col gap-2.5">
+													<span class="px-1 text-[11px] font-medium tracking-wide uppercase text-gray-10">
+														Preview
+													</span>
+													<div
+														class="flex overflow-hidden relative justify-center items-center rounded-xl border shadow-sm border-gray-3 bg-gray-3"
+														style={{
+															width: `${boxSize().w}px`,
+															height: `${boxSize().h}px`,
+														}}
+													>
+														<canvas
+															ref={previewCanvas}
+															class="block object-contain max-w-full max-h-full"
 														/>
-													</Cropper>
+														<Show when={!previewReady()}>
+															<div class="flex absolute inset-0 z-40 flex-col gap-3 justify-center items-center bg-gray-3">
+																<div class="rounded-full border-2 animate-spin size-7 border-gray-5 border-t-blue-9" />
+																<span class="text-xs font-medium text-gray-10">
+																	Rendering preview…
+																</span>
+															</div>
+														</Show>
+													</div>
 												</div>
 											</div>
 										</Dialog.Content>
