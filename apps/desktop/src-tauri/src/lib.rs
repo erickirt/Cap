@@ -3711,7 +3711,7 @@ async fn get_display_frame_for_cropping(
 ) -> Result<Vec<u8>, String> {
     use cap_project::ClipOffsets;
     use cap_rendering::{PixelFormat, cpu_yuv};
-    use image::{ImageEncoder, codecs::png::PngEncoder};
+    use image::{ImageEncoder, codecs::jpeg::JpegEncoder};
     use std::io::Cursor;
     use std::time::Instant;
 
@@ -3793,11 +3793,44 @@ async fn get_display_frame_for_cropping(
     let convert_elapsed_ms = convert_started_at.elapsed().as_secs_f64() * 1000.0;
 
     let encode_started_at = Instant::now();
-    let mut png_data = Cursor::new(Vec::new());
-    let encoder = PngEncoder::new(&mut png_data);
-    encoder
-        .write_image(&rgba_data, width, height, image::ExtendedColorType::Rgba8)
-        .map_err(|e| format!("Failed to encode PNG: {e}"))?;
+
+    // The cropper maps interactions back to full display dimensions, so the
+    // reference image only needs to be sharp enough to position the crop. A
+    // downscaled JPEG keeps decode + IPC transfer near-instant even when the
+    // playhead is deep into a long recording.
+    const MAX_PREVIEW_DIM: u32 = 1440;
+
+    let rgba_image = image::RgbaImage::from_raw(width, height, rgba_data)
+        .ok_or_else(|| "Failed to build image buffer from frame".to_string())?;
+
+    let longest_side = width.max(height);
+    let resized = if longest_side > MAX_PREVIEW_DIM {
+        let scale = MAX_PREVIEW_DIM as f32 / longest_side as f32;
+        let target_w = ((width as f32 * scale).round() as u32).max(1);
+        let target_h = ((height as f32 * scale).round() as u32).max(1);
+        image::imageops::resize(
+            &rgba_image,
+            target_w,
+            target_h,
+            image::imageops::FilterType::Triangle,
+        )
+    } else {
+        rgba_image
+    };
+
+    let rgb_image = image::DynamicImage::ImageRgba8(resized).into_rgb8();
+    let out_width = rgb_image.width();
+    let out_height = rgb_image.height();
+
+    let mut jpeg_data = Cursor::new(Vec::new());
+    JpegEncoder::new_with_quality(&mut jpeg_data, 82)
+        .write_image(
+            rgb_image.as_raw(),
+            out_width,
+            out_height,
+            image::ExtendedColorType::Rgb8,
+        )
+        .map_err(|e| format!("Failed to encode JPEG: {e}"))?;
     let encode_elapsed_ms = encode_started_at.elapsed().as_secs_f64() * 1000.0;
     let total_elapsed_ms = total_started_at.elapsed().as_secs_f64() * 1000.0;
 
@@ -3808,6 +3841,8 @@ async fn get_display_frame_for_cropping(
         segment_time = segment_time,
         width = width,
         height = height,
+        out_width = out_width,
+        out_height = out_height,
         lookup_ms = lookup_elapsed_ms,
         decode_ms = decode_elapsed_ms,
         convert_ms = convert_elapsed_ms,
@@ -3816,7 +3851,7 @@ async fn get_display_frame_for_cropping(
         "crop frame profile"
     );
 
-    Ok(png_data.into_inner())
+    Ok(jpeg_data.into_inner())
 }
 
 #[tauri::command]
