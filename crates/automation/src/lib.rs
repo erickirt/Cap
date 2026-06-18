@@ -443,7 +443,7 @@ pub fn sanitize_filename_component(value: &str) -> String {
         .collect();
 
     // Windows rejects filenames ending in a space or '.', so trim those after clamping the length.
-    let trimmed = sanitized.trim_end_matches(|c: char| c == ' ' || c == '.');
+    let trimmed = sanitized.trim_end_matches([' ', '.']);
     if trimmed.is_empty() {
         "_".to_string()
     } else {
