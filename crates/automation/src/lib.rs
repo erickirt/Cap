@@ -422,6 +422,22 @@ pub fn load_store_from_json(value: &serde_json::Value) -> Option<AutomationsStor
         .and_then(|v| serde_json::from_value(v.clone()).ok())
 }
 
+/// Sanitize attacker-influenced text (e.g. an active window title) into a single, safe filename
+/// component before it is substituted into a `SaveToLocation` filename template. Window titles can
+/// contain path separators or reserved characters; substituting them raw would let a write escape the
+/// target directory (path traversal) or produce an invalid name. Replacing separators keeps the value
+/// a single component, so directories in the resolved path can only come from the user-authored template.
+pub fn sanitize_filename_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            other if other.is_control() => '_',
+            other => other,
+        })
+        .collect()
+}
+
 /// Build a single shell command line from a program and its arguments, quoting each token so that
 /// arguments containing spaces or shell metacharacters survive as written instead of being re-split
 /// by the shell. Used by hosts running `RunCommand { use_shell: true }`.

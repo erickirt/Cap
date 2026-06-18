@@ -1,7 +1,7 @@
 use cap_automation::{
     AutomationExportCompression, AutomationHost, AutomationRecordingMode, AutomationsStore,
     Capability, CaptureTargetKind, ClipboardSource, ExportDestination, ExportFormat, ExportProfile,
-    Trigger, TriggerContext,
+    Trigger, TriggerContext, sanitize_filename_component,
 };
 use cap_recording::sources::screen_capture::ScreenCaptureTarget;
 use clipboard_rs::Clipboard;
@@ -576,7 +576,7 @@ fn apply_filename_template(template: &str, ctx: &TriggerContext) -> String {
     result = result.replace("{time}", &now.format("%H-%M-%S").to_string());
     result = result.replace("{datetime}", &now.format("%Y-%m-%d_%H-%M-%S").to_string());
     if let Some(ref title) = ctx.window_title {
-        result = result.replace("{window}", title);
+        result = result.replace("{window}", &sanitize_filename_component(title));
     }
     result
 }

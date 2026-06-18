@@ -766,6 +766,20 @@ fn shell_command_line_escapes_embedded_quotes() {
 }
 
 #[test]
+fn sanitize_filename_component_neutralizes_traversal_and_reserved_chars() {
+    assert_eq!(
+        sanitize_filename_component("../../etc/passwd"),
+        ".._.._etc_passwd"
+    );
+    assert_eq!(sanitize_filename_component("C:\\Users\\me"), "C__Users_me");
+    assert_eq!(
+        sanitize_filename_component("Slack | #general"),
+        "Slack _ #general"
+    );
+    assert_eq!(sanitize_filename_component("plain title"), "plain title");
+}
+
+#[test]
 fn multiple_rules_same_trigger() {
     let rule1 = AutomationRule {
         id: "a".to_string(),
