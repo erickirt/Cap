@@ -164,10 +164,7 @@ export function mapCaptionsToEditedTimeline(
 						...caption,
 						start: mappedWords[0]?.start ?? caption.start,
 						end: mappedWords[mappedWords.length - 1]?.end ?? caption.end,
-						text: mappedWords
-							.map((word) => word.text.trim())
-							.filter((text) => text.length > 0)
-							.join(" "),
+						text: getCaptionTextFromWords(mappedWords),
 						words: mappedWords,
 					},
 				];
@@ -301,11 +298,47 @@ export async function transcribeEditorCaptions(
 	return await commands.transcribeAudio(videoPath, modelPath, language, engine);
 }
 
+const CAPTION_ATTACHING_PUNCTUATION = new Set([
+	",",
+	".",
+	"!",
+	"?",
+	";",
+	":",
+	"%",
+	")",
+	"]",
+	"}",
+	"'",
+	"’",
+	"、",
+	"。",
+	"！",
+	"？",
+	"；",
+	"：",
+	"，",
+]);
+
+function captionTokenAttachesToPrevious(text: string) {
+	const firstChar = text.trim().charAt(0);
+	return firstChar.length > 0 && CAPTION_ATTACHING_PUNCTUATION.has(firstChar);
+}
+
 export function getCaptionTextFromWords(words: CaptionWord[]) {
-	return words
-		.map((word) => word.text.trim())
-		.filter((word) => word.length > 0)
-		.join(" ");
+	let text = "";
+
+	for (const word of words) {
+		const wordText = word.text.trim();
+		if (wordText.length === 0) continue;
+
+		if (text.length > 0 && !captionTokenAttachesToPrevious(wordText)) {
+			text += " ";
+		}
+		text += wordText;
+	}
+
+	return text;
 }
 
 export function syncCaptionWordsWithText(
@@ -381,6 +414,19 @@ export function getCaptionGenerationErrorMessage(error: unknown) {
 
 if (import.meta.vitest) {
 	const { describe, expect, it } = import.meta.vitest;
+
+	describe("getCaptionTextFromWords", () => {
+		it("attaches punctuation tokens to the previous word", () => {
+			expect(
+				getCaptionTextFromWords([
+					{ text: "test", start: 0, end: 0.2 },
+					{ text: ",", start: 0.2, end: 0.3 },
+					{ text: "test", start: 0.3, end: 0.6 },
+					{ text: ".", start: 0.6, end: 0.7 },
+				]),
+			).toBe("test, test.");
+		});
+	});
 
 	describe("mapCaptionsToEditedTimeline", () => {
 		it("splits caption words across retained timeline ranges", () => {
