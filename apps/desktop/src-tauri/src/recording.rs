@@ -83,6 +83,8 @@ fn recording_stopped_share_url(link: &str) -> String {
 const CURRENT_DESKTOP_BACKGROUND_BASENAME: &str = "current-desktop-background";
 const CURRENT_DESKTOP_BACKGROUND_FILENAME: &str = "current-desktop-background.jpg";
 const CURRENT_DESKTOP_BACKGROUND_PENDING_FILENAME: &str = "current-desktop-background.pending.jpg";
+const DESKTOP_BACKGROUND_MAX_DIMENSION: u32 = 2560;
+const DESKTOP_BACKGROUND_JPEG_QUALITY: u8 = 82;
 
 fn current_desktop_background_snapshot_path(recording_dir: &Path) -> PathBuf {
     recording_dir
@@ -368,11 +370,60 @@ fn desktop_background_source_requires_user_prompt_for_home(
 }
 
 #[cfg(target_os = "macos")]
+fn macos_image_pixel_dimensions(path: &Path) -> Option<(u32, u32)> {
+    let output = std::process::Command::new("sips")
+        .arg("-g")
+        .arg("pixelWidth")
+        .arg("-g")
+        .arg("pixelHeight")
+        .arg(path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut width = None;
+    let mut height = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(value) = line.strip_prefix("pixelWidth:") {
+            width = value.trim().parse::<u32>().ok();
+        } else if let Some(value) = line.strip_prefix("pixelHeight:") {
+            height = value.trim().parse::<u32>().ok();
+        }
+    }
+
+    Some((width?, height?))
+}
+
+#[cfg(target_os = "macos")]
 fn write_desktop_background_snapshot(source_path: &Path, output_path: &Path) -> Result<(), String> {
-    let sips_result = std::process::Command::new("sips")
+    // `sips -Z` resizes in both directions, so it upscales sources smaller than the
+    // target. Only cap dimensions when the source actually exceeds the limit.
+    let needs_downscale =
+        macos_image_pixel_dimensions(source_path).is_none_or(|(width, height)| {
+            width > DESKTOP_BACKGROUND_MAX_DIMENSION || height > DESKTOP_BACKGROUND_MAX_DIMENSION
+        });
+
+    let mut command = std::process::Command::new("sips");
+    command
         .arg("-s")
         .arg("format")
         .arg("jpeg")
+        .arg("-s")
+        .arg("formatOptions")
+        .arg(DESKTOP_BACKGROUND_JPEG_QUALITY.to_string());
+
+    if needs_downscale {
+        command
+            .arg("-Z")
+            .arg(DESKTOP_BACKGROUND_MAX_DIMENSION.to_string());
+    }
+
+    let sips_result = command
         .arg(source_path)
         .arg("--out")
         .arg(output_path)
@@ -396,6 +447,9 @@ fn write_desktop_background_snapshot_with_image_crate(
     source_path: &Path,
     output_path: &Path,
 ) -> Result<(), String> {
+    use image::ImageEncoder;
+    use std::io::Write;
+
     let image = image::open(source_path)
         .map_err(|err| format!("Failed to decode current desktop background: {err}"))?;
     image
