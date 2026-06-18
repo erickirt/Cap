@@ -415,7 +415,7 @@ impl AutomationHost for DesktopAutomationHost {
 
     async fn notify(
         &self,
-        _ctx: &TriggerContext,
+        ctx: &TriggerContext,
         title_template: &str,
         body_template: &str,
     ) -> Result<(), String> {
@@ -429,11 +429,14 @@ impl AutomationHost for DesktopAutomationHost {
             return Ok(());
         }
 
+        let title = apply_body_template(&apply_filename_template(title_template, ctx), ctx);
+        let body = apply_body_template(&apply_filename_template(body_template, ctx), ctx);
+
         self.app
             .notification()
             .builder()
-            .title(title_template)
-            .body(body_template)
+            .title(title)
+            .body(body)
             .show()
             .map_err(|e| format!("Failed to send notification: {e}"))?;
 
