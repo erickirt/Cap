@@ -170,6 +170,9 @@ fn evaluate_condition(condition: &Condition, ctx: &TriggerContext) -> bool {
             .window_title
             .as_ref()
             .is_some_and(|t| t.to_lowercase().contains(&pattern.to_lowercase())),
+        // Reserved for future per-organization filtering: no trigger currently populates
+        // `organization_id`, and the desktop UI hides this condition (CONDITION_REQUIRES maps it to
+        // null), so this arm stays inert until org context is plumbed through the trigger pipeline.
         Condition::OrganizationIs { id } => ctx.organization_id.as_ref() == Some(id),
     }
 }
