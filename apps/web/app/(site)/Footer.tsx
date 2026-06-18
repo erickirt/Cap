@@ -10,6 +10,7 @@ import {
 import { faChevronDown } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import Link from "next/link";
+import type { ReactNode } from "react";
 import { useState } from "react";
 
 type FooterLink = {
@@ -117,6 +118,105 @@ const socialLinks: { label: string; href: string; icon: IconDefinition }[] = [
 		icon: faLinkedinIn,
 	},
 ];
+
+const complianceBadges: { label: string; content: ReactNode }[] = [
+	{
+		label: "SOC 2",
+		content: (
+			<text
+				x="22"
+				y="25.5"
+				textAnchor="middle"
+				fontSize="8.5"
+				fontWeight="700"
+				letterSpacing="0.2"
+				className="fill-current"
+			>
+				SOC 2
+			</text>
+		),
+	},
+	{
+		label: "HIPAA",
+		content: (
+			<text
+				x="22"
+				y="25.5"
+				textAnchor="middle"
+				fontSize="8"
+				fontWeight="700"
+				letterSpacing="0.1"
+				className="fill-current"
+			>
+				HIPAA
+			</text>
+		),
+	},
+	{
+		label: "ISO 27001",
+		content: (
+			<>
+				<text
+					x="22"
+					y="21"
+					textAnchor="middle"
+					fontSize="8.5"
+					fontWeight="700"
+					className="fill-current"
+				>
+					ISO
+				</text>
+				<text
+					x="22"
+					y="29.5"
+					textAnchor="middle"
+					fontSize="6.5"
+					fontWeight="600"
+					letterSpacing="0.4"
+					className="fill-current"
+				>
+					27001
+				</text>
+			</>
+		),
+	},
+];
+
+const ComplianceBadges = () => (
+	<div>
+		<div className="flex flex-wrap gap-2.5 items-center text-gray-10">
+			{complianceBadges.map(({ label, content }) => (
+				<Link
+					key={label}
+					href="https://trust.cap.so"
+					target="_blank"
+					rel="noopener noreferrer"
+					title={`${label} — in progress`}
+					aria-label={`${label} compliance in progress. View Cap's Trust Portal`}
+					className="transition-colors text-gray-9 hover:text-gray-12"
+				>
+					<svg
+						viewBox="0 0 44 44"
+						fill="none"
+						aria-hidden="true"
+						className="size-9"
+					>
+						<circle cx="22" cy="22" r="21" stroke="currentColor" />
+						<circle
+							cx="22"
+							cy="22"
+							r="17.5"
+							stroke="currentColor"
+							strokeDasharray="1 2.5"
+						/>
+						{content}
+					</svg>
+				</Link>
+			))}
+		</div>
+		<p className="mt-2 text-[11px] text-gray-9">Certifications in progress</p>
+	</div>
+);
 
 const FooterColumn = ({
 	title,
@@ -239,10 +339,13 @@ export const Footer = () => {
 						</div>
 					</div>
 
-					<div className="flex flex-col gap-4 pt-8 mt-20 border-t sm:flex-row sm:justify-between sm:items-center border-gray-4">
-						<p className="text-sm text-gray-9">
-							© Cap Software, Inc. {new Date().getFullYear()}.
-						</p>
+					<div className="flex flex-col gap-6 pt-8 mt-20 border-t sm:flex-row sm:justify-between sm:items-end border-gray-4">
+						<div className="flex flex-col gap-4">
+							<ComplianceBadges />
+							<p className="text-sm text-gray-9">
+								© Cap Software, Inc. {new Date().getFullYear()}.
+							</p>
+						</div>
 						<div className="flex flex-wrap gap-x-8 gap-y-2">
 							<a
 								className="text-sm transition-colors text-gray-9 hover:text-gray-12"
