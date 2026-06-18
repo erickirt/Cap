@@ -452,10 +452,98 @@ fn write_desktop_background_snapshot_with_image_crate(
 
     let image = image::open(source_path)
         .map_err(|err| format!("Failed to decode current desktop background: {err}"))?;
-    image
-        .to_rgb8()
-        .save_with_format(output_path, image::ImageFormat::Jpeg)
-        .map_err(|err| format!("Failed to save current desktop background: {err}"))
+
+    let image = if image.width() > DESKTOP_BACKGROUND_MAX_DIMENSION
+        || image.height() > DESKTOP_BACKGROUND_MAX_DIMENSION
+    {
+        image.resize(
+            DESKTOP_BACKGROUND_MAX_DIMENSION,
+            DESKTOP_BACKGROUND_MAX_DIMENSION,
+            image::imageops::FilterType::Triangle,
+        )
+    } else {
+        image
+    };
+
+    let rgb = image.to_rgb8();
+    let file = std::fs::File::create(output_path)
+        .map_err(|err| format!("Failed to create current desktop background: {err}"))?;
+    let mut writer = std::io::BufWriter::new(file);
+
+    image::codecs::jpeg::JpegEncoder::new_with_quality(
+        &mut writer,
+        DESKTOP_BACKGROUND_JPEG_QUALITY,
+    )
+    .write_image(
+        rgb.as_raw(),
+        rgb.width(),
+        rgb.height(),
+        image::ExtendedColorType::Rgb8,
+    )
+    .map_err(|err| format!("Failed to save current desktop background: {err}"))?;
+
+    writer
+        .flush()
+        .map_err(|err| format!("Failed to finalize current desktop background: {err}"))
+}
+
+pub fn spawn_heal_oversized_desktop_background_snapshots(recording_dir: PathBuf) {
+    tokio::task::spawn_blocking(move || {
+        heal_oversized_desktop_background_snapshots(&recording_dir);
+    });
+}
+
+fn heal_oversized_desktop_background_snapshots(recording_dir: &Path) {
+    let assets_dir = recording_dir.join("assets");
+    let Ok(entries) = std::fs::read_dir(&assets_dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+
+        if !name.starts_with(CURRENT_DESKTOP_BACKGROUND_BASENAME)
+            || name.contains(".pending.")
+            || !name.ends_with(".jpg")
+        {
+            continue;
+        }
+
+        match downscale_background_snapshot_in_place(&path) {
+            Ok(true) => {
+                info!(path = %path.display(), "Recompressed oversized desktop background snapshot")
+            }
+            Ok(false) => {}
+            Err(error) => {
+                debug!(%error, path = %path.display(), "Failed to recompress desktop background snapshot")
+            }
+        }
+    }
+}
+
+fn downscale_background_snapshot_in_place(path: &Path) -> Result<bool, String> {
+    let (width, height) = image::image_dimensions(path)
+        .map_err(|err| format!("Failed to read background dimensions: {err}"))?;
+
+    if width <= DESKTOP_BACKGROUND_MAX_DIMENSION && height <= DESKTOP_BACKGROUND_MAX_DIMENSION {
+        return Ok(false);
+    }
+
+    let pending_path = path.with_extension("pending.jpg");
+    let _ = std::fs::remove_file(&pending_path);
+
+    if let Err(error) = write_desktop_background_snapshot_with_image_crate(path, &pending_path) {
+        let _ = std::fs::remove_file(&pending_path);
+        return Err(error);
+    }
+
+    std::fs::rename(&pending_path, path)
+        .map_err(|err| format!("Failed to replace desktop background snapshot: {err}"))?;
+
+    Ok(true)
 }
 
 #[derive(Clone)]
