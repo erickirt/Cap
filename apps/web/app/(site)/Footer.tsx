@@ -94,6 +94,7 @@ const footerLinks = {
 	] as FooterLink[],
 	additional: [
 		{ label: "Loom Video Importer", href: "/loom-alternative" },
+		{ label: "Migrate from Loom", href: "/migrate-from-loom" },
 		{ label: "Loom Video Downloader", href: "/tools/loom-downloader" },
 		{ label: "Screen Recorder", href: "/screen-recorder" },
 		{ label: "Free Screen Recorder", href: "/free-screen-recorder" },
