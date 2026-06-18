@@ -15,9 +15,11 @@ import { produce } from "solid-js/store";
 import toast from "solid-toast";
 import { Toggle } from "~/components/Toggle";
 import Tooltip from "~/components/Tooltip";
-import { defaultCaptionSettings } from "~/store/captions";
+import {
+	defaultCaptionSettings,
+	type EditorCaptionSettings,
+} from "~/store/captions";
 import type { OrganizationBrandColorSwatch } from "~/utils/organization-branding";
-import type { CaptionSettings } from "~/utils/tauri";
 import { commands, events } from "~/utils/tauri";
 import IconCapChevronDown from "~icons/cap/chevron-down";
 import IconCapCircleCheck from "~icons/cap/circle-check";
@@ -177,19 +179,53 @@ export function CaptionsTab(props: {
 		);
 	};
 
-	const getSetting = <K extends keyof CaptionSettings>(
+	const getSetting = <K extends keyof EditorCaptionSettings>(
 		key: K,
-	): NonNullable<CaptionSettings[K]> =>
+	): NonNullable<EditorCaptionSettings[K]> =>
 		(project?.captions?.settings?.[key] ??
-			defaultCaptionSettings[key]) as NonNullable<CaptionSettings[K]>;
+			defaultCaptionSettings[key]) as NonNullable<EditorCaptionSettings[K]>;
 
-	const updateCaptionSetting = <K extends keyof CaptionSettings>(
+	const updateCaptionSetting = <K extends keyof EditorCaptionSettings>(
 		key: K,
-		value: CaptionSettings[K],
+		value: EditorCaptionSettings[K],
 	) => {
 		if (!project?.captions) return;
 
 		setProject("captions", "settings", key, value);
+	};
+
+	const captionPositionCenter = (position: string) => {
+		switch (position) {
+			case "top-left":
+				return { x: 0.05, y: 0.08 };
+			case "top-center":
+			case "top":
+				return { x: 0.5, y: 0.08 };
+			case "top-right":
+				return { x: 0.95, y: 0.08 };
+			case "bottom-left":
+				return { x: 0.05, y: 0.85 };
+			case "bottom-right":
+				return { x: 0.95, y: 0.85 };
+			default:
+				return { x: 0.5, y: 0.85 };
+		}
+	};
+
+	const updateCaptionPosition = (position: string) => {
+		if (!project?.captions) return;
+
+		const previousPosition = getSetting("position");
+		setProject(
+			"captions",
+			"settings",
+			produce((settings) => {
+				settings.position = position;
+				if (position === "manual" && !settings.manualPosition) {
+					settings.manualPosition = captionPositionCenter(previousPosition);
+				}
+			}),
+		);
 	};
 
 	const [selectedModel, setSelectedModel] = createSignal(
@@ -808,7 +844,7 @@ export function CaptionsTab(props: {
 								value={getSetting("position")}
 								onChange={(value) => {
 									if (value === null) return;
-									updateCaptionSetting("position", value);
+									updateCaptionPosition(value);
 								}}
 								disabled={!hasCaptions()}
 								itemComponent={(props) => (
