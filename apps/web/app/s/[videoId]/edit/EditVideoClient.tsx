@@ -77,6 +77,7 @@ import {
 } from "@/lib/video-edits";
 import { navigateWithTransition } from "@/utils/view-transition";
 import { CapVideoPlayer } from "../_components/CapVideoPlayer";
+import { VideoDownloadMenu } from "../_components/VideoDownloadMenu";
 import { captureVideoFrameDataUrl } from "../_components/video-frame-thumbnail";
 
 type EditableVideo = {
@@ -1650,6 +1651,11 @@ export function EditVideoClient({
 							<RotateCcw className="size-4" aria-hidden />
 							<span className="hidden sm:inline">Restore</span>
 						</button>
+						<VideoDownloadMenu
+							videoId={video.id}
+							hasEdits={hasExistingEdits}
+							align="start"
+						/>
 					</div>
 					<div className="min-w-0 flex-1 px-2 text-center">
 						<h1 className="truncate text-[15px] font-semibold text-gray-12">

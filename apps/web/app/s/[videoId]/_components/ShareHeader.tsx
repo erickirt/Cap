@@ -31,6 +31,7 @@ import { UpgradeModal } from "@/components/UpgradeModal";
 import { usePublicEnv } from "@/utils/public-env";
 import { navigateWithTransition } from "@/utils/view-transition";
 import type { SharePageBranding, VideoData } from "../types";
+import { VideoDownloadMenu } from "./VideoDownloadMenu";
 
 export const ShareHeader = ({
 	data,
@@ -41,6 +42,8 @@ export const ShareHeader = ({
 	spacesData = null,
 	branding,
 	canManageSharePageBranding = false,
+	canDownload = false,
+	hasEdits = false,
 }: {
 	data: VideoData;
 	customDomain?: string | null;
@@ -66,6 +69,8 @@ export const ShareHeader = ({
 	spacesData?: Spaces[] | null;
 	branding?: SharePageBranding | null;
 	canManageSharePageBranding?: boolean;
+	canDownload?: boolean;
+	hasEdits?: boolean;
 }) => {
 	const user = useCurrentUser();
 	const { push, refresh } = useRouter();
@@ -548,6 +553,13 @@ export const ShareHeader = ({
 											</div>
 										)}
 									</div>
+									{canDownload && (
+										<VideoDownloadMenu
+											videoId={data.id}
+											hasEdits={hasEdits}
+											triggerClassName="size-11 rounded-full border border-gray-5 bg-gray-3 text-gray-12 transition hover:border-gray-6 hover:bg-gray-6"
+										/>
+									)}
 								</div>
 								{userIsOwnerAndNotPro && (
 									<button
