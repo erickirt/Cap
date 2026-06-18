@@ -988,6 +988,8 @@ pub struct CaptionSettings {
     pub word_transition_duration: f32,
     #[serde(alias = "activeWordHighlight")]
     pub active_word_highlight: bool,
+    #[serde(alias = "manualPosition")]
+    pub manual_position: Option<XY<f32>>,
 }
 
 impl CaptionSettings {
@@ -1036,6 +1038,7 @@ impl Default for CaptionSettings {
             linger_duration: Self::default_linger_duration(),
             word_transition_duration: Self::default_word_transition_duration(),
             active_word_highlight: Self::default_active_word_highlight(),
+            manual_position: None,
         }
     }
 }
