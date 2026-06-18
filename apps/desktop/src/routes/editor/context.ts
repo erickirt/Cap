@@ -21,6 +21,7 @@ import {
 import { createStore, produce, reconcile, unwrap } from "solid-js/store";
 
 import { generalSettingsStore } from "~/store";
+import type { EditorCaptionSettings } from "~/store/captions";
 import { defaultKeyboardSettings } from "~/store/keyboard";
 
 import { createPresets } from "~/utils/createPresets";
@@ -62,7 +63,6 @@ export type ModalDialog =
 			type: "crop";
 			position: XY<number>;
 			size: XY<number>;
-			previewUrl?: string | null;
 	  };
 
 export type LayoutMode = { type: "export" } | { type: "transcript" };
@@ -145,13 +145,18 @@ type EditorTimelineConfiguration = Omit<
 	textSegments: TextSegment[];
 };
 
+type EditorCaptionsData = NonNullable<ProjectConfiguration["captions"]> & {
+	settings: EditorCaptionSettings;
+};
+
 export type EditorProjectConfiguration = Omit<
 	ProjectConfiguration,
-	"background" | "camera" | "timeline"
+	"background" | "camera" | "timeline" | "captions"
 > & {
 	background: WithCornerStyle<ProjectConfiguration["background"]>;
 	camera: WithCornerStyle<ProjectConfiguration["camera"]>;
 	timeline?: EditorTimelineConfiguration | null;
+	captions: EditorCaptionsData | null;
 	hiddenTextSegments?: number[];
 };
 
