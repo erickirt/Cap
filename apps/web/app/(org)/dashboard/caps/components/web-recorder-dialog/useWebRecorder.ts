@@ -43,7 +43,11 @@ import { uploadWithTarget } from "@/utils/upload-target";
 import { useUploadingContext } from "../../UploadingContext";
 import { sendProgressUpdate } from "../sendProgressUpdate";
 import type { RecordingMode } from "./RecordingModeSelector";
-import { captureThumbnail, convertToMp4 } from "./recording-conversion";
+import {
+	canConvertToMp4InBrowser,
+	captureThumbnail,
+	convertToMp4,
+} from "./recording-conversion";
 import { uploadRecording } from "./recording-upload";
 import {
 	loadRecoveredRecordingSpools,
@@ -1300,97 +1304,161 @@ export const useWebRecorder = ({
 					);
 				}
 			} else {
-				const processedRecordingBlob =
-					pipeline.fileExtension === "mp4"
-						? rawRecordingBlob
-						: await convertToMp4(
-								rawRecordingBlob as Blob,
-								hasAudioTrack,
-								creationResult.id,
-								setUploadStatus,
-								() => updatePhase("converting"),
-							);
+				let processedRecordingBlob: Blob | null = null;
+				let conversionFailed = false;
 
-				if (!processedRecordingBlob) {
-					throw new Error("Failed to prepare recording for upload");
+				if (pipeline.fileExtension === "mp4") {
+					processedRecordingBlob = rawRecordingBlob;
+				} else if (await canConvertToMp4InBrowser(hasAudioTrack)) {
+					try {
+						processedRecordingBlob = await convertToMp4(
+							rawRecordingBlob as Blob,
+							hasAudioTrack,
+							creationResult.id,
+							setUploadStatus,
+							() => updatePhase("converting"),
+						);
+					} catch (conversionError) {
+						// The browser claimed it could encode MP4 but the conversion
+						// still failed (e.g. a stalled decoder). Rather than discarding
+						// the recording, upload the raw WebM and let the media server
+						// transcode it, mirroring the streaming-webm server path.
+						console.warn(
+							"In-browser conversion failed; falling back to server-side processing",
+							conversionError,
+						);
+						conversionFailed = true;
+					}
+				} else {
+					// This browser's WebCodecs can't encode the MP4 (e.g. Firefox has
+					// no AAC/H.264 encoder), so skip the conversion that would always
+					// fail and let the media server transcode the raw recording.
+					conversionFailed = true;
 				}
 
-				const thumbnailBlob = await captureThumbnail(processedRecordingBlob, {
-					width,
-					height,
-				});
-				const thumbnailPreviewUrl = thumbnailBlob
-					? URL.createObjectURL(thumbnailBlob)
-					: undefined;
+				if (conversionFailed) {
+					updatePhase("uploading");
+					const rawSubpath = `raw-upload.${pipeline.fileExtension}`;
+					const uploadSession = await initiateMultipartUpload({
+						videoId: creationResult.id,
+						contentType: pipeline.mimeType,
+						subpath: rawSubpath,
+					});
+					const fallbackUploader = new InstantRecordingUploader({
+						videoId: creationResult.id,
+						uploadId: uploadSession.uploadId,
+						provider: uploadSession.provider,
+						mimeType: pipeline.mimeType,
+						subpath: rawSubpath,
+						setUploadStatus,
+						sendProgressUpdate: (uploaded, total) =>
+							sendProgressUpdate(creationResult.id, uploaded, total),
+						onChunkStateChange: setChunkUploads,
+						onFatalError: () => {
+							void stopRecordingRef.current?.();
+						},
+					});
+					instantUploaderRef.current = fallbackUploader;
 
-				try {
-					setUploadStatus({
-						status: "uploadingVideo",
-						capId: creationResult.id,
-						progress: 0,
-						thumbnailUrl: thumbnailPreviewUrl,
+					await fallbackUploader.finalize({
+						finalBlob: rawRecordingBlob,
+						durationSeconds,
+						width,
+						height,
+						fps,
+						subpath: rawSubpath,
 					});
 
-					await uploadRecording(
-						processedRecordingBlob,
-						creationResult.upload,
-						creationResult.id,
-						thumbnailPreviewUrl,
-						setUploadStatus,
-					);
-
-					try {
-						await triggerInstantRecordingProcessing({
-							videoId: creationResult.id,
-						});
-					} catch (processingError) {
-						console.error("Failed to start video processing", processingError);
+					if (!fallbackUploader.getProcessingStarted()) {
 						toast.warning(
 							"Recording uploaded. Processing did not start yet, but the original recording is available.",
 						);
 					}
+				} else {
+					if (!processedRecordingBlob) {
+						throw new Error("Failed to prepare recording for upload");
+					}
 
-					if (thumbnailBlob) {
+					const thumbnailBlob = await captureThumbnail(processedRecordingBlob, {
+						width,
+						height,
+					});
+					const thumbnailPreviewUrl = thumbnailBlob
+						? URL.createObjectURL(thumbnailBlob)
+						: undefined;
+
+					try {
+						setUploadStatus({
+							status: "uploadingVideo",
+							capId: creationResult.id,
+							progress: 0,
+							thumbnailUrl: thumbnailPreviewUrl,
+						});
+
+						await uploadRecording(
+							processedRecordingBlob,
+							creationResult.upload,
+							creationResult.id,
+							thumbnailPreviewUrl,
+							setUploadStatus,
+						);
+
 						try {
-							const screenshotData = await createVideoAndGetUploadUrl({
+							await triggerInstantRecordingProcessing({
 								videoId: creationResult.id,
-								isScreenshot: true,
-								orgId: Organisation.OrganisationId.make(orgId),
 							});
-
-							setUploadStatus({
-								status: "uploadingThumbnail",
-								capId: creationResult.id,
-								progress: 90,
-							});
-
-							await uploadWithTarget({
-								target: screenshotData.uploadTarget,
-								body: thumbnailBlob,
-								fileName: "screen-capture.jpg",
-								onProgress: ({ loaded, total }) => {
-									const percent = 90 + (loaded / total) * 10;
-									setUploadStatus({
-										status: "uploadingThumbnail",
-										capId: creationResult.id,
-										progress: percent,
-									});
-								},
-							});
-
-							queryClient.refetchQueries({
-								queryKey: ThumbnailRequest.queryKey(creationResult.id),
-							});
-						} catch (thumbnailError) {
-							console.error("Failed to upload thumbnail", thumbnailError);
+						} catch (processingError) {
+							console.error(
+								"Failed to start video processing",
+								processingError,
+							);
 							toast.warning(
-								"Recording uploaded, but thumbnail failed to upload.",
+								"Recording uploaded. Processing did not start yet, but the original recording is available.",
 							);
 						}
-					}
-				} finally {
-					if (thumbnailPreviewUrl) {
-						URL.revokeObjectURL(thumbnailPreviewUrl);
+
+						if (thumbnailBlob) {
+							try {
+								const screenshotData = await createVideoAndGetUploadUrl({
+									videoId: creationResult.id,
+									isScreenshot: true,
+									orgId: Organisation.OrganisationId.make(orgId),
+								});
+
+								setUploadStatus({
+									status: "uploadingThumbnail",
+									capId: creationResult.id,
+									progress: 90,
+								});
+
+								await uploadWithTarget({
+									target: screenshotData.uploadTarget,
+									body: thumbnailBlob,
+									fileName: "screen-capture.jpg",
+									onProgress: ({ loaded, total }) => {
+										const percent = 90 + (loaded / total) * 10;
+										setUploadStatus({
+											status: "uploadingThumbnail",
+											capId: creationResult.id,
+											progress: percent,
+										});
+									},
+								});
+
+								queryClient.refetchQueries({
+									queryKey: ThumbnailRequest.queryKey(creationResult.id),
+								});
+							} catch (thumbnailError) {
+								console.error("Failed to upload thumbnail", thumbnailError);
+								toast.warning(
+									"Recording uploaded, but thumbnail failed to upload.",
+								);
+							}
+						}
+					} finally {
+						if (thumbnailPreviewUrl) {
+							URL.revokeObjectURL(thumbnailPreviewUrl);
+						}
 					}
 				}
 			}
