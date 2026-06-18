@@ -227,6 +227,9 @@ async createScreenshotEditorInstance() : Promise<SerializedScreenshotEditorInsta
 async updateScreenshotConfig(config: ProjectConfiguration, save: boolean, revision: number) : Promise<null> {
     return await TAURI_INVOKE("update_screenshot_config", { config, save, revision });
 },
+async prewarmScreenshotBackground(path: string) : Promise<null> {
+    return await TAURI_INVOKE("prewarm_screenshot_background", { path });
+},
 async recognizeScreenshotText(region: ScreenshotOcrRegion) : Promise<ScreenshotOcrResult> {
     return await TAURI_INVOKE("recognize_screenshot_text", { region });
 },
