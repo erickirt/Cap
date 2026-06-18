@@ -31,7 +31,7 @@ export const Testimonials = ({
 						initial={{ opacity: 0, y: 20 }}
 						animate={{ opacity: 1, y: 0 }}
 						transition={{ duration: 0.4 }}
-						className="text-3xl text-center md:text-4xl tracking-[-.05em] text-gray-12"
+						className="text-3xl font-medium text-center md:text-4xl text-gray-12 text-balance"
 					>
 						{title}
 					</motion.h2>
@@ -47,7 +47,7 @@ export const Testimonials = ({
 			)}
 
 			<div className="gap-3 mt-8 space-y-3 columns-1 md:columns-2 lg:columns-3">
-				{displayedTestimonials.map((testimonial, i) => (
+				{displayedTestimonials.map((testimonial) => (
 					<motion.div
 						key={testimonial.url}
 						className="mb-3 break-inside-avoid"
