@@ -2332,8 +2332,10 @@ impl ShowCapWindow {
                         bounds.position().x(),
                         bounds.position().y(),
                     ));
-                    let _ = window
-                        .set_size(LogicalSize::new(bounds.size().width(), bounds.size().height()));
+                    let _ = window.set_size(LogicalSize::new(
+                        bounds.size().width(),
+                        bounds.size().height(),
+                    ));
                 }
 
                 #[cfg(target_os = "macos")]
