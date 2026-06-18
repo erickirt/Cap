@@ -87,6 +87,19 @@ fn is_system_dark_mode() -> bool {
     false
 }
 
+#[cfg(target_os = "linux")]
+fn is_system_dark_mode() -> bool {
+    let output = std::process::Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+        .output();
+    if let Ok(output) = output
+        && output.status.success()
+    {
+        return String::from_utf8_lossy(&output.stdout).contains("dark");
+    }
+    false
+}
+
 pub fn hide_overlay(window: &WebviewWindow) {
     let _ = window.set_ignore_cursor_events(true);
     let _ = window.hide();
@@ -2218,6 +2231,9 @@ impl ShowCapWindow {
                 #[cfg(windows)]
                 let position = display.raw_handle().physical_position().unwrap();
 
+                #[cfg(target_os = "linux")]
+                let position = display.raw_handle().physical_position().unwrap();
+
                 let bounds = display.physical_size().unwrap();
 
                 let mut window_builder = self
@@ -2337,6 +2353,25 @@ impl ShowCapWindow {
                 };
 
                 #[cfg(windows)]
+                let window = self
+                    .window_builder(app, "/in-progress-recording")
+                    .maximized(false)
+                    .resizable(false)
+                    .fullscreen(false)
+                    .shadow(false)
+                    .always_on_top(true)
+                    .transparent(true)
+                    .visible_on_all_workspaces(true)
+                    .content_protected(should_protect)
+                    .inner_size(width, height)
+                    .skip_taskbar(false)
+                    .initialization_script(format!(
+                        "window.COUNTDOWN = {};",
+                        countdown.unwrap_or_default()
+                    ))
+                    .build()?;
+
+                #[cfg(target_os = "linux")]
                 let window = self
                     .window_builder(app, "/in-progress-recording")
                     .maximized(false)
@@ -2962,6 +2997,30 @@ impl MonitorExt for Display {
         }
 
         #[cfg(windows)]
+        {
+            let Some(bounds) = self.raw_handle().physical_bounds() else {
+                return false;
+            };
+
+            let left = bounds.position().x() as i32;
+            let right = left + bounds.size().width() as i32;
+            let top = bounds.position().y() as i32;
+            let bottom = top + bounds.size().height() as i32;
+
+            [
+                (position.x, position.y),
+                (position.x + size.width as i32, position.y),
+                (position.x, position.y + size.height as i32),
+                (
+                    position.x + size.width as i32,
+                    position.y + size.height as i32,
+                ),
+            ]
+            .into_iter()
+            .any(|(x, y)| x >= left && x < right && y >= top && y < bottom)
+        }
+
+        #[cfg(target_os = "linux")]
         {
             let Some(bounds) = self.raw_handle().physical_bounds() else {
                 return false;
