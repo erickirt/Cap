@@ -360,17 +360,17 @@ impl AutomationHost for DesktopAutomationHost {
             .parse::<reqwest::Method>()
             .map_err(|e| format!("Invalid HTTP method: {e}"))?;
 
-        let body = body_template
-            .map(|tmpl| apply_body_template(tmpl, ctx))
-            .unwrap_or_else(|| {
-                serde_json::to_string(&serde_json::json!({
-                    "project_path": ctx.project_path,
-                    "image_path": ctx.image_path,
-                    "output_path": ctx.output_path,
-                    "share_link": ctx.share_link,
-                }))
-                .unwrap_or_default()
-            });
+        let body = if let Some(tmpl) = body_template {
+            apply_body_template(tmpl, ctx)
+        } else {
+            serde_json::to_string(&serde_json::json!({
+                "project_path": ctx.project_path,
+                "image_path": ctx.image_path,
+                "output_path": ctx.output_path,
+                "share_link": ctx.share_link,
+            }))
+            .map_err(|e| format!("Failed to serialize webhook body: {e}"))?
+        };
 
         let mut req = client.request(method, url).body(body);
         for (k, v) in headers {
