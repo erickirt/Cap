@@ -443,9 +443,12 @@ pub fn sanitize_filename_component(value: &str) -> String {
         .collect();
 
     // Windows rejects filenames ending in a space or '.', so trim those after clamping the length.
-    sanitized
-        .trim_end_matches(|c: char| c == ' ' || c == '.')
-        .to_string()
+    let trimmed = sanitized.trim_end_matches(|c: char| c == ' ' || c == '.');
+    if trimmed.is_empty() {
+        "_".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// Build a single shell command line from a program and its arguments, quoting each token so that

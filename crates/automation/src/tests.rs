@@ -789,6 +789,9 @@ fn sanitize_filename_component_neutralizes_traversal_and_reserved_chars() {
             .count(),
         128
     );
+    assert_eq!(sanitize_filename_component("..."), "_");
+    assert_eq!(sanitize_filename_component("   "), "_");
+    assert_eq!(sanitize_filename_component(""), "_");
 }
 
 #[test]
