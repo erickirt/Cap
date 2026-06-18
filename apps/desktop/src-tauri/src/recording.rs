@@ -1600,6 +1600,8 @@ pub async fn start_recording(
             .perform(&window);
     }
 
+    crate::windows::apply_content_protection(&app, true);
+
     if let Some(countdown) = countdown {
         for t in 0..countdown {
             let _ = RecordingEvent::Countdown {

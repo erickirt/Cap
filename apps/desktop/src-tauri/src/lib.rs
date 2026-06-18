@@ -691,15 +691,12 @@ impl App {
     }
 
     pub fn clear_current_recording(&mut self) -> Option<InProgressRecording> {
-        match std::mem::replace(&mut self.recording_state, RecordingState::None) {
-            RecordingState::Active(recording) => {
-                self.close_occluder_windows();
-                Some(recording)
-            }
-            _ => {
-                self.close_occluder_windows();
-                None
-            }
+        let previous = std::mem::replace(&mut self.recording_state, RecordingState::None);
+        self.close_occluder_windows();
+        crate::windows::apply_content_protection(&self.handle, false);
+        match previous {
+            RecordingState::Active(recording) => Some(recording),
+            _ => None,
         }
     }
 
