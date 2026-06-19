@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { db } from "@cap/database";
 import { videos, videoUploads } from "@cap/database/schema";
 import { serverEnv } from "@cap/env";
@@ -68,11 +68,16 @@ export async function POST(request: NextRequest) {
 	try {
 		const webhookSecret = serverEnv().MEDIA_SERVER_WEBHOOK_SECRET;
 		const authHeader = request.headers.get("x-media-server-secret");
+		// Hash both sides to a fixed-length digest before the constant-time
+		// compare. This avoids comparing raw inputs whose UTF-8 byte length can
+		// differ from their UTF-16 `.length` (which would throw a RangeError) and
+		// removes the length pre-check that would otherwise leak the secret size.
+		const digest = (value: string) =>
+			createHash("sha256").update(value, "utf8").digest();
 		if (
 			!webhookSecret ||
 			!authHeader ||
-			authHeader.length !== webhookSecret.length ||
-			!timingSafeEqual(Buffer.from(authHeader), Buffer.from(webhookSecret))
+			!timingSafeEqual(digest(authHeader), digest(webhookSecret))
 		) {
 			return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 		}
