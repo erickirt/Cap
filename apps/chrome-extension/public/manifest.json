@@ -44,7 +44,7 @@
 	],
 	"web_accessible_resources": [
 		{
-			"resources": ["icons/*", "content/overlay.js"],
+			"resources": ["icons/*", "content/overlay.js", "welcome.html"],
 			"matches": ["http://*/*", "https://*/*", "file:///*"]
 		},
 		{
