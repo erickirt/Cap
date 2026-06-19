@@ -57,8 +57,9 @@ use crate::general_settings;
 use crate::permissions;
 use crate::web_api::AuthedApiError;
 use crate::{
-    App, CameraWindowOperationLock, CurrentRecordingChanged, FinalizingRecordings, MutableState,
-    NewStudioRecordingAdded, RecordingStarted, RecordingState, RecordingStopped, VideoUploadInfo,
+    App, CameraWindowOperationLock, CurrentRecordingChanged, EditorRecordingAdded,
+    FinalizingRecordings, MutableState, NewStudioRecordingAdded, RecordingStarted, RecordingState,
+    RecordingStopped, VideoUploadInfo,
     api::PresignedS3PutRequestMethod,
     audio::AppSounds,
     auth::AuthStore,
@@ -69,7 +70,9 @@ use crate::{
     thumbnails::*,
     upload::{InstantMultipartUpload, SegmentUploader, compress_image},
     web_api::ManagerExt,
-    windows::{CapWindowId, ShowCapWindow, hide_overlay},
+    windows::{
+        CapWindowId, EditorRecordingTarget, ShowCapWindow, editor_window_for_path, hide_overlay,
+    },
 };
 
 fn recording_stopped_share_url(link: &str) -> String {
@@ -1374,6 +1377,11 @@ pub async fn start_recording(
     }
 
     let mut inputs = inputs;
+
+    if EditorRecordingTarget::current(&app).is_some() {
+        inputs.mode = RecordingMode::Studio;
+    }
+
     if matches!(inputs.capture_target, ScreenCaptureTarget::CameraOnly) {
         inputs.capture_system_audio = false;
 
@@ -1601,6 +1609,13 @@ pub async fn start_recording(
     }
 
     crate::windows::apply_content_protection(&app, true);
+
+    if let Some(editor_target) = EditorRecordingTarget::current(&app)
+        && let Some(editor_window) = editor_window_for_path(&app, &editor_target)
+    {
+        let _ = editor_window.set_content_protected(true);
+        let _ = editor_window.minimize();
+    }
 
     if let Some(countdown) = countdown {
         for t in 0..countdown {
@@ -2875,6 +2890,14 @@ async fn handle_recording_end(
         app.selected_camera_id = None;
     }
 
+    if let Some(editor_path) = EditorRecordingTarget::take(&handle)
+        && let Some(editor_window) = editor_window_for_path(&handle, &editor_path)
+    {
+        let _ = editor_window.unminimize();
+        let _ = editor_window.show();
+        let _ = editor_window.set_focus();
+    }
+
     CurrentRecordingChanged.emit(&handle).ok();
 
     if let Some(res) = res {
@@ -2901,6 +2924,22 @@ async fn apply_post_studio_editor_behaviour(
     recording_dir: PathBuf,
     duration_secs: f64,
 ) {
+    if let Some(editor_path) = EditorRecordingTarget::take(app) {
+        if let Some(editor_window) = editor_window_for_path(app, &editor_path) {
+            let _ = editor_window.unminimize();
+            let _ = editor_window.show();
+            let _ = editor_window.set_focus();
+        }
+
+        let _ = EditorRecordingAdded {
+            editor_path,
+            recording_path: recording_dir,
+        }
+        .emit(app);
+
+        return;
+    }
+
     let default = GeneralSettingsStore::get(app)
         .ok()
         .flatten()
@@ -3499,6 +3538,7 @@ fn project_config_from_recording(
             start: 0.0,
             end: segment.duration(),
             timescale: 1.0,
+            name: None,
         })
         .collect::<Vec<_>>();
 
