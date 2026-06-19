@@ -84,8 +84,11 @@ let thumbnailPumpScheduled = false;
 
 const MAX_THUMBNAIL_LOADS = 2;
 
-const clipThumbnailKey = (recordingSegment: number, start: number) =>
-	`${recordingSegment}-${Math.round(start * 1000)}`;
+const clipThumbnailKey = (
+	projectPath: string,
+	recordingSegment: number,
+	start: number,
+) => `${projectPath}::${recordingSegment}-${Math.round(start * 1000)}`;
 
 const scheduleThumbnailWork = (callback: () => void) => {
 	const requestIdle = (
@@ -158,6 +161,7 @@ const loadClipThumbnail = (
 };
 
 function ClipThumbnail(props: {
+	projectPath: string;
 	recordingSegment: number;
 	start: number;
 	index: number;
@@ -169,7 +173,7 @@ function ClipThumbnail(props: {
 	let disposed = false;
 
 	const cacheKey = createMemo(() =>
-		clipThumbnailKey(props.recordingSegment, props.start),
+		clipThumbnailKey(props.projectPath, props.recordingSegment, props.start),
 	);
 
 	const applySrc = (key: string, url: string | null) => {
@@ -789,6 +793,7 @@ function ClipsSidebarInner(props: { open: boolean; class?: string }) {
 											>
 												<div class="overflow-hidden relative w-24 rounded-md aspect-video shrink-0 bg-gray-4">
 													<ClipThumbnail
+														projectPath={editorInstance.path}
 														recordingSegment={segment.recordingSegment ?? 0}
 														start={segment.start}
 														index={index()}

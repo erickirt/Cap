@@ -2890,6 +2890,14 @@ async fn handle_recording_end(
         app.selected_camera_id = None;
     }
 
+    // Fallback for in-editor recordings that did NOT reach
+    // `apply_post_studio_editor_behaviour` (failed/cancelled recordings, or
+    // non-studio modes). On the studio success path `handle_recording_finish`
+    // — awaited above into `res` — already consumed the target and emitted
+    // `EditorRecordingAdded`, so this `take()` returns `None` and is a no-op.
+    // Using `take()` (not `current()`) here is deliberate: it restores the
+    // editor window AND clears any stale target so it can't leak into the next
+    // recording session.
     if let Some(editor_path) = EditorRecordingTarget::take(&handle)
         && let Some(editor_window) = editor_window_for_path(&handle, &editor_path)
     {

@@ -3540,12 +3540,37 @@ fn list_recordings(app: AppHandle) -> Result<Vec<(PathBuf, RecordingMetaWithMeta
 #[instrument(skip(app))]
 async fn delete_recording_directory(app: AppHandle, path: PathBuf) -> Result<(), String> {
     let recordings_dir = recordings_path(&app);
+
+    // Reject `..` components up front: `Path::starts_with` compares raw components
+    // and does not normalize them, so a path like `<recordings_dir>/../../etc` would
+    // otherwise pass the prefix check below.
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err("Invalid path".to_string());
+    }
+
     if !path.starts_with(&recordings_dir) {
         return Err("Path is not inside the recordings directory".to_string());
     }
 
     if path.exists() {
-        std::fs::remove_dir_all(&path).map_err(|e| format!("Failed to delete recording: {e}"))?;
+        // Canonicalize both paths so symlinks can't be used to escape the
+        // recordings directory before we recursively delete.
+        let recordings_dir = recordings_dir
+            .canonicalize()
+            .map_err(|e| format!("Failed to resolve recordings directory: {e}"))?;
+        let canonical_path = path
+            .canonicalize()
+            .map_err(|e| format!("Failed to resolve recording path: {e}"))?;
+
+        if !canonical_path.starts_with(&recordings_dir) {
+            return Err("Path is not inside the recordings directory".to_string());
+        }
+
+        std::fs::remove_dir_all(&canonical_path)
+            .map_err(|e| format!("Failed to delete recording: {e}"))?;
     }
 
     let _ = RecordingDeleted { path }.emit(&app);

@@ -178,6 +178,11 @@ fn decode_clip_thumbnail(input: &Path, time: f64, output: &Path) -> Result<(), S
     let height = rgb_frame.height() as usize;
     let src_stride = rgb_frame.stride(0);
     let dst_stride = width * 3;
+    if src_stride < dst_stride {
+        return Err(format!(
+            "Unexpected RGB stride: src_stride={src_stride}, expected >= {dst_stride}"
+        ));
+    }
     let mut img_buffer = vec![0u8; height * dst_stride];
     for y in 0..height {
         let src_slice = &rgb_frame.data(0)[y * src_stride..y * src_stride + dst_stride];
