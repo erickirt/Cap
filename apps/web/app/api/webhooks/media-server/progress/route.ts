@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { db } from "@cap/database";
 import { videos, videoUploads } from "@cap/database/schema";
 import { serverEnv } from "@cap/env";
@@ -67,7 +68,12 @@ export async function POST(request: NextRequest) {
 	try {
 		const webhookSecret = serverEnv().MEDIA_SERVER_WEBHOOK_SECRET;
 		const authHeader = request.headers.get("x-media-server-secret");
-		if (!webhookSecret || authHeader !== webhookSecret) {
+		if (
+			!webhookSecret ||
+			!authHeader ||
+			authHeader.length !== webhookSecret.length ||
+			!timingSafeEqual(Buffer.from(authHeader), Buffer.from(webhookSecret))
+		) {
 			return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 		}
 
