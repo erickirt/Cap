@@ -2295,6 +2295,7 @@ function Page() {
 		mode: "display" | "window" | "area" | "camera",
 	) => {
 		if (isRecording()) return;
+		await commands.setEditorRecordingTarget(null);
 		const nextMode = rawOptions.targetMode === mode ? null : mode;
 		if (nextMode) {
 			if (nextMode === "camera") {

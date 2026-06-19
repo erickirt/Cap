@@ -1667,6 +1667,7 @@ function RecordingControls(props: {
 									props.onClose();
 								} else {
 									setOptions("targetMode", null);
+									commands.setEditorRecordingTarget(null);
 									commands.closeTargetSelectOverlays();
 								}
 							}}
