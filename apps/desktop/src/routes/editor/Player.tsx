@@ -12,6 +12,7 @@ import { captionsStore } from "~/store/captions";
 import { commands } from "~/utils/tauri";
 import AspectRatioSelect from "./AspectRatioSelect";
 import { CaptionOverlay } from "./CaptionOverlay";
+import { CaptionsRegenerateBadge } from "./CaptionsRegenerateBadge";
 import { createCaptionTrackSegments } from "./captions";
 import {
 	type EditorPreviewQuality,
@@ -80,6 +81,7 @@ export function PlayerContent() {
 							text: segment.text,
 						})),
 						settings: { ...captionsStore.state.settings },
+						sourceTimed: true,
 					};
 					projectDidChange = true;
 				}
@@ -599,6 +601,7 @@ function PreviewCanvas() {
 			style={{ contain: "layout style" }}
 			onContextMenu={handleContextMenu}
 		>
+			<CaptionsRegenerateBadge class="absolute top-3 right-3 z-20" />
 			<div
 				class="flex overflow-hidden absolute inset-0 justify-center items-center h-full"
 				style={{ visibility: hasFrame() ? "visible" : "hidden" }}

@@ -12,17 +12,16 @@ import {
 } from "solid-js";
 import { produce } from "solid-js/store";
 import { defaultCaptionSettings } from "~/store/captions";
-import { type CaptionTrackSegment, commands } from "~/utils/tauri";
+import { commands } from "~/utils/tauri";
 import {
-	createCaptionTrackSegments,
 	getCaptionTextFromWords,
+	mapEditedTimeToSource,
+	mapSourceRangeToEdited,
+	mapSourceTimeToEdited,
 	syncCaptionWordsWithText,
 } from "./captions";
 import { FPS, useEditorContext } from "./context";
-import {
-	rippleDeleteAllTracks,
-	shiftCaptionTimesAfterCut,
-} from "./timeline-utils";
+import { rippleDeleteAllTracks } from "./timeline-utils";
 
 function formatTimePrecise(secs: number) {
 	const minutes = Math.floor(secs / 60);
@@ -57,9 +56,12 @@ export function TranscriptPanel() {
 		setEditorState,
 		project,
 		setProject,
+		editorInstance,
 		totalDuration,
 		previewResolutionBase,
 	} = useEditorContext();
+
+	const recordingSegments = () => editorInstance.recordings.segments;
 
 	const [textSizeIndex, setTextSizeIndex] = makePersisted(createSignal(1), {
 		name: "editorTranscriptTextSize",
@@ -92,33 +94,6 @@ export function TranscriptPanel() {
 			words: flatWords.filter((word) => word.segmentIndex === segmentIndex),
 		}));
 	});
-
-	const syncCaptionTracks = (p: typeof project) => {
-		if (p.timeline && p.captions) {
-			const existingSegments = new Map(
-				(p.timeline.captionSegments ?? []).map((segment) => [
-					segment.id,
-					segment,
-				]),
-			);
-			p.timeline.captionSegments = createCaptionTrackSegments(
-				p.captions.segments,
-			).map((segment) => {
-				const existing = existingSegments.get(segment.id);
-				return existing
-					? ({
-							...segment,
-							fadeDurationOverride: existing.fadeDurationOverride,
-							lingerDurationOverride: existing.lingerDurationOverride,
-							positionOverride: existing.positionOverride,
-							colorOverride: existing.colorOverride,
-							backgroundColorOverride: existing.backgroundColorOverride,
-							fontSizeOverride: existing.fontSizeOverride,
-						} satisfies CaptionTrackSegment)
-					: segment;
-			});
-		}
-	};
 
 	const updateWordText = (flatIndex: number, rawText: string) => {
 		const target = allWords()[flatIndex];
@@ -165,8 +140,6 @@ export function TranscriptPanel() {
 						seg.end = seg.words[seg.words.length - 1].end;
 					}
 				}
-
-				syncCaptionTracks(p);
 			}),
 		);
 		setEditorState("captions", "isStale", false);
@@ -175,17 +148,20 @@ export function TranscriptPanel() {
 	const addCaptionAtPlayhead = () => {
 		const total = totalDuration();
 		const defaultDuration = 2;
-		const start =
+		const outputStart =
 			total > 0
 				? Math.min(
 						Math.max(editorState.playbackTime, 0),
 						Math.max(total - 0.25, 0),
 					)
 				: Math.max(editorState.playbackTime, 0);
-		const end =
-			total > 0
-				? Math.min(Math.max(start + defaultDuration, start + 0.25), total)
-				: start + defaultDuration;
+		const start =
+			mapEditedTimeToSource(
+				outputStart,
+				project.timeline?.segments ?? [],
+				recordingSegments(),
+			) ?? outputStart;
+		const end = start + defaultDuration;
 		const text = "New caption";
 
 		setProject(
@@ -193,12 +169,14 @@ export function TranscriptPanel() {
 				p.captions ??= {
 					segments: [],
 					settings: { ...defaultCaptionSettings, enabled: true },
+					sourceTimed: true,
 				};
 				p.captions.settings = {
 					...defaultCaptionSettings,
 					...p.captions.settings,
 					enabled: true,
 				};
+				p.captions.sourceTimed = true;
 				p.timeline ??= {
 					segments: [{ start: 0, end: total || end, timescale: 1 }],
 					zoomSegments: [],
@@ -217,7 +195,6 @@ export function TranscriptPanel() {
 					words: syncCaptionWordsWithText(text, undefined, start, end),
 				});
 				p.captions.segments.sort((a, b) => a.start - b.start);
-				syncCaptionTracks(p);
 			}),
 		);
 		setEditorState("timeline", "tracks", "caption", true);
@@ -225,17 +202,23 @@ export function TranscriptPanel() {
 	};
 
 	const activeWordIndex = createMemo(() => {
-		const time = editorState.playbackTime;
 		const words = allWords();
 		if (words.length === 0) return -1;
+
+		const sourceTime = mapEditedTimeToSource(
+			editorState.playbackTime,
+			project.timeline?.segments ?? [],
+			recordingSegments(),
+		);
+		if (sourceTime === null) return -1;
 
 		let lo = 0;
 		let hi = words.length - 1;
 		while (lo <= hi) {
 			const mid = (lo + hi) >>> 1;
-			if (time >= words[mid].end) {
+			if (sourceTime >= words[mid].end) {
 				lo = mid + 1;
-			} else if (time < words[mid].start) {
+			} else if (sourceTime < words[mid].start) {
 				hi = mid - 1;
 			} else {
 				return mid;
@@ -246,17 +229,23 @@ export function TranscriptPanel() {
 
 	const handleWordClick = async (word: FlatWord) => {
 		try {
+			const outputTime = mapSourceTimeToEdited(
+				word.start,
+				project.timeline?.segments ?? [],
+				recordingSegments(),
+			);
+			if (outputTime === null) return;
 			if (editorState.playing) {
 				await commands.stopPlayback();
 				setEditorState("playing", false);
 			}
-			const frame = Math.max(Math.floor(word.start * FPS), 0);
+			const frame = Math.max(Math.floor(outputTime * FPS), 0);
 			await commands.seekTo(frame);
 			batch(() => {
 				setEditorState("previewTime", null);
-				setEditorState("playbackTime", word.start);
+				setEditorState("playbackTime", outputTime);
 				editorState.timeline.transform.setPosition(
-					word.start - editorState.timeline.transform.zoom / 2,
+					outputTime - editorState.timeline.transform.zoom / 2,
 				);
 			});
 		} catch (error) {
@@ -278,17 +267,42 @@ export function TranscriptPanel() {
 			return b.wordIndex - a.wordIndex;
 		});
 
-		const timeRanges = wordsToDelete
+		const sourceRanges = wordsToDelete
 			.map((w) => ({ start: w.start, end: w.end }))
 			.sort((a, b) => a.start - b.start);
 
-		const mergedRanges: { start: number; end: number }[] = [];
-		for (const range of timeRanges) {
-			const last = mergedRanges[mergedRanges.length - 1];
+		const mergedSourceRanges: { start: number; end: number }[] = [];
+		for (const range of sourceRanges) {
+			const last = mergedSourceRanges[mergedSourceRanges.length - 1];
 			if (last && range.start <= last.end) {
 				last.end = Math.max(last.end, range.end);
 			} else {
-				mergedRanges.push({ ...range });
+				mergedSourceRanges.push({ ...range });
+			}
+		}
+
+		// Deleting transcript words also removes the matching span of video. The
+		// caption master is source-timed, so translate the deleted source ranges
+		// into the output-time ranges they currently occupy and ripple those out
+		// of every output-time track (clips + zoom/mask/text/keyboard).
+		const outputRanges = mergedSourceRanges
+			.flatMap((range) =>
+				mapSourceRangeToEdited(
+					range.start,
+					range.end,
+					project.timeline?.segments ?? [],
+					recordingSegments(),
+				),
+			)
+			.sort((a, b) => a.start - b.start);
+
+		const mergedOutputRanges: { start: number; end: number }[] = [];
+		for (const range of outputRanges) {
+			const last = mergedOutputRanges[mergedOutputRanges.length - 1];
+			if (last && range.start <= last.end + 0.0001) {
+				last.end = Math.max(last.end, range.end);
+			} else {
+				mergedOutputRanges.push({ ...range });
 			}
 		}
 
@@ -315,26 +329,11 @@ export function TranscriptPanel() {
 					}
 				}
 
-				const reversedRanges = [...mergedRanges].reverse();
-				for (const range of reversedRanges) {
-					const cutDuration = range.end - range.start;
-					if (cutDuration <= 0.001) continue;
-
-					shiftCaptionTimesAfterCut(
-						p.captions.segments,
-						range.start,
-						cutDuration,
-					);
-
-					if (p.timeline) {
+				if (p.timeline) {
+					for (const range of [...mergedOutputRanges].reverse()) {
+						if (range.end - range.start <= 0.001) continue;
 						rippleDeleteAllTracks(p.timeline, range.start, range.end);
 					}
-				}
-
-				if (p.timeline && p.captions) {
-					p.timeline.captionSegments = createCaptionTrackSegments(
-						p.captions.segments,
-					);
 				}
 			}),
 		);

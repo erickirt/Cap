@@ -375,6 +375,7 @@ impl ScreenshotEditorInstances {
                     camera_frame: None,
                     segment_time: 0.0,
                     recording_time: 0.0,
+                    segment_has_camera: false,
                 };
 
                 let (base_w, base_h) =
@@ -837,6 +838,7 @@ pub async fn prewarm_screenshot_renderer() {
         camera_frame: None,
         segment_time: 0.0,
         recording_time: 0.0,
+        segment_has_camera: false,
     };
 
     let (base_w, base_h) = ProjectUniforms::get_base_size(&constants.options, &config);
@@ -1596,6 +1598,7 @@ pub async fn render_screenshot_png(instance: &ScreenshotEditorInstance) -> Resul
         camera_frame: None,
         segment_time: 0.0,
         recording_time: 0.0,
+        segment_has_camera: false,
     };
     let cursor_events = cap_project::CursorEvents::default();
     let zoom_focus_interpolator = ZoomFocusInterpolator::new(

@@ -32,8 +32,10 @@ import {
 	DEFAULT_WHISPER_CAPTION_MODEL,
 	getCaptionGenerationErrorMessage,
 	getModelPath,
+	mapEditedTimeToSource,
 	PARAKEET_DIR_MODELS,
 	resolveCaptionModel,
+	sourceCaptionId,
 	supportsParakeetTranscription,
 	syncCaptionWordsWithText,
 	transcribeEditorCaptions,
@@ -160,21 +162,43 @@ export function CaptionsTab(props: {
 
 		setProject(
 			produce((currentProject: typeof project) => {
-				const timelineSegment =
-					currentProject.timeline?.captionSegments?.[index];
-				if (!timelineSegment) return;
+				const timeline = currentProject.timeline;
+				const timelineSegment = timeline?.captionSegments?.[index];
+				if (!timeline || !timelineSegment) return;
 
+				// Apply the edit to the rendered (output-time) segment so style
+				// overrides take effect immediately and survive re-derivation.
 				update(timelineSegment);
 
-				const captionSegment = currentProject.captions?.segments?.[index];
-				if (!captionSegment) return;
+				// Route content/timing onto the source-time caption master so the
+				// edit persists across future clip changes. Style overrides stay on
+				// the track and are carried across by source id when re-derived.
+				const sourceId = sourceCaptionId(timelineSegment.id);
+				const source = currentProject.captions?.segments?.find(
+					(segment) => segment.id === sourceId,
+				);
+				if (!source) return;
 
-				captionSegment.start = timelineSegment.start;
-				captionSegment.end = timelineSegment.end;
-				captionSegment.text = timelineSegment.text;
-				captionSegment.words = timelineSegment.words?.map((word) => ({
-					...word,
-				}));
+				const recordingSegments = editorInstance.recordings.segments;
+				const start = mapEditedTimeToSource(
+					timelineSegment.start,
+					timeline.segments,
+					recordingSegments,
+				);
+				const end = mapEditedTimeToSource(
+					timelineSegment.end,
+					timeline.segments,
+					recordingSegments,
+				);
+				if (start !== null) source.start = start;
+				if (end !== null) source.end = end;
+				source.text = timelineSegment.text;
+				source.words = syncCaptionWordsWithText(
+					source.text,
+					source.words,
+					source.start,
+					source.end,
+				);
 			}),
 		);
 	};
@@ -266,6 +290,7 @@ export function CaptionsTab(props: {
 					setProject("captions", {
 						segments: [],
 						settings: { ...defaultCaptionSettings },
+						sourceTimed: true,
 					});
 				}
 			},

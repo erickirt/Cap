@@ -25,6 +25,7 @@ import {
 	Switch,
 } from "solid-js";
 import { createStore } from "solid-js/store";
+import toast from "solid-toast";
 import { Transition } from "solid-transition-group";
 import {
 	CROP_ZERO,
@@ -38,6 +39,7 @@ import { Toggle } from "~/components/Toggle";
 import { composeEventHandlers } from "~/utils/composeEventHandlers";
 import { createTauriEventListener } from "~/utils/createEventListener";
 import { commands, events } from "~/utils/tauri";
+import { ClipsSidebar } from "./ClipsSidebar";
 import { ConfigSidebar } from "./ConfigSidebar";
 import {
 	EditorContextProvider,
@@ -63,6 +65,24 @@ const MIN_TIMELINE_HEIGHT = 240;
 const RESIZE_HANDLE_HEIGHT = 16;
 const MIN_PLAYER_HEIGHT = MIN_PLAYER_CONTENT_HEIGHT + RESIZE_HANDLE_HEIGHT;
 const TIMELINE_RESIZE_GRIP_MARKS = [0, 1, 2] as const;
+
+const scheduleIdleWork = (callback: () => void) => {
+	const win = window as Window & {
+		requestIdleCallback?: (
+			callback: () => void,
+			options?: { timeout: number },
+		) => number;
+		cancelIdleCallback?: (handle: number) => void;
+	};
+
+	if (win.requestIdleCallback) {
+		const handle = win.requestIdleCallback(callback, { timeout: 1_000 });
+		return () => win.cancelIdleCallback?.(handle);
+	}
+
+	const handle = window.setTimeout(callback, 250);
+	return () => window.clearTimeout(handle);
+};
 
 function getEditorErrorMessage(error: unknown) {
 	return error instanceof Error ? error.message : String(error);
@@ -259,12 +279,38 @@ function EditorContent(props: { projectPath: string }) {
 function Inner() {
 	const {
 		project,
+		editorInstance,
 		editorState,
 		setEditorState,
 		previewResolutionBase,
 		dialog,
 		exportState,
 	} = useEditorContext();
+
+	createTauriEventListener(events.editorRecordingAdded, (payload) => {
+		const normalize = (p: string) => p.replace(/[\\/]+$/, "");
+		if (normalize(payload.editor_path) !== normalize(editorInstance.path))
+			return;
+		void appendRecordedClip(payload.recording_path);
+	});
+
+	const appendRecordedClip = async (recordingPath: string) => {
+		const toastId = toast.loading("Adding clip…");
+		try {
+			if (editorState.playing) {
+				await commands.stopPlayback();
+				setEditorState("playing", false);
+			}
+			await commands.setProjectConfig(serializeProjectConfiguration(project));
+			await commands.addExistingRecordingToEditor(recordingPath);
+			await commands.deleteRecordingDirectory(recordingPath).catch(() => {});
+			toast.success("Clip added", { id: toastId });
+			window.location.reload();
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			toast.error(`Failed to add clip: ${message}`, { id: toastId });
+		}
+	};
 
 	const isExportMode = () => {
 		const d = dialog();
@@ -275,6 +321,22 @@ function Inner() {
 		const d = dialog();
 		return "type" in d && d.type === "transcript" && d.open;
 	};
+
+	const isClipsMode = () => {
+		const d = dialog();
+		return "type" in d && d.type === "clips" && d.open;
+	};
+
+	const [clipsSidebarMounted, setClipsSidebarMounted] = createSignal(false);
+
+	createEffect(() => {
+		if (isClipsMode()) setClipsSidebarMounted(true);
+	});
+
+	onMount(() => {
+		const cancel = scheduleIdleWork(() => setClipsSidebarMounted(true));
+		onCleanup(cancel);
+	});
 
 	const isCropMode = () => {
 		const d = dialog();
@@ -634,7 +696,22 @@ function Inner() {
 							</div>
 							<Show when={!isTranscriptMode()}>
 								<div class="ml-2 flex min-h-0 w-104 min-w-104 flex-none overflow-hidden">
-									<ConfigSidebar />
+									<div
+										class="overflow-hidden min-h-0"
+										classList={{
+											flex: !isClipsMode(),
+											"flex-1": !isClipsMode(),
+											hidden: isClipsMode(),
+										}}
+									>
+										<ConfigSidebar />
+									</div>
+									<Show when={clipsSidebarMounted()}>
+										<ClipsSidebar
+											open={isClipsMode()}
+											class={isClipsMode() ? undefined : "hidden"}
+										/>
+									</Show>
 								</div>
 							</Show>
 							<Show when={isTranscriptMode()}>
