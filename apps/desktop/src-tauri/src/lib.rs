@@ -11,6 +11,7 @@ mod camera_legacy;
 mod camera_native;
 mod captions;
 mod cli;
+mod clip_thumbnails;
 mod crash_sentinel;
 mod deeplink_actions;
 mod editor_window;
@@ -113,8 +114,8 @@ use upload::{create_or_get_video, upload_image, upload_video};
 use web_api::AuthedApiError;
 use web_api::ManagerExt as WebManagerExt;
 use windows::{
-    CapWindowId, EditorWindowIds, ScreenshotEditorWindowIds, ShowCapWindow, hide_overlay,
-    set_window_transparent, show_overlay,
+    CapWindowId, EditorRecordingTarget, EditorWindowIds, ScreenshotEditorWindowIds, ShowCapWindow,
+    hide_overlay, set_window_transparent, show_overlay,
 };
 
 use crate::{recording::start_recording, upload::build_video_meta};
@@ -2131,6 +2132,12 @@ pub struct NewStudioRecordingAdded {
     path: PathBuf,
 }
 
+#[derive(Deserialize, specta::Type, Serialize, tauri_specta::Event, Debug, Clone)]
+pub struct EditorRecordingAdded {
+    pub editor_path: PathBuf,
+    pub recording_path: PathBuf,
+}
+
 #[derive(Deserialize, specta::Type, tauri_specta::Event, Debug, Clone, Serialize)]
 pub struct RecordingDeleted {
     path: PathBuf,
@@ -2851,6 +2858,16 @@ async fn get_editor_meta(editor: WindowEditorInstance) -> Result<RecordingMeta, 
 async fn get_recording_meta_by_path(project_path: PathBuf) -> Result<RecordingMeta, String> {
     RecordingMeta::load_for_project(&project_path).map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+#[specta::specta]
+async fn set_editor_recording_target(
+    app: AppHandle,
+    project_path: Option<PathBuf>,
+) -> Result<(), String> {
+    EditorRecordingTarget::set(&app, project_path);
+    Ok(())
+}
 #[tauri::command]
 #[specta::specta]
 #[instrument(skip(editor))]
@@ -3409,6 +3426,8 @@ pub struct RecordingMetaWithMetadata {
     // THESE MUST COME AFTER `inner` to override flattened fields with the same name
     pub mode: RecordingMode,
     pub status: StudioRecordingStatus,
+    // Number of recorded takes (segments) the recording is made up of.
+    pub clip_count: u32,
 }
 
 impl RecordingMetaWithMetadata {
@@ -3417,6 +3436,13 @@ impl RecordingMetaWithMetadata {
             mode: match &inner.inner {
                 RecordingMetaInner::Studio(_) => RecordingMode::Studio,
                 RecordingMetaInner::Instant(_) => RecordingMode::Instant,
+            },
+            clip_count: match &inner.inner {
+                RecordingMetaInner::Studio(meta) => match &**meta {
+                    StudioRecordingMeta::MultipleSegments { inner } => inner.segments.len() as u32,
+                    StudioRecordingMeta::SingleSegment { .. } => 1,
+                },
+                RecordingMetaInner::Instant(_) => 1,
             },
             status: match &inner.inner {
                 RecordingMetaInner::Studio(meta) => match &**meta {
@@ -3507,6 +3533,24 @@ fn list_recordings(app: AppHandle) -> Result<Vec<(PathBuf, RecordingMetaWithMeta
     });
 
     Ok(result)
+}
+
+#[tauri::command]
+#[specta::specta]
+#[instrument(skip(app))]
+async fn delete_recording_directory(app: AppHandle, path: PathBuf) -> Result<(), String> {
+    let recordings_dir = recordings_path(&app);
+    if !path.starts_with(&recordings_dir) {
+        return Err("Path is not inside the recordings directory".to_string());
+    }
+
+    if path.exists() {
+        std::fs::remove_dir_all(&path).map_err(|e| format!("Failed to delete recording: {e}"))?;
+    }
+
+    let _ = RecordingDeleted { path }.emit(&app);
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -4293,6 +4337,7 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
             is_camera_window_open,
             seek_to,
             get_display_frame_for_cropping,
+            clip_thumbnails::get_clip_thumbnail,
             windows::position_traffic_lights,
             windows::set_theme,
             windows::apply_macos_liquid_glass_background,
@@ -4307,6 +4352,8 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
             set_window_transparent,
             get_editor_meta,
             get_recording_meta_by_path,
+            set_editor_recording_target,
+            delete_recording_directory,
             set_pretty_name,
             set_server_url,
             set_camera_preview_state,
@@ -4347,6 +4394,7 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
         .events(tauri_specta::collect_events![
             RecordingOptionsChanged,
             NewStudioRecordingAdded,
+            EditorRecordingAdded,
             NewScreenshotAdded,
             RenderFrameEvent,
             EditorStateChanged,
@@ -4542,6 +4590,7 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
             app.manage(target_select_overlay::WindowFocusManager::default());
             app.manage(EditorWindowIds::default());
             app.manage(ScreenshotEditorWindowIds::default());
+            app.manage(EditorRecordingTarget::default());
             #[cfg(target_os = "macos")]
             app.manage(crate::platform::ScreenCapturePrewarmer::default());
             #[cfg(target_os = "macos")]
@@ -5812,7 +5861,7 @@ async fn create_editor_instance_impl(
     Ok((instance, event_id))
 }
 
-async fn wait_for_recording_ready(app: &AppHandle, path: &Path) -> Result<(), String> {
+pub(crate) async fn wait_for_recording_ready(app: &AppHandle, path: &Path) -> Result<(), String> {
     let finalizing_state = app.state::<FinalizingRecordings>();
 
     if let Some(mut rx) = finalizing_state.is_finalizing(path) {
