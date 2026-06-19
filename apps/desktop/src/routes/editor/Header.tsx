@@ -22,6 +22,7 @@ import {
 import { produce } from "solid-js/store";
 import toast from "solid-toast";
 import Tooltip from "~/components/Tooltip";
+import CaptionControlsMacOS from "~/components/titlebar/controls/CaptionControlsMacOS";
 import CaptionControlsWindows11 from "~/components/titlebar/controls/CaptionControlsWindows11";
 import { trackEvent } from "~/utils/analytics";
 import { commands, type RecordingMetaWithMetadata } from "~/utils/tauri";
@@ -268,6 +269,7 @@ export function Header() {
 				class={cx("flex flex-row flex-1 gap-2 items-center px-4 h-full")}
 			>
 				{ostype() === "macos" && <div class="h-full w-16" />}
+				{ostype() === "linux" && <CaptionControlsMacOS class="mr-1" />}
 				<EditorButton
 					onClick={async () => {
 						clearTimelineSelection();

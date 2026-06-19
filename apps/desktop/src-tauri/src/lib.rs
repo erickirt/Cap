@@ -4432,8 +4432,14 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
     tauri::async_runtime::set(tokio::runtime::Handle::current());
 
     #[allow(unused_mut)]
-    let mut builder =
-        tauri::Builder::default().plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+    let mut builder = tauri::Builder::default();
+
+    // The Linux single-instance plugin establishes its D-Bus connection through a
+    // blocking zbus call, which panics ("Cannot start a runtime from within a
+    // runtime") when initialized inside the Tokio runtime that drives the app.
+    #[cfg(not(target_os = "linux"))]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             trace!("Single instance invoked with args {args:?}");
 
             // This is also handled as a deeplink on some platforms (eg macOS), see deeplink_actions
@@ -4455,6 +4461,7 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
 
             let _ = open_project_from_path(&cap_file, app.clone());
         }));
+    }
 
     #[cfg(target_os = "macos")]
     {
