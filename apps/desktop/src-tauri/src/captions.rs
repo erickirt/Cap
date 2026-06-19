@@ -1728,7 +1728,11 @@ pub fn parse_captions_json(json: &str) -> Result<cap_project::CaptionsData, Stri
                     cap_project::CaptionSettings::default()
                 };
 
-                Ok(cap_project::CaptionsData { segments, settings })
+                Ok(cap_project::CaptionsData {
+                    segments,
+                    settings,
+                    ..Default::default()
+                })
             } else {
                 Err("Missing or invalid segments array in captions file".to_string())
             }
