@@ -612,6 +612,8 @@ pub struct TimelineSegment {
     pub timescale: f64,
     pub start: f64,
     pub end: f64,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 impl TimelineSegment {
@@ -1048,6 +1050,14 @@ impl Default for CaptionSettings {
 pub struct CaptionsData {
     pub segments: Vec<CaptionSegment>,
     pub settings: CaptionSettings,
+    /// When true, `segments` are stored in source/recording time and the
+    /// rendered `timeline.caption_segments` are derived by projecting them
+    /// through the current edit list, so captions stay aligned to their spoken
+    /// content as clips are trimmed, deleted, reordered, or inserted. Legacy
+    /// projects (false) stored segments in already-edited output time and are
+    /// migrated to source time on first load.
+    #[serde(default)]
+    pub source_timed: bool,
 }
 
 #[derive(Type, Serialize, Deserialize, Clone, Debug)]
