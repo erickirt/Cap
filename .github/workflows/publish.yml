@@ -259,6 +259,20 @@ jobs:
         shell: bash
         run: ./scripts/build-desktop-binaries.sh ${{ matrix.settings.target }}
 
+      # The release profile uses fat LTO + full debuginfo, so the final link
+      # peaks well above the 16GB stock Linux runner and gets OOM-killed
+      # ("runner received a shutdown signal"). Add swap so the link can spill
+      # to disk instead of dying. Linux-only; macOS/Windows are unaffected.
+      - name: Increase swap space (Linux)
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          sudo fallocate -l 10G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
       - name: Build app
         working-directory: apps/desktop
         run: pnpm build:tauri --target ${{ matrix.settings.target }} --config src-tauri/tauri.prod.conf.json
