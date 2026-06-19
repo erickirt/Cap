@@ -394,6 +394,7 @@ impl RecordingSegmentDecoders {
                 camera_frame,
                 segment_time,
                 recording_time: segment_time + self.segment_offset as f32,
+                segment_has_camera: self.camera.is_some(),
             })
         } else {
             let camera_frame = OptionFuture::from(
@@ -418,6 +419,7 @@ impl RecordingSegmentDecoders {
                 camera_frame,
                 segment_time,
                 recording_time: segment_time + self.segment_offset as f32,
+                segment_has_camera: self.camera.is_some(),
             })
         }
     }
@@ -451,6 +453,7 @@ impl RecordingSegmentDecoders {
                 camera_frame,
                 segment_time,
                 recording_time: segment_time + self.segment_offset as f32,
+                segment_has_camera: self.camera.is_some(),
             })
         } else {
             let camera_frame = OptionFuture::from(
@@ -475,6 +478,7 @@ impl RecordingSegmentDecoders {
                 camera_frame,
                 segment_time,
                 recording_time: segment_time + self.segment_offset as f32,
+                segment_has_camera: self.camera.is_some(),
             })
         }
     }
@@ -3618,6 +3622,7 @@ pub struct DecodedSegmentFrames {
     pub camera_frame: Option<DecodedFrame>,
     pub segment_time: f32,
     pub recording_time: f32,
+    pub segment_has_camera: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -4256,28 +4261,45 @@ impl RendererLayers {
             constants,
         );
 
+        let camera_frame_data = if segment_frames.segment_has_camera {
+            constants.options.camera_size.and_then(|_| {
+                segment_frames.camera_frame.as_ref().map(|frame| {
+                    // Use the decoded frame's own dimensions rather than the project's
+                    // configured `camera_size` (which is taken from the first recording).
+                    // An imported clip can carry a camera recorded at a different
+                    // resolution; uploading it with the first clip's size makes the YUV
+                    // upload fail and leaves the previous clip's camera on screen.
+                    (
+                        XY::new(frame.width(), frame.height()),
+                        frame,
+                        segment_frames.recording_time,
+                    )
+                })
+            })
+        } else {
+            None
+        };
+
         self.camera.prepare(
             &constants.device,
             &constants.queue,
-            uniforms.camera,
-            constants.options.camera_size.and_then(|size| {
-                segment_frames
-                    .camera_frame
-                    .as_ref()
-                    .map(|frame| (size, frame, segment_frames.recording_time))
-            }),
+            if segment_frames.segment_has_camera {
+                uniforms.camera
+            } else {
+                None
+            },
+            camera_frame_data,
         );
 
         self.camera_only.prepare(
             &constants.device,
             &constants.queue,
-            uniforms.camera_only,
-            constants.options.camera_size.and_then(|size| {
-                segment_frames
-                    .camera_frame
-                    .as_ref()
-                    .map(|frame| (size, frame, segment_frames.recording_time))
-            }),
+            if segment_frames.segment_has_camera {
+                uniforms.camera_only
+            } else {
+                None
+            },
+            camera_frame_data,
         );
 
         if let Some(mode) = blur_mode_from_config(&uniforms.project.camera.background_blur) {
@@ -4384,17 +4406,35 @@ impl RendererLayers {
         );
         timings.cursor_prepare_duration = start.elapsed();
 
+        let camera_frame_data = if segment_frames.segment_has_camera {
+            constants.options.camera_size.and_then(|_| {
+                segment_frames.camera_frame.as_ref().map(|frame| {
+                    // Use the decoded frame's own dimensions rather than the project's
+                    // configured `camera_size` (which is taken from the first recording).
+                    // An imported clip can carry a camera recorded at a different
+                    // resolution; uploading it with the first clip's size makes the YUV
+                    // upload fail and leaves the previous clip's camera on screen.
+                    (
+                        XY::new(frame.width(), frame.height()),
+                        frame,
+                        segment_frames.recording_time,
+                    )
+                })
+            })
+        } else {
+            None
+        };
+
         let start = Instant::now();
         self.camera.prepare_with_encoder(
             &constants.device,
             &constants.queue,
-            uniforms.camera,
-            constants.options.camera_size.and_then(|size| {
-                segment_frames
-                    .camera_frame
-                    .as_ref()
-                    .map(|frame| (size, frame, segment_frames.recording_time))
-            }),
+            if segment_frames.segment_has_camera {
+                uniforms.camera
+            } else {
+                None
+            },
+            camera_frame_data,
             encoder,
         );
         timings.camera_prepare_duration = start.elapsed();
@@ -4403,13 +4443,12 @@ impl RendererLayers {
         self.camera_only.prepare_with_encoder(
             &constants.device,
             &constants.queue,
-            uniforms.camera_only,
-            constants.options.camera_size.and_then(|size| {
-                segment_frames
-                    .camera_frame
-                    .as_ref()
-                    .map(|frame| (size, frame, segment_frames.recording_time))
-            }),
+            if segment_frames.segment_has_camera {
+                uniforms.camera_only
+            } else {
+                None
+            },
+            camera_frame_data,
             encoder,
         );
         timings.camera_only_prepare_duration = start.elapsed();
