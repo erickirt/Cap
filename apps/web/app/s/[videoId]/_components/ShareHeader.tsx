@@ -379,31 +379,33 @@ export const ShareHeader = ({
 		return (
 			<div className="group relative inline-flex shrink-0 items-center">
 				{canManageSharePageBranding && (
-					<div className="pointer-events-none absolute left-0 top-full z-10 mt-1 flex items-center gap-1 rounded-full border border-gray-5 bg-white p-1 opacity-0 shadow-sm transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
-						<Button
-							variant="gray"
-							size="xs"
-							aria-label="Edit shareable link branding"
-							className="h-7 gap-1 whitespace-nowrap rounded-full px-2 text-[11px]"
-							disabled={isOpeningBrandingSettings}
-							onClick={handleEditBranding}
-						>
-							<Pencil className="size-3.5 text-gray-12" />
-							Change logo
-						</Button>
-						{branding.type === "cap" && (
+					<div className="pointer-events-none absolute left-0 top-full z-10 pt-1 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+						<div className="flex items-center gap-1 rounded-full border border-gray-5 bg-white p-1 shadow-sm">
 							<Button
 								variant="gray"
 								size="xs"
-								aria-label="Hide Cap logo"
+								aria-label="Edit shareable link branding"
 								className="h-7 gap-1 whitespace-nowrap rounded-full px-2 text-[11px]"
-								disabled={isHidingBranding}
-								onClick={handleHideBranding}
+								disabled={isOpeningBrandingSettings}
+								onClick={handleEditBranding}
 							>
-								<X className="size-3.5 text-gray-12" />
-								Remove
+								<Pencil className="size-3.5 text-gray-12" />
+								Change logo
 							</Button>
-						)}
+							{branding.type === "cap" && (
+								<Button
+									variant="gray"
+									size="xs"
+									aria-label="Hide Cap logo"
+									className="h-7 gap-1 whitespace-nowrap rounded-full px-2 text-[11px]"
+									disabled={isHidingBranding}
+									onClick={handleHideBranding}
+								>
+									<X className="size-3.5 text-gray-12" />
+									Remove
+								</Button>
+							)}
+						</div>
 					</div>
 				)}
 				{branding.type === "custom" ? (
