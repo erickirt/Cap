@@ -292,6 +292,10 @@ function createCaptionsStore() {
 						wordTransitionDuration: state.settings.wordTransitionDuration,
 						activeWordHighlight: state.settings.activeWordHighlight,
 						manualPosition: state.settings.manualPosition,
+						preset: state.settings.preset,
+						animation: state.settings.animation,
+						highlightStyle: state.settings.highlightStyle,
+						uppercase: state.settings.uppercase,
 					},
 				};
 
