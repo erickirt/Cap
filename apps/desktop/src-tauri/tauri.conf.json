@@ -90,7 +90,9 @@
 				"depends": [
 					"libwebkit2gtk-4.1-0",
 					"libgtk-3-0",
-					"libayatana-appindicator3-1"
+					"libayatana-appindicator3-1",
+					"libva2",
+					"libva-drm2"
 				],
 				"files": {
 					"/usr/lib/cap/libavcodec.so.61": "../../../target/native-deps/cap-deb-libs/libavcodec.so.61",

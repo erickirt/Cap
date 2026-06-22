@@ -54,7 +54,10 @@ async function main() {
 		};
 
 		const nativeDepsTar = NATIVE_DEPS_ASSETS[arch];
-		const nativeDepsTarPath = path.join(targetDir, nativeDepsTar);
+		const nativeDepsTarPath = path.join(
+			targetDir,
+			`${NATIVE_DEPS_VERSION}-${nativeDepsTar}`,
+		);
 		let downloadedNativeDeps = false;
 
 		if (!(await fileExists(nativeDepsTarPath))) {
@@ -207,7 +210,7 @@ async function main() {
 		if (triple) {
 			cargoConfigContents += FFMPEG_CARGO_ENV;
 
-			const NATIVE_DEPS_VERSION = "v0.25";
+			const NATIVE_DEPS_VERSION = "v0.26";
 			const NATIVE_DEPS_URL = `https://github.com/spacedriveapp/native-deps/releases/download/${NATIVE_DEPS_VERSION}`;
 			const NATIVE_DEPS_ASSETS = {
 				x86_64: "native-deps-x86_64-linux-gnu.tar.xz",
@@ -218,7 +221,10 @@ async function main() {
 			if (!nativeDepsTar)
 				throw new Error(`Unsupported Linux arch for native deps: ${arch}`);
 
-			const nativeDepsTarPath = path.join(targetDir, nativeDepsTar);
+			const nativeDepsTarPath = path.join(
+				targetDir,
+				`${NATIVE_DEPS_VERSION}-${nativeDepsTar}`,
+			);
 			let downloadedNativeDeps = false;
 			if (!(await fileExists(nativeDepsTarPath))) {
 				console.log(`Downloading ${nativeDepsTar}`);

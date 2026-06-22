@@ -43,4 +43,5 @@ runs:
           libavdevice-dev \
           libswscale-dev \
           libswresample-dev \
+          libva-dev \
           patchelf
