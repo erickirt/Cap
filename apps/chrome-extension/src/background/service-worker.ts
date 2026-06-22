@@ -57,7 +57,12 @@ import type {
 	ServiceWorkerResponse,
 } from "../shared/types";
 
-const POPUP_URL = "popup.html";
+// popup.html is web-accessible with use_dynamic_url so sites cannot fingerprint
+// the extension via the overlay iframe's static URL; that same flag makes its
+// static chrome-extension:// URL fail with ERR_BLOCKED_BY_CLIENT when opened as
+// a window. The standalone fallback therefore loads a privileged twin that is
+// not in web_accessible_resources.
+const POPUP_URL = "popup-window.html";
 const OFFSCREEN_URL = "offscreen.html";
 const AUTH_TIMEOUT_MS = 10 * 60 * 1000;
 const OFFSCREEN_MESSAGE_ATTEMPTS = 3;
