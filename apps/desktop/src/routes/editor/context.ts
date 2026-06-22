@@ -718,7 +718,7 @@ export const [EditorContextProvider, useEditorContext] = createContextProvider(
 
 		const readPersistedLayoutMode = (): DialogState => {
 			try {
-				const raw = localStorage.getItem(layoutModeStorageKey);
+				const raw = sessionStorage.getItem(layoutModeStorageKey);
 				if (!raw) return { open: false };
 				const parsed = JSON.parse(raw) as { type?: CurrentDialog["type"] };
 				if (parsed?.type && PERSISTED_LAYOUT_MODE_TYPES.has(parsed.type)) {
@@ -741,12 +741,12 @@ export const [EditorContextProvider, useEditorContext] = createContextProvider(
 					isLayoutMode(current) &&
 					PERSISTED_LAYOUT_MODE_TYPES.has(current.type)
 				) {
-					localStorage.setItem(
+					sessionStorage.setItem(
 						layoutModeStorageKey,
 						JSON.stringify({ type: current.type }),
 					);
 				} else {
-					localStorage.removeItem(layoutModeStorageKey);
+					sessionStorage.removeItem(layoutModeStorageKey);
 				}
 			} catch (error) {
 				console.error("Failed to persist editor layout mode", error);
