@@ -185,7 +185,9 @@ export const SeoPageTemplate = ({
 						>
 							<MotionButton
 								variant="blue"
-								href="/download"
+								href={content.cta.buttonHref ?? "/download"}
+								target={content.cta.buttonTarget}
+								icon={content.cta.buttonIcon}
 								size="lg"
 								className="relative z-[20] w-full font-medium text-md sm:w-auto"
 							>
@@ -194,7 +196,8 @@ export const SeoPageTemplate = ({
 							{content.cta.secondaryButtonText && (
 								<MotionButton
 									variant="white"
-									href="/pricing"
+									href={content.cta.secondaryButtonHref ?? "/pricing"}
+									target={content.cta.secondaryButtonTarget}
 									size="lg"
 									className="relative z-[20] w-full font-medium text-md sm:w-auto"
 								>
@@ -554,13 +557,16 @@ export const SeoPageTemplate = ({
 								{content.cta.title}
 							</h2>
 							<p className="mb-6 text-xl text-gray-10">
-								Ready to get started? Download now and see the difference.
+								{content.cta.subtitle ??
+									"Ready to get started? Download now and see the difference."}
 							</p>
 						</div>
 						<div className="flex flex-col justify-center items-center space-y-3 sm:flex-row sm:space-y-0 sm:space-x-4">
 							<Button
 								variant="blue"
-								href="/download"
+								href={content.cta.buttonHref ?? "/download"}
+								target={content.cta.buttonTarget}
+								icon={content.cta.buttonIcon}
 								size="lg"
 								className="px-8 py-3 w-full font-medium transition-all duration-300 sm:w-auto sm:max-w-fit"
 							>
@@ -569,7 +575,8 @@ export const SeoPageTemplate = ({
 							{content.cta.secondaryButtonText && (
 								<Button
 									variant="white"
-									href="/pricing"
+									href={content.cta.secondaryButtonHref ?? "/pricing"}
+									target={content.cta.secondaryButtonTarget}
 									size="lg"
 									className="px-8 py-3 w-full font-medium transition-all duration-300 sm:w-auto sm:max-w-fit"
 								>
