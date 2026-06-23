@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use cap_project::{RecordingMeta, RecordingMetaInner, StudioRecordingMeta};
+use cap_project::{
+    InstantRecordingMeta, RecordingMeta, RecordingMetaInner, StudioRecordingMeta,
+    StudioRecordingStatus,
+};
 use serde::Serialize;
 
 use crate::{OutputFormat, write_json};
@@ -91,6 +94,8 @@ struct ValidationReport {
     error: Option<String>,
     checks: Vec<FileCheck>,
     missing: Vec<PathBuf>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    problems: Vec<String>,
 }
 
 fn recording_type(meta: &RecordingMeta) -> &'static str {
@@ -162,6 +167,48 @@ fn studio_checks(meta: &RecordingMeta, studio: &StudioRecordingMeta) -> Vec<File
     checks
 }
 
+fn studio_problems(studio: &StudioRecordingMeta) -> Vec<String> {
+    let mut problems = Vec::new();
+
+    if let StudioRecordingMeta::MultipleSegments { inner } = studio {
+        if inner.segments.is_empty() {
+            problems.push("studio recording has no segments".to_string());
+        }
+    }
+
+    match studio.status() {
+        StudioRecordingStatus::Complete => {}
+        StudioRecordingStatus::InProgress => {
+            problems.push("studio recording is still in progress".to_string());
+        }
+        StudioRecordingStatus::NeedsRemux => {
+            problems.push("studio recording still needs remux".to_string());
+        }
+        StudioRecordingStatus::Failed { error } => {
+            problems.push(format!("studio recording failed: {error}"));
+        }
+    }
+
+    problems
+}
+
+fn instant_problems(instant: &InstantRecordingMeta) -> Vec<String> {
+    match instant {
+        InstantRecordingMeta::Complete { .. } => Vec::new(),
+        InstantRecordingMeta::InProgress { recording } => {
+            let state = if *recording {
+                "still recording"
+            } else {
+                "incomplete"
+            };
+            vec![format!("instant recording is {state}")]
+        }
+        InstantRecordingMeta::Failed { error } => {
+            vec![format!("instant recording failed: {error}")]
+        }
+    }
+}
+
 fn build_report(project_path: &Path, meta: &RecordingMeta) -> ValidationReport {
     let mut checks = vec![required_check(
         "recordingMeta",
@@ -172,15 +219,17 @@ fn build_report(project_path: &Path, meta: &RecordingMeta) -> ValidationReport {
         project_path.join("project-config.json"),
     ));
 
-    match &meta.inner {
+    let problems = match &meta.inner {
         RecordingMetaInner::Studio(studio) => {
             checks.extend(studio_checks(meta, studio));
             checks.push(optional_check("output", meta.output_path()));
+            studio_problems(studio)
         }
-        RecordingMetaInner::Instant(_) => {
+        RecordingMetaInner::Instant(instant) => {
             checks.push(required_check("output", meta.output_path()));
+            instant_problems(instant)
         }
-    }
+    };
 
     let missing: Vec<PathBuf> = checks
         .iter()
@@ -188,10 +237,15 @@ fn build_report(project_path: &Path, meta: &RecordingMeta) -> ValidationReport {
         .map(|c| c.path.clone())
         .collect();
 
-    let valid = missing.is_empty();
-    // Every `--json` command signals failure with an `error` field (see AGENT_HELP / `cap guide`), so a
-    // missing-media validation must carry one too, not just `valid:false`.
-    let error = (!valid).then(|| format!("project is missing {} required file(s)", missing.len()));
+    let valid = missing.is_empty() && problems.is_empty();
+    let error = (!valid).then(|| {
+        let mut reasons = Vec::new();
+        if !missing.is_empty() {
+            reasons.push(format!("missing {} required file(s)", missing.len()));
+        }
+        reasons.extend(problems.iter().cloned());
+        format!("project validation failed: {}", reasons.join("; "))
+    });
 
     ValidationReport {
         project_path: project_path.to_path_buf(),
@@ -200,6 +254,7 @@ fn build_report(project_path: &Path, meta: &RecordingMeta) -> ValidationReport {
         error,
         checks,
         missing,
+        problems,
     }
 }
 
@@ -216,6 +271,7 @@ pub fn validate(project_path: PathBuf, format: OutputFormat) -> Result<(), Strin
             valid: false,
             recording_type: None,
             error: Some(format!("Failed to load recording meta: {e}")),
+            problems: Vec::new(),
         },
     };
 
@@ -227,6 +283,9 @@ pub fn validate(project_path: PathBuf, format: OutputFormat) -> Result<(), Strin
             println!("project: {}", report.project_path.display());
             if let Some(error) = &report.error {
                 println!("error: {error}");
+            }
+            for problem in &report.problems {
+                println!("problem: {problem}");
             }
             for check in &report.checks {
                 let status = if check.exists { "ok" } else { "missing" };
