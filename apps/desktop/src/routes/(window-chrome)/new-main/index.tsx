@@ -1747,18 +1747,43 @@ function Page() {
 	const [hasHiddenMainWindowForPicker, setHasHiddenMainWindowForPicker] =
 		createSignal(false);
 	const [canRevealMainWindow, setCanRevealMainWindow] = createSignal(false);
+
+	// Remember the mode of the in-flight recording. currentRecording.data goes
+	// null the instant a recording ends, so capture it while it's live to decide
+	// what to do with the main window afterwards.
+	let lastRecordingMode: string | null = null;
+	let wasRecordingForPicker = false;
+	createEffect(() => {
+		const rec = currentRecording.data;
+		if (rec) lastRecordingMode = rec.mode;
+	});
+
 	createEffect(() => {
 		const pickerActive = rawOptions.targetMode != null;
 		const hasHidden = hasHiddenMainWindowForPicker();
-		if (pickerActive && !hasHidden) {
+		const recording = isRecording();
+
+		if (pickerActive && !hasHidden && !recording) {
 			setHasHiddenMainWindowForPicker(true);
 			void getCurrentWindow().hide();
+		} else if (recording) {
+			// A recording is active. The backend owns main-window visibility for the
+			// recording lifecycle: it hides the main window on start, and after a
+			// studio recording it opens the editor in its place. Revealing the main
+			// window here is exactly what left it sitting over the editor, so don't.
 		} else if (!pickerActive && hasHidden && canRevealMainWindow()) {
 			setHasHiddenMainWindowForPicker(false);
-			const currentWindow = getCurrentWindow();
-			void currentWindow.show();
-			void currentWindow.setFocus();
+			// After a studio recording the editor takes over the foreground, so keep
+			// the main window hidden. For a cancelled picker or a finished instant
+			// recording, bring the main window back.
+			if (!(wasRecordingForPicker && lastRecordingMode === "studio")) {
+				const currentWindow = getCurrentWindow();
+				void currentWindow.show();
+				void currentWindow.setFocus();
+			}
 		}
+
+		wasRecordingForPicker = recording;
 	});
 	onCleanup(() => {
 		if (!hasHiddenMainWindowForPicker()) return;
