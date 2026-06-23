@@ -530,21 +530,26 @@ impl RecordStopArgs {
             }
 
             if !session::process_alive(current.pid) {
-                // The worker died without flipping its status. Trust the on-disk recording-meta.json
-                // as the source of truth for whether the .cap finalized.
                 let recording_meta_exists = current.path.join("recording-meta.json").exists();
+                if !recording_meta_exists {
+                    return fail_dead_session(
+                        current,
+                        "recording process exited without finalizing the recording".to_string(),
+                    );
+                }
+
+                if let Err(error) = crate::project::validate_project(&current.path) {
+                    return fail_dead_session(current, error);
+                }
+
                 session::cleanup(&id);
-                return if recording_meta_exists {
-                    emit_record_event(
-                        format,
-                        &RecordEvent::Stopped {
-                            path: &current.path.display().to_string(),
-                            recording_meta_exists: true,
-                        },
-                    )
-                } else {
-                    Err("recording process exited without finalizing the recording".to_string())
-                };
+                return emit_record_event(
+                    format,
+                    &RecordEvent::Stopped {
+                        path: &current.path.display().to_string(),
+                        recording_meta_exists: true,
+                    },
+                );
             }
 
             if Instant::now() >= deadline {
@@ -557,6 +562,15 @@ impl RecordStopArgs {
             tokio::time::sleep(Duration::from_millis(150)).await;
         }
     }
+}
+
+fn fail_dead_session(session: Session, error: String) -> Result<(), String> {
+    let _ = session::write_session(&Session {
+        status: SessionStatus::Error,
+        error: Some(error.clone()),
+        ..session
+    });
+    Err(error)
 }
 
 fn resolve_session(id: Option<&str>, path: Option<&Path>) -> Result<Session, String> {
