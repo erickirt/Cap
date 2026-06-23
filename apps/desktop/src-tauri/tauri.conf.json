@@ -93,17 +93,7 @@
 					"libayatana-appindicator3-1",
 					"libva2",
 					"libva-drm2"
-				],
-				"files": {
-					"/usr/lib/cap/libavcodec.so.60": "../../../target/native-deps/cap-deb-libs/libavcodec.so.60",
-					"/usr/lib/cap/libavformat.so.60": "../../../target/native-deps/cap-deb-libs/libavformat.so.60",
-					"/usr/lib/cap/libavutil.so.58": "../../../target/native-deps/cap-deb-libs/libavutil.so.58",
-					"/usr/lib/cap/libavfilter.so.9": "../../../target/native-deps/cap-deb-libs/libavfilter.so.9",
-					"/usr/lib/cap/libavdevice.so.60": "../../../target/native-deps/cap-deb-libs/libavdevice.so.60",
-					"/usr/lib/cap/libswscale.so.7": "../../../target/native-deps/cap-deb-libs/libswscale.so.7",
-					"/usr/lib/cap/libswresample.so.4": "../../../target/native-deps/cap-deb-libs/libswresample.so.4",
-					"/usr/lib/cap/libpostproc.so.57": "../../../target/native-deps/cap-deb-libs/libpostproc.so.57"
-				}
+				]
 			}
 		},
 		"fileAssociations": [
