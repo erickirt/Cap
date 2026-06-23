@@ -284,11 +284,12 @@ export const BlogTemplate = ({ content }: { content: BlogPost }) => {
 					</h2>
 
 					<figure className="overflow-hidden rounded-xl shadow-lg">
-						<MuxPlayer
-							playbackId="A6oZoUWVZjOIVZB6XnBMLagYnXE6xhDhp8Hcyky018hk"
-							metadataVideoTitle="Cap Demo"
-							accentColor="#5C9FFF"
-							style={{ aspectRatio: "16/9", width: "100%" }}
+						<iframe
+							src={content.videoDemo.videoSrc}
+							title={content.videoDemo.caption}
+							allow="fullscreen; picture-in-picture"
+							allowFullScreen
+							className="w-full border-0 aspect-video"
 						/>
 					</figure>
 				</section>
