@@ -534,7 +534,7 @@ export const ImportLoomPage = () => {
 						</h1>
 						<p className="mt-1 max-w-xl text-sm text-gray-10">
 							{canUseCsvImport
-								? "Bring a single Loom video into Cap, or bulk import recordings for organization members from a CSV."
+								? "Bring a single Loom video into Cap, or bulk import recordings for organization members and new users from a CSV."
 								: "Paste a Loom share link to bring it into Cap."}
 						</p>
 					</div>
@@ -633,7 +633,8 @@ export const ImportLoomPage = () => {
 												<code className="px-1.5 py-0.5 rounded bg-gray-3 text-gray-12 text-[11px] font-mono">
 													space_name
 												</code>{" "}
-												to place videos in spaces.
+												to place videos in spaces. Emails that are not members
+												yet will be added without an email invite.
 											</p>
 										</div>
 									</div>
@@ -965,8 +966,8 @@ export const ImportLoomPage = () => {
 					</DialogHeader>
 					<div className="p-5 text-sm text-gray-11">
 						{readyRows.length} {pluralize(readyRows.length, "video", "videos")}{" "}
-						will be imported for organization members in batches of{" "}
-						{LOOM_CSV_BATCH_SIZE}.
+						will be imported for existing members or newly added users in
+						batches of {LOOM_CSV_BATCH_SIZE}.
 						{readyRows.some((row) => row.spaceName) && (
 							<span className="block mt-2">
 								Rows with a space name will be added to that space. Missing
