@@ -151,6 +151,13 @@ export function Preview(props: { zoom: number; setZoom: (z: number) => void }) {
 		null,
 	);
 
+	// Tracks whether the preview canvas has painted its first frame. The image
+	// wrapper has rounded corners + a drop shadow; rendering it before the canvas
+	// is painted briefly exposes the empty (transparent) canvas/shadow, which on a
+	// window screenshot reads as a "transparent border" flash around the corners.
+	// Gate the wrapper's visibility on the first paint to remove the transient.
+	const [canvasHasContent, setCanvasHasContent] = createSignal(false);
+
 	createEffect(() => {
 		const frame = latestFrame();
 		const currentBitmap = frame?.bitmap ?? null;
@@ -422,6 +429,7 @@ export function Preview(props: { zoom: number; setZoom: (z: number) => void }) {
 			if (ctx) {
 				ctx.clearRect(0, 0, canvasRef.width, canvasRef.height);
 				ctx.drawImage(frame.bitmap, 0, 0);
+				setCanvasHasContent(true);
 			}
 		}
 	});
@@ -683,6 +691,7 @@ export function Preview(props: { zoom: number; setZoom: (z: number) => void }) {
 											overflow: "hidden",
 											"border-radius": "4px",
 											"box-shadow": imageShadow(),
+											visibility: canvasHasContent() ? "visible" : "hidden",
 										}}
 									>
 										<canvas
