@@ -13,11 +13,13 @@ const getOrganizationAccessMock = vi.hoisted(() => vi.fn());
 const mockDb = {
 	select: vi.fn(() => mockDb),
 	insert: vi.fn(() => mockDb),
+	update: vi.fn(() => mockDb),
 	delete: vi.fn(() => mockDb),
 	from: vi.fn(() => mockDb),
 	innerJoin: vi.fn(() => mockDb),
 	leftJoin: vi.fn(() => mockDb),
 	where: whereMock,
+	set: vi.fn(() => mockDb),
 	values: valuesMock,
 	transaction: vi.fn((callback) => callback(mockDb)),
 };
@@ -25,6 +27,8 @@ const mockDb = {
 vi.mock("@cap/database", () => ({
 	db: vi.fn(() => mockDb),
 }));
+
+vi.mock("server-only", () => ({}));
 
 vi.mock("@cap/database/auth/session", () => ({
 	getCurrentUser: vi.fn(),
@@ -46,6 +50,14 @@ vi.mock("@cap/database/schema", () => ({
 		userId: "memberUserId",
 		organizationId: "memberOrganizationId",
 		role: "memberRole",
+		hasProSeat: "memberHasProSeat",
+	},
+	organizationInvites: {
+		id: "inviteId",
+		organizationId: "inviteOrganizationId",
+		invitedEmail: "invitedEmail",
+		invitedByUserId: "invitedByUserId",
+		role: "inviteRole",
 	},
 	organizations: {
 		id: "organizationId",
@@ -76,6 +88,11 @@ vi.mock("@cap/database/schema", () => ({
 	users: {
 		id: "userId",
 		email: "email",
+		activeOrganizationId: "activeOrganizationId",
+		defaultOrgId: "defaultOrgId",
+		inviteQuota: "inviteQuota",
+		stripeSubscriptionId: "stripeSubscriptionId",
+		thirdPartyStripeSubscriptionId: "thirdPartyStripeSubscriptionId",
 	},
 	videos: {
 		id: "id",
@@ -118,6 +135,11 @@ vi.mock("@cap/web-domain", () => ({
 	},
 	SpaceMemberId: {
 		make: vi.fn((value: string) => value),
+	},
+	User: {
+		UserId: {
+			make: vi.fn((value: string) => value),
+		},
 	},
 	Video: {
 		VideoId: {
@@ -179,11 +201,13 @@ describe("importFromLoom", () => {
 		valuesMock.mockReset();
 		mockDb.select.mockReturnValue(mockDb);
 		mockDb.insert.mockReturnValue(mockDb);
+		mockDb.update.mockReturnValue(mockDb);
 		mockDb.delete.mockReturnValue(mockDb);
 		mockDb.from.mockReturnValue(mockDb);
 		mockDb.innerJoin.mockReturnValue(mockDb);
 		mockDb.leftJoin.mockReturnValue(mockDb);
 		mockDb.transaction.mockImplementation((callback) => callback(mockDb));
+		mockDb.set.mockReturnValue(mockDb);
 		valuesMock.mockResolvedValue(undefined);
 		whereMock.mockResolvedValue([]);
 		startMock.mockResolvedValue(undefined);
@@ -357,10 +381,49 @@ describe("importFromLoom", () => {
 		expect(valuesMock).not.toHaveBeenCalled();
 	});
 
-	it("rejects CSV rows for emails outside the organization", async () => {
-		whereMock.mockReturnValueOnce(withLimit([]));
+	it("provisions missing CSV users and starts imports for them", async () => {
+		whereMock
+			.mockReturnValueOnce(withLimit([]))
+			.mockReturnValueOnce(withLimit([]))
+			.mockReturnValueOnce(withLimit([]))
+			.mockReturnValueOnce(withLimit([]))
+			.mockReturnValueOnce(withLimit([{ ownerId: "owner-456" }]))
+			.mockReturnValueOnce(
+				withLimit([{ inviteQuota: 1, stripeSubscriptionId: null }]),
+			)
+			.mockResolvedValueOnce([]);
 
 		const fetchMock = vi.mocked(fetch);
+		fetchMock.mockImplementation(async (input) => {
+			const url = typeof input === "string" ? input : input.toString();
+
+			if (url.includes("/transcoded-url")) {
+				return {
+					ok: true,
+					status: 200,
+					text: async () =>
+						JSON.stringify({ url: "https://cdn.loom.com/video.mp4" }),
+				} as Response;
+			}
+
+			if (url === "https://www.loom.com/graphql") {
+				return {
+					ok: true,
+					json: async () => ({
+						data: { getVideo: { name: "Imported video" } },
+					}),
+				} as Response;
+			}
+
+			if (url.includes("/v1/oembed")) {
+				return {
+					ok: true,
+					json: async () => ({ duration: 42, width: 1920, height: 1080 }),
+				} as Response;
+			}
+
+			throw new Error(`Unexpected fetch: ${url}`);
+		});
 		const { importFromLoomCsv } = await import("@/actions/loom");
 
 		const result = await importFromLoomCsv({
@@ -375,22 +438,48 @@ describe("importFromLoom", () => {
 		});
 
 		expect(result).toEqual({
-			success: false,
-			importedCount: 0,
-			failedCount: 1,
+			success: true,
+			importedCount: 1,
+			failedCount: 0,
 			results: [
 				{
 					rowNumber: 2,
 					userEmail: "not-member@example.com",
 					spaceName: undefined,
-					success: false,
-					error: "This email is not a member of the organization.",
+					success: true,
+					videoId: "video-123",
+					error: undefined,
 				},
 			],
-			error: "No Loom videos were imported.",
+			error: undefined,
 		});
-		expect(fetchMock).not.toHaveBeenCalled();
-		expect(valuesMock).not.toHaveBeenCalled();
+		expect(fetchMock).toHaveBeenCalled();
+		expect(valuesMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				email: "not-member@example.com",
+				activeOrganizationId: "org-1",
+				defaultOrgId: "org-1",
+			}),
+		);
+		expect(valuesMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				organizationId: "org-1",
+				invitedEmail: "not-member@example.com",
+				invitedByUserId: "user-123",
+				role: "member",
+			}),
+		);
+		expect(valuesMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				organizationId: "org-1",
+				userId: "video-123",
+				role: "member",
+			}),
+		);
+		expect(storageGetWritableAccessForUserMock).toHaveBeenCalledWith(
+			"video-123",
+			"org-1",
+		);
 	});
 
 	it("rejects CSV imports when the current user is rate limited", async () => {
@@ -566,6 +655,7 @@ describe("importFromLoom", () => {
 				withLimit([{ userId: "member-123", email: "member@example.com" }]),
 			)
 			.mockResolvedValueOnce([])
+			.mockReturnValueOnce(withLimit([]))
 			.mockReturnValueOnce(withLimit([]))
 			.mockReturnValueOnce(withLimit([]));
 
