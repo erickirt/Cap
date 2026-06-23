@@ -270,6 +270,7 @@ async function main() {
 			console.log(
 				`Staged ${sonameLibs.length} FFmpeg shared libraries for Linux bundling`,
 			);
+			await verifyLinuxDebLibraryConfig(debLibDir);
 
 			cargoConfigContents += `\n[target.${triple}]\nrustflags = ["-C", "link-arg=-Wl,-rpath,$ORIGIN", "-C", "link-arg=-Wl,-rpath,$ORIGIN/../lib/cap"]\n`;
 		}
@@ -425,6 +426,37 @@ async function fileExists(path) {
 		.access(path)
 		.then(() => true)
 		.catch(() => false);
+}
+
+async function verifyLinuxDebLibraryConfig(debLibDir) {
+	const configPath = path.join(
+		__root,
+		"apps",
+		"desktop",
+		"src-tauri",
+		"tauri.conf.json",
+	);
+	const config = JSON.parse(await fs.readFile(configPath, "utf8"));
+	const debFiles = config.bundle?.linux?.deb?.files ?? {};
+	const configDir = path.dirname(configPath);
+	const missing = [];
+
+	for (const source of Object.values(debFiles)) {
+		if (typeof source !== "string" || !source.includes("cap-deb-libs/"))
+			continue;
+
+		const absolute = path.resolve(configDir, source);
+		if (!(await fileExists(absolute))) missing.push(source);
+	}
+
+	if (missing.length > 0) {
+		const staged = await fs.readdir(debLibDir);
+		throw new Error(
+			`Linux deb config references unstaged native deps: ${missing.join(", ")}. Staged libs: ${staged.join(", ")}`,
+		);
+	}
+
+	console.log("Verified Linux deb shared library bundle entries");
 }
 
 async function missingFiles(dir, names) {
