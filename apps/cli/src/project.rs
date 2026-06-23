@@ -258,6 +258,20 @@ fn build_report(project_path: &Path, meta: &RecordingMeta) -> ValidationReport {
     }
 }
 
+pub(crate) fn validate_project(project_path: &Path) -> Result<(), String> {
+    let meta = RecordingMeta::load_for_project(project_path)
+        .map_err(|e| format!("Failed to load recording meta: {e}"))?;
+    let report = build_report(project_path, &meta);
+
+    if report.valid {
+        Ok(())
+    } else {
+        Err(report
+            .error
+            .unwrap_or_else(|| "project validation failed".to_string()))
+    }
+}
+
 pub fn validate(project_path: PathBuf, format: OutputFormat) -> Result<(), String> {
     let report = match RecordingMeta::load_for_project(&project_path) {
         Ok(meta) => build_report(&project_path, &meta),
