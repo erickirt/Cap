@@ -10,25 +10,18 @@ import {
 	faTimes,
 } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import MuxPlayer from "@mux/mux-player-react";
 import clsx from "clsx";
 import { AnimatePresence, motion } from "motion/react";
 import Image from "next/image";
 import { useState } from "react";
+import { renderRichText } from "@/components/RichText";
 import { ComparisonSlider } from "@/components/seo/ComparisonSlider";
 import type { ComparisonCell, SeoPageContent } from "@/components/seo/types";
 
 const MotionButton = motion.create(Button);
 const MotionImage = motion.create(Image);
 
-const renderHTML = (content: string) => {
-	const styledContent = content.replace(
-		/<a\s/g,
-		'<a class="font-semibold text-blue-500 transition-colors hover:text-blue-600" ',
-	);
-
-	return <span dangerouslySetInnerHTML={{ __html: styledContent }} />;
-};
+const renderHTML = (content: string) => renderRichText(content);
 
 const renderComparisonCell = (cell: string | ComparisonCell) => {
 	if (typeof cell === "string") {
@@ -288,20 +281,17 @@ export const SeoPageTemplate = ({
 										}}
 									/>
 								</div>
-							) : (
+							) : content.video.url ? (
 								<div className="overflow-hidden rounded-xl shadow-md">
-									<MuxPlayer
-										playbackId="A6oZoUWVZjOIVZB6XnBMLagYnXE6xhDhp8Hcyky018hk"
-										playerInitTime={0}
-										metadataVideoTitle="Cap Demo"
-										accentColor="#5C9FFF"
-										style={{
-											aspectRatio: "16/9",
-											width: "100%",
-										}}
+									<iframe
+										src={content.video.url}
+										title={content.video.alt ?? "Cap demo video"}
+										allow="fullscreen; picture-in-picture"
+										allowFullScreen
+										className="w-full border-0 aspect-video"
 									/>
 								</div>
-							)}
+							) : null}
 						</div>
 					</div>
 				)}
