@@ -34,6 +34,7 @@ import {
 	getOrganizationAccess,
 	requireOrganizationAccess,
 } from "@/actions/organization/authorization";
+import { provisionOrganizationInvitee } from "@/lib/organization-provisioning";
 import { canManageOrganizationSettings } from "@/lib/permissions/roles";
 import { runPromise } from "@/lib/server";
 import { importLoomVideoWorkflow } from "@/workflows/import-loom-video";
@@ -597,6 +598,33 @@ async function addImportedVideoToSpace({
 	});
 }
 
+async function addImportOwnerToSpace({
+	spaceId,
+	userId,
+}: {
+	spaceId: Space.SpaceIdOrOrganisationId;
+	userId: User.UserId;
+}) {
+	const [existingSpaceMember] = await db()
+		.select({ id: spaceMembers.id })
+		.from(spaceMembers)
+		.where(
+			and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.userId, userId)),
+		)
+		.limit(1);
+
+	if (existingSpaceMember) return;
+
+	await db()
+		.insert(spaceMembers)
+		.values({
+			id: SpaceMemberId.make(nanoId()),
+			spaceId,
+			userId,
+			role: "member",
+		});
+}
+
 export async function importFromLoomCsv({
 	rows,
 	orgId,
@@ -714,17 +742,30 @@ export async function importFromLoomCsv({
 			continue;
 		}
 
-		const member = await getOrganizationMemberByEmail(orgId, row.userEmail);
+		let member = await getOrganizationMemberByEmail(orgId, row.userEmail);
 
 		if (!member) {
-			results.push({
-				rowNumber: row.rowNumber,
-				userEmail: row.userEmail,
-				spaceName: row.spaceName || undefined,
-				success: false,
-				error: "This email is not a member of the organization.",
-			});
-			continue;
+			try {
+				const provisionedMember = await provisionOrganizationInvitee({
+					organizationId: orgId,
+					email: row.userEmail,
+					invitedByUserId: user.id,
+					role: "member",
+				});
+				member = {
+					userId: provisionedMember.userId,
+					email: row.userEmail,
+				};
+			} catch {
+				results.push({
+					rowNumber: row.rowNumber,
+					userEmail: row.userEmail,
+					spaceName: row.spaceName || undefined,
+					success: false,
+					error: "Could not add this email to the organization.",
+				});
+				continue;
+			}
 		}
 
 		if (await isRateLimited()) {
@@ -759,6 +800,10 @@ export async function importFromLoomCsv({
 						videoId: result.videoId,
 						spaceId: space.id,
 						addedById: user.id,
+					});
+					await addImportOwnerToSpace({
+						spaceId: space.id,
+						userId: member.userId,
 					});
 					touchedSpaceIds.add(space.id);
 					spaceName = space.name;
