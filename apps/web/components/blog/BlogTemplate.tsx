@@ -214,9 +214,9 @@ export const BlogTemplate = ({ content }: { content: BlogPost }) => {
 					</h2>
 					<p className="mb-8 text-xl text-gray-700">{method.description}</p>
 
-					{method.steps.map((step, stepIndex) => (
+					{method.steps.map((step) => (
 						<div
-							key={`step-${methodIndex}-${stepIndex}`}
+							key={step.title ?? step.content}
 							className="p-6 mb-8 rounded-xl border border-gray-100 shadow-md bg-gray-1"
 						>
 							{step.title && (
