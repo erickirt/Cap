@@ -35,7 +35,7 @@ impl ScreenCaptureFormat for X11Capture {
     type VideoFormat = ffmpeg::frame::Video;
 
     fn pixel_format() -> ffmpeg::format::Pixel {
-        ffmpeg::format::Pixel::BGRA
+        ffmpeg::format::Pixel::BGRZ
     }
 
     fn audio_info() -> AudioInfo {
