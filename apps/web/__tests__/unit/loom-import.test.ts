@@ -8,6 +8,7 @@ const revalidatePathMock = vi.fn();
 const storageGetWritableAccessForUserMock = vi.hoisted(() => vi.fn());
 const checkRateLimitMock = vi.hoisted(() => vi.fn());
 const headersMock = vi.hoisted(() => vi.fn());
+const getOrganizationAccessMock = vi.hoisted(() => vi.fn());
 
 const mockDb = {
 	select: vi.fn(() => mockDb),
@@ -41,8 +42,10 @@ vi.mock("@cap/database/schema", () => ({
 		sourceId: "sourceId",
 	},
 	organizationMembers: {
+		id: "memberId",
 		userId: "memberUserId",
 		organizationId: "memberOrganizationId",
+		role: "memberRole",
 	},
 	organizations: {
 		id: "organizationId",
@@ -147,6 +150,7 @@ vi.mock("@/lib/server", async () => {
 });
 
 vi.mock("@/actions/organization/authorization", () => ({
+	getOrganizationAccess: getOrganizationAccessMock,
 	requireOrganizationAccess: vi.fn(),
 }));
 
@@ -184,6 +188,12 @@ describe("importFromLoom", () => {
 		whereMock.mockResolvedValue([]);
 		startMock.mockResolvedValue(undefined);
 		checkRateLimitMock.mockResolvedValue({ rateLimited: false });
+		getOrganizationAccessMock.mockResolvedValue({
+			id: "org-1",
+			ownerId: "user-123",
+			memberId: null,
+			role: "owner",
+		});
 		headersMock.mockResolvedValue(
 			new Headers({
 				host: "cap.test",
@@ -312,8 +322,13 @@ describe("importFromLoom", () => {
 		expect(revalidatePathMock).toHaveBeenCalledWith("/dashboard/caps");
 	});
 
-	it("rejects a CSV import when the current user is not the organization owner", async () => {
-		whereMock.mockReturnValueOnce(withLimit([{ ownerId: "owner-456" }]));
+	it("rejects a CSV import when the current user is not an organization admin or owner", async () => {
+		getOrganizationAccessMock.mockResolvedValueOnce({
+			id: "org-1",
+			ownerId: "owner-456",
+			memberId: "member-row",
+			role: "member",
+		});
 
 		const fetchMock = vi.mocked(fetch);
 		const { importFromLoomCsv } = await import("@/actions/loom");
@@ -335,16 +350,15 @@ describe("importFromLoom", () => {
 			failedCount: 0,
 			results: [],
 			error:
-				"Only the organization owner can import Loom videos from a CSV. Ask the owner to do it.",
+				"Only organization admins and owners can import Loom videos from a CSV.",
 		});
+		expect(getOrganizationAccessMock).toHaveBeenCalledWith("user-123", "org-1");
 		expect(fetchMock).not.toHaveBeenCalled();
 		expect(valuesMock).not.toHaveBeenCalled();
 	});
 
 	it("rejects CSV rows for emails outside the organization", async () => {
-		whereMock
-			.mockReturnValueOnce(withLimit([{ ownerId: "user-123" }]))
-			.mockReturnValueOnce(withLimit([]));
+		whereMock.mockReturnValueOnce(withLimit([]));
 
 		const fetchMock = vi.mocked(fetch);
 		const { importFromLoomCsv } = await import("@/actions/loom");
@@ -380,11 +394,9 @@ describe("importFromLoom", () => {
 	});
 
 	it("rejects CSV imports when the current user is rate limited", async () => {
-		whereMock
-			.mockReturnValueOnce(withLimit([{ ownerId: "user-123" }]))
-			.mockReturnValueOnce(
-				withLimit([{ userId: "member-123", email: "member@example.com" }]),
-			);
+		whereMock.mockReturnValueOnce(
+			withLimit([{ userId: "member-123", email: "member@example.com" }]),
+		);
 		checkRateLimitMock.mockResolvedValueOnce({ rateLimited: true });
 
 		const fetchMock = vi.mocked(fetch);
@@ -428,8 +440,6 @@ describe("importFromLoom", () => {
 	});
 
 	it("limits CSV imports to 500 rows", async () => {
-		whereMock.mockReturnValueOnce(withLimit([{ ownerId: "user-123" }]));
-
 		const fetchMock = vi.mocked(fetch);
 		const { importFromLoomCsv } = await import("@/actions/loom");
 
@@ -455,9 +465,14 @@ describe("importFromLoom", () => {
 		expect(valuesMock).not.toHaveBeenCalled();
 	});
 
-	it("starts CSV Loom imports for matched organization members", async () => {
+	it("starts CSV Loom imports for matched organization members when the current user is an organization admin", async () => {
+		getOrganizationAccessMock.mockResolvedValueOnce({
+			id: "org-1",
+			ownerId: "owner-456",
+			memberId: "member-row",
+			role: "admin",
+		});
 		whereMock
-			.mockReturnValueOnce(withLimit([{ ownerId: "user-123" }]))
 			.mockReturnValueOnce(
 				withLimit([{ userId: "member-123", email: "member@example.com" }]),
 			)
@@ -547,7 +562,6 @@ describe("importFromLoom", () => {
 
 	it("creates missing spaces and adds CSV Loom imports to them", async () => {
 		whereMock
-			.mockReturnValueOnce(withLimit([{ ownerId: "user-123" }]))
 			.mockReturnValueOnce(
 				withLimit([{ userId: "member-123", email: "member@example.com" }]),
 			)
