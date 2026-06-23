@@ -360,6 +360,9 @@ async fn wait_for_session_ready(
                             .error
                             .unwrap_or_else(|| "recording worker failed to start".to_string()));
                     }
+                    SessionStatus::Recording if session::process_alive(session.pid) => {
+                        return Ok(session);
+                    }
                     SessionStatus::Recording => {}
                 }
             }
