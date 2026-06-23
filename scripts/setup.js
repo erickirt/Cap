@@ -270,7 +270,7 @@ async function main() {
 			console.log(
 				`Staged ${sonameLibs.length} FFmpeg shared libraries for Linux bundling`,
 			);
-			await verifyLinuxDebLibraryConfig(debLibDir);
+			await writeLinuxTauriConfig(sonameLibs);
 
 			cargoConfigContents += `\n[target.${triple}]\nrustflags = ["-C", "link-arg=-Wl,-rpath,$ORIGIN", "-C", "link-arg=-Wl,-rpath,$ORIGIN/../lib/cap"]\n`;
 		}
@@ -428,35 +428,28 @@ async function fileExists(path) {
 		.catch(() => false);
 }
 
-async function verifyLinuxDebLibraryConfig(debLibDir) {
+async function writeLinuxTauriConfig(sonameLibs) {
 	const configPath = path.join(
 		__root,
 		"apps",
 		"desktop",
 		"src-tauri",
-		"tauri.conf.json",
+		"tauri.linux.conf.json",
 	);
-	const config = JSON.parse(await fs.readFile(configPath, "utf8"));
-	const debFiles = config.bundle?.linux?.deb?.files ?? {};
-	const configDir = path.dirname(configPath);
-	const missing = [];
+	const files = {};
 
-	for (const source of Object.values(debFiles)) {
-		if (typeof source !== "string" || !source.includes("cap-deb-libs/"))
-			continue;
-
-		const absolute = path.resolve(configDir, source);
-		if (!(await fileExists(absolute))) missing.push(source);
+	for (const name of sonameLibs.toSorted()) {
+		files[`/usr/lib/cap/${name}`] =
+			`../../../target/native-deps/cap-deb-libs/${name}`;
 	}
 
-	if (missing.length > 0) {
-		const staged = await fs.readdir(debLibDir);
-		throw new Error(
-			`Linux deb config references unstaged native deps: ${missing.join(", ")}. Staged libs: ${staged.join(", ")}`,
-		);
-	}
-
-	console.log("Verified Linux deb shared library bundle entries");
+	await writeFileIfChanged(
+		configPath,
+		`${JSON.stringify({ bundle: { linux: { deb: { files } } } }, null, "\t")}\n`,
+	);
+	console.log(
+		`Generated Linux Tauri deb config with ${sonameLibs.length} shared libraries`,
+	);
 }
 
 async function missingFiles(dir, names) {
