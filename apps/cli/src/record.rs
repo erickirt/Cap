@@ -619,19 +619,14 @@ struct SessionStatusRow {
     alive: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     started_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 pub fn status(format: OutputFormat) -> Result<(), String> {
     let rows: Vec<SessionStatusRow> = session::list_sessions()?
         .into_iter()
-        .map(|s| SessionStatusRow {
-            alive: s.status == SessionStatus::Recording && session::process_alive(s.pid),
-            recording_id: s.recording_id,
-            pid: s.pid,
-            path: s.path,
-            status: s.status,
-            started_at: s.started_at,
-        })
+        .map(session_status_row)
         .collect();
 
     match format {
@@ -643,8 +638,7 @@ pub fn status(format: OutputFormat) -> Result<(), String> {
             }
             for row in &rows {
                 let status = match row.status {
-                    SessionStatus::Recording if row.alive => "recording",
-                    SessionStatus::Recording => "recording (process gone)",
+                    SessionStatus::Recording => "recording",
                     SessionStatus::Stopped => "stopped",
                     SessionStatus::Error => "error",
                 };
@@ -657,6 +651,35 @@ pub fn status(format: OutputFormat) -> Result<(), String> {
             }
             Ok(())
         }
+    }
+}
+
+fn session_status_row(session: Session) -> SessionStatusRow {
+    let alive = session.status == SessionStatus::Recording && session::process_alive(session.pid);
+    session_status_row_with_alive(session, alive)
+}
+
+fn session_status_row_with_alive(session: Session, alive: bool) -> SessionStatusRow {
+    let process_gone = session.status == SessionStatus::Recording && !alive;
+    let status = if process_gone {
+        SessionStatus::Error
+    } else {
+        session.status
+    };
+    let error = if process_gone {
+        Some("recording process is not running".to_string())
+    } else {
+        session.error
+    };
+
+    SessionStatusRow {
+        recording_id: session.recording_id,
+        pid: session.pid,
+        path: session.path,
+        status,
+        alive,
+        started_at: session.started_at,
+        error,
     }
 }
 
@@ -1121,5 +1144,28 @@ mod tests {
         assert_eq!(stopped["type"], "stopped");
         assert_eq!(stopped["recordingMetaExists"], true);
         assert!(stopped.get("recording_meta_exists").is_none());
+    }
+
+    #[test]
+    fn dead_recording_session_reports_error_status() {
+        let row = session_status_row_with_alive(
+            Session {
+                recording_id: "abc".to_string(),
+                pid: 123,
+                path: PathBuf::from("recording.cap"),
+                status: SessionStatus::Recording,
+                started_at: Some(1),
+                recording_meta_exists: None,
+                error: None,
+            },
+            false,
+        );
+
+        assert!(matches!(row.status, SessionStatus::Error));
+        assert!(!row.alive);
+        assert_eq!(
+            row.error.as_deref(),
+            Some("recording process is not running")
+        );
     }
 }
