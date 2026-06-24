@@ -142,6 +142,7 @@ async function startMediaServerEditJob(
 		userId: string;
 		sourceUrl: string;
 		outputPresignedUrl: string;
+		outputVerificationUrl?: string;
 		thumbnailPresignedUrl: string;
 		previewGifPresignedUrl: string;
 		webhookUrl: string;
@@ -261,6 +262,12 @@ async function renderVideoEditOnMediaServer(
 		)
 		.pipe(runPromise);
 
+	const outputVerificationUrl = await bucket
+		.getInternalSignedObjectUrl(outputKey, {
+			expiresIn: MEDIA_SERVER_PRESIGNED_GET_EXPIRES_SECONDS,
+		})
+		.pipe(runPromise);
+
 	const thumbnailPresignedUrl = await bucket
 		.getInternalPresignedPutUrl(
 			thumbnailKey,
@@ -301,6 +308,7 @@ async function renderVideoEditOnMediaServer(
 		userId,
 		sourceUrl,
 		outputPresignedUrl,
+		outputVerificationUrl,
 		thumbnailPresignedUrl,
 		previewGifPresignedUrl,
 		webhookUrl,
