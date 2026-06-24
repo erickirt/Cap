@@ -758,15 +758,29 @@ async function saveEditResultAndComplete(
 async function clearEditProcessingState(
 	videoId: string,
 	sourceKey: string,
+	previousSpec: VideoEditSpec,
 ): Promise<void> {
 	"use step";
 
-	await db()
-		.delete(videoUploads)
-		.where(
-			and(
-				eq(videoUploads.videoId, videoId as Video.VideoId),
-				eq(videoUploads.rawFileKey, sourceKey),
-			),
-		);
+	const previousDuration = getValidDuration(
+		getEditSpecOutputDuration(previousSpec),
+	);
+
+	await db().transaction(async (tx) => {
+		if (previousDuration !== undefined) {
+			await tx
+				.update(videos)
+				.set({ duration: previousDuration })
+				.where(eq(videos.id, videoId as Video.VideoId));
+		}
+
+		await tx
+			.delete(videoUploads)
+			.where(
+				and(
+					eq(videoUploads.videoId, videoId as Video.VideoId),
+					eq(videoUploads.rawFileKey, sourceKey),
+				),
+			);
+	});
 }
