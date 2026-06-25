@@ -917,6 +917,33 @@ async function runFfmpegCommand(
 	}
 }
 
+export function buildStreamingDownloadFfmpegArgs(
+	inputPath: string,
+	outputPath: string,
+): string[] {
+	return [
+		"ffmpeg",
+		"-threads",
+		"2",
+		"-protocol_whitelist",
+		"file,http,https,tcp,tls,crypto,data",
+		"-allowed_extensions",
+		"ALL",
+		"-allowed_segment_extensions",
+		"ALL",
+		"-extension_picky",
+		"0",
+		"-i",
+		inputPath,
+		"-map",
+		"0",
+		"-c",
+		"copy",
+		"-y",
+		outputPath,
+	];
+}
+
 async function downloadStreamingVideoToTemp(
 	videoUrl: string,
 	abortSignal?: AbortSignal,
@@ -933,21 +960,7 @@ async function downloadStreamingVideoToTemp(
 		const inputPath = await materializeStreamingInput(videoUrl, manifestDir);
 
 		await runFfmpegCommand(
-			[
-				"ffmpeg",
-				"-threads",
-				"2",
-				"-protocol_whitelist",
-				"file,http,https,tcp,tls,crypto,data",
-				"-i",
-				inputPath,
-				"-map",
-				"0",
-				"-c",
-				"copy",
-				"-y",
-				tempFile.path,
-			],
+			buildStreamingDownloadFfmpegArgs(inputPath, tempFile.path),
 			DOWNLOAD_TIMEOUT_MS,
 			abortSignal,
 		);
