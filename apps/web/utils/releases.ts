@@ -2,9 +2,7 @@ export interface ReleaseDownloads {
 	"macos-arm64"?: string;
 	"macos-x64"?: string;
 	windows?: string;
-	"linux-appimage"?: string;
 	"linux-deb"?: string;
-	"linux-rpm"?: string;
 }
 
 export type ReleaseDownloadKey = keyof ReleaseDownloads;
@@ -13,9 +11,7 @@ export const releaseDownloadKeys = [
 	"macos-arm64",
 	"macos-x64",
 	"windows",
-	"linux-appimage",
 	"linux-deb",
-	"linux-rpm",
 ] satisfies ReleaseDownloadKey[];
 
 export interface Release {
