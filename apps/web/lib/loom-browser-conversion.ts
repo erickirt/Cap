@@ -148,7 +148,7 @@ export function getLoomBrowserConversionErrorMessage(error: unknown) {
 
 	if (typeof DOMException !== "undefined" && error instanceof DOMException) {
 		if (error.name === "NotAllowedError" || error.name === "SecurityError") {
-			return "The browser blocked the save dialog. Open this page directly in the latest desktop Chrome or Edge, then click Convert in Browser again.";
+			return "The browser blocked the save dialog. Open this page directly in the latest desktop Chrome or Edge, then click Download Video again.";
 		}
 	}
 
