@@ -547,17 +547,17 @@ export type AudioLibraryTrack = { id: string; name: string; category: string }
 export type AudioMeta = { path: string; start_time?: number | null; device_id?: string | null; gap_summary?: AudioGapSummary | null }
 /**
  * A timeline-positioned audio clip (background music or imported audio).
- *
+ * 
  * Unlike the recording's mic/system audio (which is keyed to recording clips),
  * these segments live in output/timeline time exactly like zoom/text/mask
  * segments. `path` is resolved relative to the project directory so projects
  * stay portable when moved.
  */
-export type AudioTrackSegment = { start: number; end: number; track?: number; path: string; name?: string | null; enabled?: boolean;
+export type AudioTrackSegment = { start: number; end: number; track?: number; path: string; name?: string | null; enabled?: boolean; 
 /**
  * Offset into the source audio file (seconds) at which playback begins.
  */
-trimStart?: number; volumeDb?: number; fadeIn?: number; fadeOut?: number;
+trimStart?: number; volumeDb?: number; fadeIn?: number; fadeOut?: number; 
 /**
  * Source duration in seconds, persisted so the UI can clamp resizing
  * without re-decoding the file.
@@ -667,7 +667,7 @@ export type HotkeyAction = "startStudioRecording" | "startInstantRecording" | "s
 export type HotkeysConfiguration = { show: boolean }
 export type HotkeysStore = { hotkeys: { [key in HotkeyAction]: Hotkey } }
 export type ImportStage = "Probing" | "Converting" | "Finalizing" | "Complete" | "Failed"
-export type ImportedAudioTrack = {
+export type ImportedAudioTrack = { 
 /**
  * Path relative to the project directory, e.g. `assets/audio/<file>`.
  */
