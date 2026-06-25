@@ -23,9 +23,11 @@ export function SeatManagementCard() {
 	const queryClient = useQueryClient();
 	const organizationId = activeOrganization?.organization.id;
 
-	const { proSeatsUsed, proSeatsTotal } = calculateSeats(
-		activeOrganization || {},
-	);
+	const { proSeatsUsed, proSeatsTotal } = calculateSeats({
+		...(activeOrganization || {}),
+		ownerId: activeOrganization?.organization.ownerId,
+		ownerIsPro: Boolean(activeOrganization?.ownerIsPro),
+	});
 
 	const [desiredQuantity, setDesiredQuantity] = useState(proSeatsTotal);
 	const [debouncedQuantity, setDebouncedQuantity] = useState(proSeatsTotal);

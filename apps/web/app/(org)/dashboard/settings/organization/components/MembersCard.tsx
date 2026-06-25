@@ -48,7 +48,11 @@ interface MembersCardProps {
 export const MembersCard = ({ setIsInviteDialogOpen }: MembersCardProps) => {
 	const router = useRouter();
 	const { activeOrganization, user } = useDashboardContext();
-	const { proSeatsRemaining } = calculateSeats(activeOrganization || {});
+	const { proSeatsRemaining } = calculateSeats({
+		...(activeOrganization || {}),
+		ownerId: activeOrganization?.organization.ownerId,
+		ownerIsPro: Boolean(activeOrganization?.ownerIsPro),
+	});
 	const currentMember = activeOrganization?.members.find(
 		(member) => member.userId === user.id,
 	);
