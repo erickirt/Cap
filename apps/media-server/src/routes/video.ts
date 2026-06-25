@@ -39,11 +39,18 @@ import {
 } from "../lib/media-video";
 import type { TempFileHandle } from "../lib/temp-files";
 import { cleanupStaleTempFiles } from "../lib/temp-files";
+import {
+	getActiveDirectVideoProcessCount,
+	getMaxConcurrentDirectVideoProcesses,
+	tryAcquireDirectVideoProcessSlot,
+	type VideoProcessSlot,
+} from "../lib/video-capacity";
 
 const video = new Hono();
 const PROCESSING_HEARTBEAT_MS = 60 * 1000;
 const MEDIA_ENGINE_ERROR_CODE = ["FF", "MPEG_ERROR"].join("");
 const PROBE_ERROR_CODE = ["FF", "PROBE_ERROR"].join("");
+const VIDEO_BUSY_RETRY_AFTER_SECONDS = 15;
 
 const probeSchema = z.object({
 	videoUrl: z.string().url(),
@@ -105,6 +112,93 @@ function getInstanceId(): string {
 	return process.env.HOSTNAME || `pid-${process.pid}`;
 }
 
+function logVideoEvent(event: string, data: Record<string, unknown>) {
+	console.info(
+		JSON.stringify({
+			event,
+			timestamp: new Date().toISOString(),
+			instanceId: getInstanceId(),
+			pid: process.pid,
+			...data,
+		}),
+	);
+}
+
+function getVideoCapacitySnapshot() {
+	const resources = getSystemResources();
+	const jobs = getAllJobs();
+	return {
+		instanceId: getInstanceId(),
+		pid: process.pid,
+		activeVideoProcesses: getActiveVideoProcessCount(),
+		activeDirectVideoProcesses: getActiveDirectVideoProcessCount(),
+		maxConcurrentVideoProcesses: getMaxConcurrentVideoProcesses(),
+		maxConcurrentDirectVideoProcesses: getMaxConcurrentDirectVideoProcesses(),
+		effectiveMaxVideoProcesses: resources.effectiveMax,
+		resources,
+		jobCount: jobs.length,
+		jobs: jobs.map((job) => ({
+			jobId: job.jobId,
+			videoId: job.videoId,
+			phase: job.phase,
+			progress: job.progress,
+			updatedAt: job.updatedAt,
+		})),
+	};
+}
+
+function getBusyDetails(snapshot: ReturnType<typeof getVideoCapacitySnapshot>) {
+	return snapshot.resources.throttleReason
+		? `Throttled: ${snapshot.resources.throttleReason} (${snapshot.activeVideoProcesses}/${snapshot.resources.effectiveMax} active)`
+		: `Too many concurrent video processing jobs (${snapshot.activeVideoProcesses}/${snapshot.resources.effectiveMax}), please retry later`;
+}
+
+function getBusyResponseBody(
+	snapshot: ReturnType<typeof getVideoCapacitySnapshot>,
+) {
+	return {
+		error: "Server is busy",
+		code: "SERVER_BUSY",
+		details: getBusyDetails(snapshot),
+		...snapshot,
+	};
+}
+
+function getMuxBusyResponseBody(
+	snapshot: ReturnType<typeof getVideoCapacitySnapshot>,
+) {
+	return {
+		...getBusyResponseBody(snapshot),
+		error: "SERVER_BUSY",
+		message: "Server is at capacity",
+	};
+}
+
+function summarizeVideoInput(videoUrl: string, inputExtension?: string) {
+	const extension = inputExtension?.toLowerCase() ?? null;
+	try {
+		const url = new URL(videoUrl);
+		const pathnameExtension = url.pathname.includes(".")
+			? `.${url.pathname.split(".").pop()?.toLowerCase() ?? ""}`
+			: null;
+		const effectiveExtension = extension ?? pathnameExtension;
+		return {
+			host: url.hostname,
+			extension: effectiveExtension,
+			streaming:
+				effectiveExtension === ".m3u8" ||
+				effectiveExtension === ".m3u" ||
+				effectiveExtension === ".mpd",
+		};
+	} catch {
+		return {
+			host: null,
+			extension,
+			streaming: false,
+		};
+	}
+}
+
 function isBusyError(err: unknown): boolean {
 	return err instanceof Error && err.message.includes("Server is busy");
 }
@@ -129,6 +223,7 @@ async function cleanupTempFiles(
 async function createVideoDownloadResponse(
 	outputTempFile: TempFileHandle,
 	tempFiles: TempFileHandle[],
+	onCleanup?: () => void,
 ): Promise<Response> {
 	const outputFile = file(outputTempFile.path);
 	const outputSize = await outputFile.size;
@@ -138,6 +233,7 @@ async function createVideoDownloadResponse(
 		if (cleanedUp) return;
 		cleanedUp = true;
 		await cleanupTempFiles(tempFiles);
+		onCleanup?.();
 	};
 
 	const stream = new ReadableStream<Uint8Array>({
@@ -209,10 +305,12 @@ video.get("/status", (c) => {
 		activeVideoProcesses: getActiveVideoProcessCount(),
 		maxConcurrentVideoProcesses: getMaxConcurrentVideoProcesses(),
 		effectiveMaxVideoProcesses: resources.effectiveMax,
+		maxConcurrentDirectVideoProcesses: getMaxConcurrentDirectVideoProcesses(),
 		activeProbeProcesses: getActiveProbeProcessCount(),
 		canAcceptNewVideoProcess: canAcceptNewVideoProcess(),
 		canAcceptNewProbeProcess: canAcceptNewProbeProcess(),
 		resources,
+		activeDirectVideoProcesses: getActiveDirectVideoProcessCount(),
 		jobCount: jobs.length,
 		jobs: jobs.map((j) => ({
 			jobId: j.jobId,
@@ -382,28 +480,84 @@ video.post("/convert", async (c) => {
 
 	let inputTempFile: TempFileHandle | null = null;
 	let outputTempFile: TempFileHandle | null = null;
+	let slot: VideoProcessSlot | null = null;
+	const requestId = crypto.randomUUID();
+	const startedAt = Date.now();
 
 	try {
+		slot = tryAcquireDirectVideoProcessSlot(canAcceptNewVideoProcess);
+		const capacity = getVideoCapacitySnapshot();
+		if (!slot) {
+			c.header("Retry-After", VIDEO_BUSY_RETRY_AFTER_SECONDS.toString());
+			logVideoEvent("video_convert_rejected", {
+				requestId,
+				reason: "capacity",
+				...capacity,
+			});
+			return c.json(getBusyResponseBody(capacity), 503);
+		}
+
+		logVideoEvent("video_convert_started", {
+			requestId,
+			input: summarizeVideoInput(
+				result.data.videoUrl,
+				result.data.inputExtension,
+			),
+			...capacity,
+		});
+
 		inputTempFile = await downloadVideoToTemp(
 			result.data.videoUrl,
 			result.data.inputExtension,
+			c.req.raw.signal,
 		);
 
 		const metadata = await probeVideoFile(inputTempFile.path);
-		outputTempFile = await processVideo(inputTempFile.path, metadata, {
-			maxWidth: metadata.width > 0 ? metadata.width : undefined,
-			maxHeight: metadata.height > 0 ? metadata.height : undefined,
+		outputTempFile = await processVideo(
+			inputTempFile.path,
+			metadata,
+			{
+				maxWidth: metadata.width > 0 ? metadata.width : undefined,
+				maxHeight: metadata.height > 0 ? metadata.height : undefined,
+			},
+			undefined,
+			c.req.raw.signal,
+		);
+
+		const outputSize = await file(outputTempFile.path).size;
+		logVideoEvent("video_convert_succeeded", {
+			requestId,
+			durationMs: Date.now() - startedAt,
+			outputSize,
+			metadata: {
+				duration: metadata.duration,
+				width: metadata.width,
+				height: metadata.height,
+				videoCodec: metadata.videoCodec,
+				audioCodec: metadata.audioCodec,
+				fileSize: metadata.fileSize,
+			},
+			...getVideoCapacitySnapshot(),
 		});
 
-		return await createVideoDownloadResponse(outputTempFile, [
-			inputTempFile,
+		return await createVideoDownloadResponse(
 			outputTempFile,
-		]);
+			[inputTempFile, outputTempFile],
+			slot.release,
+		);
 	} catch (err) {
+		slot?.release();
 		await cleanupTempFiles([outputTempFile, inputTempFile]);
+		logVideoEvent("video_convert_failed", {
+			requestId,
+			durationMs: Date.now() - startedAt,
+			error: err instanceof Error ? err.message : String(err),
+			...getVideoCapacitySnapshot(),
+		});
 		console.error("[video/convert] Error:", err);
 
 		if (isBusyError(err)) {
+			c.header("Retry-After", VIDEO_BUSY_RETRY_AFTER_SECONDS.toString());
 			return c.json(
 				{
 					error: "Server is busy",
@@ -456,33 +610,8 @@ video.post("/process", async (c) => {
 	}
 
 	if (!canAcceptNewVideoProcess()) {
-		const activeVideoProcesses = getActiveVideoProcessCount();
-		const resources = getSystemResources();
-		const jobs = getAllJobs();
-		return c.json(
-			{
-				error: "Server is busy",
-				code: "SERVER_BUSY",
-				details: resources.throttleReason
-					? `Throttled: ${resources.throttleReason} (${activeVideoProcesses}/${resources.effectiveMax} active)`
-					: `Too many concurrent video processing jobs (${activeVideoProcesses}/${resources.effectiveMax}), please retry later`,
-				instanceId: getInstanceId(),
-				pid: process.pid,
-				activeVideoProcesses,
-				maxConcurrentVideoProcesses: getMaxConcurrentVideoProcesses(),
-				effectiveMaxVideoProcesses: resources.effectiveMax,
-				resources,
-				jobCount: jobs.length,
-				jobs: jobs.map((job) => ({
-					jobId: job.jobId,
-					videoId: job.videoId,
-					phase: job.phase,
-					progress: job.progress,
-					updatedAt: job.updatedAt,
-				})),
-			},
-			503,
-		);
+		c.header("Retry-After", VIDEO_BUSY_RETRY_AFTER_SECONDS.toString());
+		return c.json(getBusyResponseBody(getVideoCapacitySnapshot()), 503);
 	}
 
 	const {
@@ -558,33 +687,8 @@ video.post("/edit", async (c) => {
 	}
 
 	if (!canAcceptNewVideoProcess()) {
-		const activeVideoProcesses = getActiveVideoProcessCount();
-		const resources = getSystemResources();
-		const jobs = getAllJobs();
-		return c.json(
-			{
-				error: "Server is busy",
-				code: "SERVER_BUSY",
-				details: resources.throttleReason
-					? `Throttled: ${resources.throttleReason} (${activeVideoProcesses}/${resources.effectiveMax} active)`
-					: `Too many concurrent video processing jobs (${activeVideoProcesses}/${resources.effectiveMax}), please retry later`,
-				instanceId: getInstanceId(),
-				pid: process.pid,
-				activeVideoProcesses,
-				maxConcurrentVideoProcesses: getMaxConcurrentVideoProcesses(),
-				effectiveMaxVideoProcesses: resources.effectiveMax,
-				resources,
-				jobCount: jobs.length,
-				jobs: jobs.map((job) => ({
-					jobId: job.jobId,
-					videoId: job.videoId,
-					phase: job.phase,
-					progress: job.progress,
-					updatedAt: job.updatedAt,
-				})),
-			},
-			503,
-		);
+		c.header("Retry-After", VIDEO_BUSY_RETRY_AFTER_SECONDS.toString());
+		return c.json(getBusyResponseBody(getVideoCapacitySnapshot()), 503);
 	}
 
 	const {
@@ -1422,13 +1526,8 @@ video.post("/mux-segments", async (c) => {
 	const jobId = generateJobId();
 
 	if (!canAcceptNewVideoProcess()) {
-		return c.json(
-			{
-				error: "SERVER_BUSY",
-				message: "Server is at capacity",
-			},
-			503,
-		);
+		c.header("Retry-After", VIDEO_BUSY_RETRY_AFTER_SECONDS.toString());
+		return c.json(getMuxBusyResponseBody(getVideoCapacitySnapshot()), 503);
 	}
 
 	createJob(jobId, videoId, userId, webhookUrl, webhookSecret);
