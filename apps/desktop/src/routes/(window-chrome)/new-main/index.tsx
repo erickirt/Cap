@@ -1747,6 +1747,10 @@ function Page() {
 	const [hasHiddenMainWindowForPicker, setHasHiddenMainWindowForPicker] =
 		createSignal(false);
 	const [canRevealMainWindow, setCanRevealMainWindow] = createSignal(false);
+	const [
+		shouldRevealMainWindowAfterPicker,
+		setShouldRevealMainWindowAfterPicker,
+	] = createSignal(false);
 
 	// Remember the mode of the in-flight recording. currentRecording.data goes
 	// null the instant a recording ends, so capture it while it's live to decide
@@ -1760,12 +1764,18 @@ function Page() {
 
 	createEffect(() => {
 		const pickerActive = rawOptions.targetMode != null;
+		const pickerSource = rawOptions.targetModeSource ?? "main";
+		const editorPicker =
+			pickerSource === "editor" || pickerSource === "editorRecording";
 		const hasHidden = hasHiddenMainWindowForPicker();
 		const recording = isRecording();
 
 		if (pickerActive && !hasHidden && !recording) {
 			setHasHiddenMainWindowForPicker(true);
+			setShouldRevealMainWindowAfterPicker(!editorPicker);
 			void getCurrentWindow().hide();
+		} else if (pickerActive && hasHidden) {
+			setShouldRevealMainWindowAfterPicker(!editorPicker);
 		} else if (recording) {
 			// A recording is active. The backend owns main-window visibility for the
 			// recording lifecycle: it hides the main window on start, and after a
@@ -1773,10 +1783,15 @@ function Page() {
 			// window here is exactly what left it sitting over the editor, so don't.
 		} else if (!pickerActive && hasHidden && canRevealMainWindow()) {
 			setHasHiddenMainWindowForPicker(false);
+			const shouldRevealMainWindow = shouldRevealMainWindowAfterPicker();
+			setShouldRevealMainWindowAfterPicker(false);
 			// After a studio recording the editor takes over the foreground, so keep
 			// the main window hidden. For a cancelled picker or a finished instant
 			// recording, bring the main window back.
-			if (!(wasRecordingForPicker && lastRecordingMode === "studio")) {
+			if (
+				shouldRevealMainWindow &&
+				!(wasRecordingForPicker && lastRecordingMode === "studio")
+			) {
 				const currentWindow = getCurrentWindow();
 				void currentWindow.show();
 				void currentWindow.setFocus();
@@ -1788,7 +1803,7 @@ function Page() {
 	onCleanup(() => {
 		if (!hasHiddenMainWindowForPicker()) return;
 		setHasHiddenMainWindowForPicker(false);
-		void getCurrentWindow().show();
+		if (shouldRevealMainWindowAfterPicker()) void getCurrentWindow().show();
 	});
 
 	const handleMouseEnter = () => {
@@ -1889,9 +1904,21 @@ function Page() {
 		}
 	});
 
+	const refetchRecordingsUnlessEditorRecording = () => {
+		if (rawOptions.targetModeSource !== "editorRecording") {
+			void recordings.refetch();
+		}
+	};
+
 	createTauriEventListener(events.recordingDeleted, () => recordings.refetch());
-	createTauriEventListener(events.recordingStarted, () => recordings.refetch());
-	createTauriEventListener(events.recordingStopped, () => recordings.refetch());
+	createTauriEventListener(
+		events.recordingStarted,
+		refetchRecordingsUnlessEditorRecording,
+	);
+	createTauriEventListener(
+		events.recordingStopped,
+		refetchRecordingsUnlessEditorRecording,
+	);
 
 	const handleReupload = async (path: string) => {
 		setReuploadingPaths((prev) => new Set([...prev, path]));
@@ -2036,7 +2063,7 @@ function Page() {
 			null,
 			"display",
 		);
-		setOptions("targetMode", "display");
+		setOptions({ targetMode: "display", targetModeSource: "main" });
 	};
 
 	const selectWindowTarget = async (target: CaptureWindowWithThumbnail) => {
@@ -2051,7 +2078,7 @@ function Page() {
 			null,
 			"window",
 		);
-		setOptions("targetMode", "window");
+		setOptions({ targetMode: "window", targetModeSource: "main" });
 
 		try {
 			await commands.focusWindow(target.id);
@@ -2109,9 +2136,9 @@ function Page() {
 
 		if (targetMode) {
 			await commands.openTargetSelectOverlays(null, null, targetMode);
-			setOptions({ targetMode });
+			setOptions({ targetMode, targetModeSource: "main" });
 		} else {
-			setOptions({ targetMode });
+			setOptions({ targetMode, targetModeSource: null });
 			await currentWindow.show();
 			await currentWindow.setFocus();
 			void commands.closeTargetSelectOverlays().catch((error) => {
@@ -2162,7 +2189,10 @@ function Page() {
 						displayId,
 						newTargetMode,
 					);
-					setOptions({ targetMode: newTargetMode });
+					setOptions({
+						targetMode: newTargetMode,
+						targetModeSource: "main",
+					});
 				} else {
 					setOptions({ targetMode: newTargetMode });
 					await commands.closeTargetSelectOverlays();
@@ -2338,7 +2368,7 @@ function Page() {
 				null,
 				nextMode as RecordingTargetMode,
 			);
-			setOptions("targetMode", nextMode);
+			setOptions({ targetMode: nextMode, targetModeSource: "main" });
 		} else {
 			setOptions("targetMode", nextMode);
 			await commands.closeTargetSelectOverlays();

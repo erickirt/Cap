@@ -395,6 +395,11 @@ function ClipsSidebarInner(props: { open: boolean; class?: string }) {
 	createEffect(() => {
 		if (rawOptions.targetMode == null && hiddenForPicker) {
 			hiddenForPicker = false;
+			if (rawOptions.targetModeSource === "editorRecording") {
+				closeRecord();
+				setTargetSearch("");
+				return;
+			}
 			void commands.setEditorRecordingTarget(null).catch(() => {});
 			restoreMode();
 			closeRecord();
@@ -435,7 +440,7 @@ function ClipsSidebarInner(props: { open: boolean; class?: string }) {
 		}
 
 		await commands.openTargetSelectOverlays(null, null, mode);
-		setOptions("targetMode", mode);
+		setOptions({ targetMode: mode, targetModeSource: "editor" });
 		hideEditorForPicker();
 	};
 
@@ -451,7 +456,7 @@ function ClipsSidebarInner(props: { open: boolean; class?: string }) {
 			null,
 			"display",
 		);
-		setOptions("targetMode", "display");
+		setOptions({ targetMode: "display", targetModeSource: "editor" });
 		hideEditorForPicker();
 	};
 
@@ -467,7 +472,7 @@ function ClipsSidebarInner(props: { open: boolean; class?: string }) {
 			null,
 			"window",
 		);
-		setOptions("targetMode", "window");
+		setOptions({ targetMode: "window", targetModeSource: "editor" });
 		hideEditorForPicker();
 
 		try {
