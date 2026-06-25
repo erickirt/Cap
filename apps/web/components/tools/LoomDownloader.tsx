@@ -48,7 +48,7 @@ function triggerBlobDownload(blob: Blob, filename: string) {
 	document.body.appendChild(link);
 	link.click();
 	document.body.removeChild(link);
-	URL.revokeObjectURL(blobUrl);
+	return blobUrl;
 }
 
 function getDownloadFilename(videoName: string | undefined, fallback: string) {
