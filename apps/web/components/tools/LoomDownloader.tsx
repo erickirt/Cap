@@ -1,7 +1,7 @@
 "use client";
 
 import { Button } from "@cap/ui";
-import { useCallback, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
 	getLoomBrowserConversionErrorMessage,
@@ -274,10 +274,13 @@ export function LoomDownloader() {
 						setConvertProgress(percent);
 					},
 				});
+				let objectUrl: string | null = null;
 				if (convertedBlob) {
-					triggerBlobDownload(convertedBlob, conversion.filename);
+					objectUrl = triggerBlobDownload(convertedBlob, conversion.filename);
 				}
 
+				updateDownloadObjectUrl(objectUrl);
+				setLastCompletionKind("ready");
 				setLastDownloadedName(conversion.videoName);
 				setStatus("success");
 			} catch (err) {
@@ -298,7 +301,7 @@ export function LoomDownloader() {
 				abortRef.current = null;
 			}
 		},
-		[],
+		[updateDownloadObjectUrl],
 	);
 
 	const handleDownload = useCallback(async () => {
@@ -331,6 +334,8 @@ export function LoomDownloader() {
 			if (result.downloadMode === "direct-download") {
 				setStatus("downloading");
 				triggerUrlDownload(result.downloadUrl, filename);
+				updateDownloadObjectUrl(null);
+				setLastCompletionKind("download-started");
 				setLastDownloadedName(result.videoName ?? "");
 				setStatus("success");
 				return;
