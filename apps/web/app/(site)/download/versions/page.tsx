@@ -48,25 +48,11 @@ function DownloadLinks({
 					Windows
 				</a>
 				<a
-					href="/download/linux"
-					className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-gray-3 text-gray-12 hover:bg-gray-4 transition-colors"
-				>
-					<LinuxIcon />
-					Linux AppImage
-				</a>
-				<a
 					href="/download/linux-deb"
 					className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-gray-3 text-gray-12 hover:bg-gray-4 transition-colors"
 				>
 					<LinuxIcon />
-					Debian/Ubuntu
-				</a>
-				<a
-					href="/download/linux-rpm"
-					className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-gray-3 text-gray-12 hover:bg-gray-4 transition-colors"
-				>
-					<LinuxIcon />
-					Fedora/RHEL
+					Linux .deb
 				</a>
 			</div>
 		);
@@ -105,31 +91,13 @@ function DownloadLinks({
 					Windows
 				</a>
 			)}
-			{downloads["linux-appimage"] && (
-				<a
-					href={downloads["linux-appimage"]}
-					className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-gray-3 text-gray-12 hover:bg-gray-4 transition-colors"
-				>
-					<LinuxIcon />
-					Linux AppImage
-				</a>
-			)}
 			{downloads["linux-deb"] && (
 				<a
 					href={downloads["linux-deb"]}
 					className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-gray-3 text-gray-12 hover:bg-gray-4 transition-colors"
 				>
 					<LinuxIcon />
-					Debian/Ubuntu
-				</a>
-			)}
-			{downloads["linux-rpm"] && (
-				<a
-					href={downloads["linux-rpm"]}
-					className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-gray-3 text-gray-12 hover:bg-gray-4 transition-colors"
-				>
-					<LinuxIcon />
-					Fedora/RHEL
+					Linux .deb
 				</a>
 			)}
 		</div>
