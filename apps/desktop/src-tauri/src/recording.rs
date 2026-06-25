@@ -3564,6 +3564,7 @@ fn project_config_from_recording(
         text_segments: Vec::new(),
         caption_segments: Vec::new(),
         keyboard_segments: Vec::new(),
+        audio_segments: Vec::new(),
     });
 
     config

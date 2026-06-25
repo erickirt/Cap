@@ -374,6 +374,7 @@ fn ensure_project_timeline<'a>(
             text_segments: Vec::new(),
             caption_segments: Vec::new(),
             keyboard_segments: Vec::new(),
+            audio_segments: Vec::new(),
         });
     }
 
