@@ -15,12 +15,11 @@ type Status =
 	| "idle"
 	| "fetching"
 	| "downloading"
-	| "readyToConvert"
 	| "converting"
 	| "success"
 	| "error";
 
-type PendingBrowserConversion = {
+type BrowserConversion = {
 	url: string;
 	filename: string;
 	videoName: string;
@@ -256,12 +255,10 @@ export function LoomDownloader() {
 	const [errorMessage, setErrorMessage] = useState("");
 	const [convertProgress, setConvertProgress] = useState(0);
 	const [lastDownloadedName, setLastDownloadedName] = useState("");
-	const [pendingConversion, setPendingConversion] =
-		useState<PendingBrowserConversion | null>(null);
 	const abortRef = useRef<AbortController | null>(null);
 
 	const runBrowserConversion = useCallback(
-		async (conversion: PendingBrowserConversion) => {
+		async (conversion: BrowserConversion) => {
 			setStatus("converting");
 			setErrorMessage("");
 			setConvertProgress(0);
@@ -281,7 +278,6 @@ export function LoomDownloader() {
 					triggerBlobDownload(convertedBlob, conversion.filename);
 				}
 
-				setPendingConversion(null);
 				setLastDownloadedName(conversion.videoName);
 				setStatus("success");
 			} catch (err) {
@@ -289,7 +285,7 @@ export function LoomDownloader() {
 					(err instanceof DOMException && err.name === "AbortError") ||
 					isLoomBrowserConversionAbort(err)
 				) {
-					setStatus("readyToConvert");
+					setStatus("idle");
 					return;
 				}
 
@@ -306,17 +302,11 @@ export function LoomDownloader() {
 	);
 
 	const handleDownload = useCallback(async () => {
-		if (pendingConversion && status === "readyToConvert") {
-			await runBrowserConversion(pendingConversion);
-			return;
-		}
-
 		if (!url.trim()) return;
 
 		setStatus("fetching");
 		setErrorMessage("");
 		setConvertProgress(0);
-		setPendingConversion(null);
 
 		try {
 			const result = await resolveLoomBrowserDownload(url.trim());
@@ -356,12 +346,11 @@ export function LoomDownloader() {
 				return;
 			}
 
-			setPendingConversion({
+			await runBrowserConversion({
 				url: result.downloadUrl,
 				filename,
 				videoName: result.videoName ?? "",
 			});
-			setStatus("readyToConvert");
 		} catch (err) {
 			if (err instanceof DOMException && err.name === "AbortError") {
 				setStatus("idle");
@@ -379,7 +368,7 @@ export function LoomDownloader() {
 		} finally {
 			abortRef.current = null;
 		}
-	}, [pendingConversion, runBrowserConversion, status, url]);
+	}, [runBrowserConversion, url]);
 
 	const handleDownloadAnother = useCallback(() => {
 		setUrl("");
@@ -387,7 +376,6 @@ export function LoomDownloader() {
 		setErrorMessage("");
 		setConvertProgress(0);
 		setLastDownloadedName("");
-		setPendingConversion(null);
 	}, []);
 
 	const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -407,11 +395,9 @@ export function LoomDownloader() {
 			? "Fetching..."
 			: status === "downloading"
 				? "Downloading..."
-				: status === "readyToConvert"
-					? "Convert in Browser"
-					: status === "converting"
-						? `Converting to MP4... ${convertProgress}%`
-						: "Download Video";
+				: status === "converting"
+					? `Downloading... ${convertProgress}%`
+					: "Download Video";
 
 	if (status === "success") {
 		return (
@@ -437,8 +423,7 @@ export function LoomDownloader() {
 						value={url}
 						onChange={(e) => {
 							setUrl(e.target.value);
-							setPendingConversion(null);
-							if (status === "error" || status === "readyToConvert") {
+							if (status === "error") {
 								setStatus("idle");
 								setErrorMessage("");
 							}
@@ -470,33 +455,8 @@ export function LoomDownloader() {
 						/>
 					</div>
 					<p className="text-xs text-gray-500 text-center">
-						Converting video to MP4 in your browser...
+						Preparing your MP4...
 					</p>
-				</div>
-			)}
-
-			{status === "readyToConvert" && (
-				<div className="flex items-start gap-2 p-3 text-sm text-blue-700 bg-blue-50 border border-blue-200 rounded-xl">
-					<svg
-						className="w-5 h-5 flex-shrink-0 mt-0.5"
-						fill="none"
-						viewBox="0 0 24 24"
-						stroke="currentColor"
-						strokeWidth={1.5}
-						role="img"
-					>
-						<title>Browser conversion</title>
-						<path
-							strokeLinecap="round"
-							strokeLinejoin="round"
-							d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M7.5 10.5L12 15m0 0l4.5-4.5M12 15V3"
-						/>
-					</svg>
-					<span>
-						This Loom needs browser conversion. Use the latest desktop Chrome or
-						Edge, keep this tab open, and choose where to save the MP4 if
-						prompted.
-					</span>
 				</div>
 			)}
 
