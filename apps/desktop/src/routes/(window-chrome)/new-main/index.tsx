@@ -77,6 +77,7 @@ import {
 	type ScreenCaptureTarget,
 	type UploadProgress,
 } from "~/utils/tauri";
+import { getUpdaterCheckOptions } from "~/utils/updater";
 import IconCapLogoFull from "~icons/cap/logo-full";
 import IconCapLogoFullDark from "~icons/cap/logo-full-dark";
 import IconLucideAppWindowMac from "~icons/lucide/app-window-mac";
@@ -1563,7 +1564,7 @@ function createUpdateCheck() {
 
 		let update: updater.Update | undefined;
 		try {
-			const result = await updater.check();
+			const result = await updater.check(getUpdaterCheckOptions());
 			if (result) update = result;
 		} catch (e) {
 			console.error("Failed to check for updates:", e);
