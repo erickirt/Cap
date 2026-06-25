@@ -10,7 +10,7 @@ export const getDownloadUrl = (
 	} else if (platform === "macos") {
 		return isIntel ? "/download/apple-intel" : "/download/apple-silicon";
 	} else if (platform === "linux") {
-		return "/download/linux";
+		return "/download/linux-deb";
 	} else {
 		return "/download/apple-silicon";
 	}
@@ -79,7 +79,7 @@ export const getVersionText = (platform: string | null): React.ReactNode => {
 	} else if (platform === "windows") {
 		return "Windows 10+ recommended";
 	} else if (platform === "linux") {
-		return "Linux x86_64 AppImage recommended";
+		return "Linux x86_64 .deb recommended";
 	} else {
 		return "macOS 13.1+ recommended";
 	}
@@ -153,13 +153,13 @@ export const PlatformIcons: React.FC<PlatformIconsProps> = ({
 			</div>
 			<div>
 				<a
-					href="/download/linux"
+					href="/download/linux-deb"
 					onClick={() =>
 						trackEvent("download_cta_clicked", {
 							source_page: source,
 							cta_location: "platform_icons",
 							target: "linux",
-							target_url: "/download/linux",
+							target_url: "/download/linux-deb",
 						})
 					}
 					className="focus:outline-none"
