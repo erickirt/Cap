@@ -1,6 +1,6 @@
 # Cap — Open-Source Screen Recorder & Loom Alternative
 
-> Cap is a free, open-source screen recorder and async video messaging platform — a privacy-first alternative to Loom, Vidyard, and OBS. Record your screen, camera, and audio, then share an instant link or edit locally in a professional studio editor. Native desktop apps for macOS and Windows (built on Tauri + Rust, not Electron), a Linux AppImage, and a web viewer. Bring your own storage (Google Drive, any S3-compatible bucket, or fully local) so you own every recording.
+> Cap is a free, open-source screen recorder and async video messaging platform — a privacy-first alternative to Loom, Vidyard, and OBS. Record your screen, camera, and audio, then share an instant link or edit locally in a professional studio editor. Native desktop apps for macOS and Windows (built on Tauri + Rust, not Electron), a Linux .deb package, and a web viewer. Bring your own storage (Google Drive, any S3-compatible bucket, or fully local) so you own every recording.
 
 Made by Cap Software, Inc. Website: https://cap.so · Source (AGPLv3): https://github.com/CapSoftware/Cap
 
@@ -25,7 +25,7 @@ For the full, detailed reference, see https://cap.so/llms-full.txt.
 
 ## Platforms
 
-- macOS (Apple Silicon & Intel, recommended 13.1+), Windows 10/11, Linux x86_64 (AppImage), and a browser viewer.
+- macOS (Apple Silicon & Intel, recommended 13.1+), Windows 10/11, Linux x86_64 (.deb for Debian/Ubuntu), and a browser viewer.
 
 ## Pricing
 
