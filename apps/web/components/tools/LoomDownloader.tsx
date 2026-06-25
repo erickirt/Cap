@@ -25,6 +25,8 @@ type BrowserConversion = {
 	videoName: string;
 };
 
+type CompletionKind = "download-started" | "ready";
+
 const MIGRATE_PROMO_CODE = "MIGRATE20";
 const MIGRATE_CHECKOUT_HREF = `/pricing?promo=${MIGRATE_PROMO_CODE}&utm_source=loom-downloader&utm_campaign=migrate20`;
 
@@ -123,12 +125,18 @@ function MigrationBanner() {
 }
 
 function MigrationSuccessState({
+	completionKind,
 	downloadedName,
+	openUrl,
 	onDownloadAnother,
 }: {
+	completionKind: CompletionKind;
 	downloadedName: string;
+	openUrl: string | null;
 	onDownloadAnother: () => void;
 }) {
+	const isReady = completionKind === "ready";
+
 	return (
 		<div className="flex flex-col gap-6">
 			<div className="flex items-start gap-3 p-4 rounded-xl border border-green-200 bg-green-50">
@@ -149,14 +157,30 @@ function MigrationSuccessState({
 				</svg>
 				<div className="flex flex-col gap-1">
 					<p className="text-sm font-semibold text-green-900 sm:text-base">
-						Your Loom video is downloading
+						{isReady ? "Your MP4 is ready" : "Your download has started"}
 					</p>
 					<p className="text-xs leading-relaxed text-green-800 sm:text-sm">
-						{downloadedName
-							? `"${downloadedName}" is saving as an MP4.`
-							: "Your MP4 is saving now."}{" "}
-						Why stop at one?
+						{isReady
+							? downloadedName
+								? `"${downloadedName}" finished saving as an MP4.`
+								: "Your MP4 finished saving."
+							: downloadedName
+								? `"${downloadedName}" is downloading as an MP4.`
+								: "Your browser is downloading the MP4."}{" "}
+						{openUrl
+							? "You can open it now."
+							: "Open it from your Downloads folder or chosen save location."}
 					</p>
+					{openUrl && (
+						<a
+							href={openUrl}
+							target="_blank"
+							rel="noreferrer"
+							className="inline-flex self-start mt-2 px-3 py-1.5 text-xs font-semibold rounded-lg border border-green-300 bg-white text-green-800 transition-colors hover:bg-green-100"
+						>
+							Open MP4
+						</a>
+					)}
 				</div>
 			</div>
 
@@ -255,7 +279,31 @@ export function LoomDownloader() {
 	const [errorMessage, setErrorMessage] = useState("");
 	const [convertProgress, setConvertProgress] = useState(0);
 	const [lastDownloadedName, setLastDownloadedName] = useState("");
+	const [lastCompletionKind, setLastCompletionKind] =
+		useState<CompletionKind>("ready");
+	const [lastDownloadObjectUrl, setLastDownloadObjectUrl] = useState<
+		string | null
+	>(null);
 	const abortRef = useRef<AbortController | null>(null);
+	const downloadObjectUrlRef = useRef<string | null>(null);
+
+	const updateDownloadObjectUrl = useCallback((objectUrl: string | null) => {
+		if (downloadObjectUrlRef.current) {
+			URL.revokeObjectURL(downloadObjectUrlRef.current);
+		}
+
+		downloadObjectUrlRef.current = objectUrl;
+		setLastDownloadObjectUrl(objectUrl);
+	}, []);
+
+	useEffect(
+		() => () => {
+			if (downloadObjectUrlRef.current) {
+				URL.revokeObjectURL(downloadObjectUrlRef.current);
+			}
+		},
+		[],
+	);
 
 	const runBrowserConversion = useCallback(
 		async (conversion: BrowserConversion) => {
@@ -373,7 +421,7 @@ export function LoomDownloader() {
 		} finally {
 			abortRef.current = null;
 		}
-	}, [runBrowserConversion, url]);
+	}, [runBrowserConversion, updateDownloadObjectUrl, url]);
 
 	const handleDownloadAnother = useCallback(() => {
 		setUrl("");
@@ -381,7 +429,9 @@ export function LoomDownloader() {
 		setErrorMessage("");
 		setConvertProgress(0);
 		setLastDownloadedName("");
-	}, []);
+		setLastCompletionKind("ready");
+		updateDownloadObjectUrl(null);
+	}, [updateDownloadObjectUrl]);
 
 	const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
 		if (e.key === "Enter") {
@@ -407,7 +457,9 @@ export function LoomDownloader() {
 	if (status === "success") {
 		return (
 			<MigrationSuccessState
+				completionKind={lastCompletionKind}
 				downloadedName={lastDownloadedName}
+				openUrl={lastDownloadObjectUrl}
 				onDownloadAnother={handleDownloadAnother}
 			/>
 		);
