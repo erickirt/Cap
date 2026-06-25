@@ -313,7 +313,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           RUST_TARGET_TRIPLE: ${{ matrix.settings.target }}
 
-      # Guards against the two Linux packaging regressions:
+      # Guards against the Linux packaging regressions:
       #   1. Frontend missing: vinxi must produce apps/desktop/.output/public,
       #      which Tauri EMBEDS into the binary (it is NOT shipped as a loose
       #      /usr/lib/Cap/index.html file). A blank webview ships if turbo's cache
@@ -323,6 +323,10 @@ jobs:
       #      NEEDED must be bundled under /usr/lib/cap/ with the exact same soname.
       #      The bundled libs come from native-deps (FFmpeg 7); if the binary
       #      linked system FFmpeg 6 the loader fails at launch.
+      #   3. Undeclared runtime dependency: a system lib the binary NEEDs that is
+      #      neither bundled nor part of the declared GTK/webkit stack must appear
+      #      in the .deb Depends, or the loader aborts at launch. This is the
+      #      libpipewire-0.3.so.0 crash that shipped in 0.5.2.
       - name: Verify Linux deb contents
         if: ${{ runner.os == 'Linux' }}
         shell: bash
@@ -370,6 +374,37 @@ jobs:
             exit 1
           fi
           echo "FFmpeg soname bundle OK"
+
+          # (3) runtime libs that are NOT bundled and NOT pulled in by the
+          # declared GTK/webkit stack must be declared in the .deb Depends, or
+          # the dynamic loader aborts at launch (the libpipewire-0.3.so.0 crash
+          # in 0.5.2). Assert the curated set of such sonames the binary links.
+          DEPENDS="$(dpkg-deb -f "$DEB" Depends || true)"
+          echo "Declared Depends: ${DEPENDS:-(none)}"
+          NEEDED_ALL="$(objdump -p "$BIN" | awk '/NEEDED/{print $2}')"
+          # soname -> a Depends token that satisfies it. The alsa token is a
+          # substring so it matches both libasound2 and libasound2t64.
+          declare -A SONAME_DEP=(
+            [libpipewire-0.3.so.0]="libpipewire-0.3-0"
+            [libasound.so.2]="libasound2"
+          )
+          DEP_MISSING=0
+          for so in "${!SONAME_DEP[@]}"; do
+            if echo "$NEEDED_ALL" | grep -qx "$so"; then
+              tok="${SONAME_DEP[$so]}"
+              if ! echo "$DEPENDS" | grep -q "$tok"; then
+                echo "::error::Binary NEEDs $so but '$tok' is not declared in .deb Depends (add it to tauri.conf.json bundle.linux.deb.depends)."
+                DEP_MISSING=1
+              else
+                echo "Runtime dep OK: $so -> $tok"
+              fi
+            fi
+          done
+          if [[ "$DEP_MISSING" -ne 0 ]]; then
+            echo "::error::Undeclared runtime dependency in .deb Depends."
+            exit 1
+          fi
+          echo "Runtime dependency declarations OK"
 
       - name: Upload unsigned Windows installer
         if: ${{ runner.os == 'Windows' }}
