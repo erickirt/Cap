@@ -236,6 +236,118 @@ describe("importFromLoom", () => {
 		vi.stubGlobal("fetch", vi.fn());
 	});
 
+	it("returns direct MP4 URLs for public Loom downloads", async () => {
+		const fetchMock = vi.mocked(fetch);
+		fetchMock.mockImplementation(async (input) => {
+			const url = typeof input === "string" ? input : input.toString();
+
+			if (url.includes("/transcoded-url")) {
+				return {
+					ok: true,
+					status: 200,
+					text: async () =>
+						JSON.stringify({ url: "https://cdn.loom.com/video.mp4" }),
+				} as Response;
+			}
+
+			if (url === "https://www.loom.com/graphql") {
+				return {
+					ok: true,
+					json: async () => ({
+						data: { getVideo: { name: "Public download" } },
+					}),
+				} as Response;
+			}
+
+			if (url.includes("/v1/oembed")) {
+				return {
+					ok: true,
+					json: async () => ({ duration: 42, width: 1920, height: 1080 }),
+				} as Response;
+			}
+
+			throw new Error(`Unexpected fetch: ${url}`);
+		});
+
+		const { downloadLoomVideo } = await import("@/actions/loom");
+
+		const result = await downloadLoomVideo(
+			"https://www.loom.com/share/loom-abc1234567",
+		);
+
+		expect(result).toEqual({
+			success: true,
+			videoId: "loom-abc1234567",
+			videoName: "Public download",
+			downloadUrl: "https://cdn.loom.com/video.mp4",
+			downloadMode: "direct-download",
+			durationSeconds: 42,
+			width: 1920,
+			height: 1080,
+			requiresProxy: false,
+		});
+	});
+
+	it("returns streaming Loom URLs for browser conversion instead of proxying", async () => {
+		const fetchMock = vi.mocked(fetch);
+		fetchMock.mockImplementation(async (input) => {
+			const url = typeof input === "string" ? input : input.toString();
+
+			if (url.includes("/transcoded-url")) {
+				return {
+					ok: true,
+					status: 200,
+					text: async () =>
+						JSON.stringify({ url: "https://cdn.loom.com/video.m3u8" }),
+				} as Response;
+			}
+
+			if (url.includes("/raw-url")) {
+				return {
+					ok: false,
+					status: 404,
+					text: async () => "",
+				} as Response;
+			}
+
+			if (url === "https://www.loom.com/graphql") {
+				return {
+					ok: true,
+					json: async () => ({
+						data: { getVideo: { name: "Streaming download" } },
+					}),
+				} as Response;
+			}
+
+			if (url.includes("/v1/oembed")) {
+				return {
+					ok: true,
+					json: async () => ({ duration: 90, width: 1280, height: 720 }),
+				} as Response;
+			}
+
+			throw new Error(`Unexpected fetch: ${url}`);
+		});
+
+		const { downloadLoomVideo } = await import("@/actions/loom");
+
+		const result = await downloadLoomVideo(
+			"https://www.loom.com/share/loom-abc1234567",
+		);
+
+		expect(result).toEqual({
+			success: true,
+			videoId: "loom-abc1234567",
+			videoName: "Streaming download",
+			downloadUrl: "https://cdn.loom.com/video.m3u8",
+			downloadMode: "browser-conversion",
+			durationSeconds: 90,
+			width: 1280,
+			height: 720,
+			requiresProxy: false,
+		});
+	});
+
 	it("rejects a Loom import when the linked Cap still exists", async () => {
 		whereMock.mockResolvedValueOnce([
 			{ importedVideoId: "video-123", videoId: "video-123" },
