@@ -2,6 +2,7 @@
 
 mod api;
 mod audio;
+mod audio_library;
 mod audio_meter;
 mod auth;
 mod automation;
@@ -4341,6 +4342,9 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
             get_editor_project_path,
             get_mic_waveforms,
             get_system_audio_waveforms,
+            audio_library::list_audio_library,
+            audio_library::add_audio_library_track,
+            audio_library::import_audio_track_file,
             start_playback,
             stop_playback,
             set_playhead_position,
