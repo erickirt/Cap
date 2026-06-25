@@ -99,7 +99,9 @@
 					"libgtk-3-0",
 					"libayatana-appindicator3-1",
 					"libva2",
-					"libva-drm2"
+					"libva-drm2",
+					"libpipewire-0.3-0",
+					"libasound2t64 | libasound2"
 				]
 			}
 		},
