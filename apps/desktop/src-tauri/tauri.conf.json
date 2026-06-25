@@ -19,6 +19,12 @@
 					"$APPDATA/**",
 					"**/*.jpg",
 					"**/*.webp",
+					"**/*.mp3",
+					"**/*.wav",
+					"**/*.m4a",
+					"**/*.ogg",
+					"**/*.flac",
+					"**/*.aac",
 					"$RESOURCE/**",
 					"**/*.riv",
 					"$HOME/**"
@@ -57,7 +63,8 @@
 			"assets/backgrounds/dark/*": "assets/backgrounds/dark/",
 			"assets/backgrounds/orange/*": "assets/backgrounds/orange/",
 			"assets/backgrounds/purple/*": "assets/backgrounds/purple/",
-			"../src/assets/rive/*.riv": "assets/rive/"
+			"../src/assets/rive/*.riv": "assets/rive/",
+			"../src/assets/music/*.mp3": "assets/music/"
 		},
 		"macOS": {
 			"dmg": {
