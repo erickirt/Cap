@@ -277,6 +277,13 @@ export const DownloadPage = () => {
 						</Link>
 						<span className="hidden md:inline">•</span>
 						<Link
+							href="/mac-screen-recording-with-audio"
+							className="text-xs hover:text-gray-8 hover:underline"
+						>
+							Mac Audio Recording
+						</Link>
+						<span className="hidden md:inline">•</span>
+						<Link
 							href="/screen-recorder-windows"
 							className="text-xs hover:text-gray-8 hover:underline"
 						>
