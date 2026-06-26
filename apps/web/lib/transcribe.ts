@@ -2,7 +2,7 @@ import { db } from "@cap/database";
 import { organizations, videos, videoUploads } from "@cap/database/schema";
 import { serverEnv } from "@cap/env";
 import type { Video } from "@cap/web-domain";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { start } from "workflow/api";
 import { transcribeVideoWorkflow } from "@/workflows/transcribe";
 
@@ -11,11 +11,23 @@ type TranscribeResult = {
 	message: string;
 };
 
+const TRANSCRIPTION_ALREADY_HANDLED_MESSAGE =
+	"Transcription already completed, in progress, or awaiting manual retry";
+
+const getAffectedRows = (result: unknown) => {
+	if (Array.isArray(result)) {
+		return (
+			(result[0] as { affectedRows?: number } | undefined)?.affectedRows ?? 0
+		);
+	}
+
+	return (result as { affectedRows?: number } | undefined)?.affectedRows ?? 0;
+};
+
 export async function transcribeVideo(
 	videoId: Video.VideoId,
 	userId: string,
 	aiGenerationEnabled = false,
-	_isRetry = false,
 ): Promise<TranscribeResult> {
 	if (!serverEnv().DEEPGRAM_API_KEY) {
 		return {
@@ -85,11 +97,12 @@ export async function transcribeVideo(
 		video.transcriptionStatus === "COMPLETE" ||
 		video.transcriptionStatus === "PROCESSING" ||
 		video.transcriptionStatus === "SKIPPED" ||
-		video.transcriptionStatus === "NO_AUDIO"
+		video.transcriptionStatus === "NO_AUDIO" ||
+		video.transcriptionStatus === "ERROR"
 	) {
 		return {
 			success: true,
-			message: "Transcription already completed or in progress",
+			message: TRANSCRIPTION_ALREADY_HANDLED_MESSAGE,
 		};
 	}
 
@@ -111,6 +124,18 @@ export async function transcribeVideo(
 	}
 
 	try {
+		const transitionResult = await db()
+			.update(videos)
+			.set({ transcriptionStatus: "PROCESSING" })
+			.where(and(eq(videos.id, videoId), isNull(videos.transcriptionStatus)));
+
+		if (getAffectedRows(transitionResult) === 0) {
+			return {
+				success: true,
+				message: TRANSCRIPTION_ALREADY_HANDLED_MESSAGE,
+			};
+		}
+
 		console.log(
 			`[transcribeVideo] Triggering transcription workflow for video ${videoId}`,
 		);
