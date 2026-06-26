@@ -26,8 +26,12 @@ import {
 	probeVideo,
 	probeVideoFile,
 } from "../lib/media-probe";
-import type { ResilientInputFlags } from "../lib/media-video";
+import type {
+	ResilientInputFlags,
+	StorageUploadTarget,
+} from "../lib/media-video";
 import {
+	abortStorageUploadTarget,
 	downloadVideoToTemp,
 	generatePreviewGif,
 	generateThumbnail,
@@ -35,6 +39,7 @@ import {
 	processVideo,
 	repairContainer,
 	uploadFileToS3,
+	uploadFileToStorage,
 	uploadToS3,
 } from "../lib/media-video";
 import type { TempFileHandle } from "../lib/temp-files";
@@ -1487,19 +1492,56 @@ video.post("/force-cleanup", (c) => {
 	});
 });
 
-const muxSegmentsSchema = z.object({
-	videoId: z.string(),
-	userId: z.string(),
-	outputPresignedUrl: z.string().url(),
-	thumbnailPresignedUrl: z.string().url().optional(),
-	previewGifPresignedUrl: z.string().url().optional(),
-	webhookUrl: z.string().url().optional(),
-	webhookSecret: z.string().optional(),
-	videoInitUrl: z.string().url(),
-	videoSegmentUrls: z.array(z.string().url()),
-	audioInitUrl: z.string().url().optional(),
-	audioSegmentUrls: z.array(z.string().url()).optional(),
-});
+const muxSegmentsOutputUploadSchema = z.discriminatedUnion("type", [
+	z.object({
+		type: z.literal("put"),
+		url: z.string().url(),
+	}),
+	z.object({
+		type: z.literal("multipart"),
+		videoId: z.string(),
+		key: z.string().min(1),
+		uploadId: z.string().min(1),
+		partSize: z
+			.number()
+			.int()
+			.min(5 * 1024 * 1024),
+		signPartUrl: z.string().url(),
+		completeUrl: z.string().url(),
+		abortUrl: z.string().url(),
+		webhookSecret: z.string().optional(),
+	}),
+]);
+
+const muxSegmentsSchema = z
+	.object({
+		videoId: z.string(),
+		userId: z.string(),
+		outputPresignedUrl: z.string().url().optional(),
+		outputUpload: muxSegmentsOutputUploadSchema.optional(),
+		thumbnailPresignedUrl: z.string().url().optional(),
+		previewGifPresignedUrl: z.string().url().optional(),
+		webhookUrl: z.string().url().optional(),
+		webhookSecret: z.string().optional(),
+		videoInitUrl: z.string().url(),
+		videoSegmentUrls: z.array(z.string().url()),
+		audioInitUrl: z.string().url().optional(),
+		audioSegmentUrls: z.array(z.string().url()).optional(),
+	})
+	.refine((body) => body.outputPresignedUrl || body.outputUpload, {
+		message: "outputPresignedUrl or outputUpload is required",
+		path: ["outputUpload"],
+	});
+
+function getMuxSegmentsOutputUpload(
+	body: z.infer<typeof muxSegmentsSchema>,
+): StorageUploadTarget {
+	if (body.outputUpload) return body.outputUpload;
+	if (body.outputPresignedUrl) {
+		return { type: "put", url: body.outputPresignedUrl };
+	}
+	throw new Error("Missing mux output upload target");
+}
 
 video.post("/mux-segments", async (c) => {
 	if (!validateMediaServerSecret(c)) {
@@ -1517,7 +1559,6 @@ video.post("/mux-segments", async (c) => {
 	const {
 		videoId,
 		userId,
-		outputPresignedUrl,
 		thumbnailPresignedUrl,
 		previewGifPresignedUrl,
 		webhookUrl,
@@ -1538,11 +1579,12 @@ video.post("/mux-segments", async (c) => {
 		audioInitUrl,
 		audioSegmentUrls: audioSegUrls,
 	} = body.data;
+	const outputUpload = getMuxSegmentsOutputUpload(body.data);
 
 	muxSegmentsAsync(
 		jobId,
 		videoId,
-		outputPresignedUrl,
+		outputUpload,
 		thumbnailPresignedUrl,
 		previewGifPresignedUrl,
 		videoInitUrl,
@@ -1669,7 +1711,7 @@ function sendCurrentJobWebhook(jobId: string): void {
 async function muxSegmentsAsync(
 	jobId: string,
 	videoId: string,
-	outputPresignedUrl: string,
+	outputUpload: StorageUploadTarget,
 	thumbnailPresignedUrl: string | undefined,
 	previewGifPresignedUrl: string | undefined,
 	videoInitUrl: string,
@@ -1688,6 +1730,7 @@ async function muxSegmentsAsync(
 	);
 	const abortController = new AbortController();
 	updateJob(jobId, { abortController });
+	let outputUploadStarted = false;
 
 	try {
 		await ensureTempDir();
@@ -1812,7 +1855,8 @@ async function muxSegmentsAsync(
 		updateJob(jobId, { phase: "uploading", progress: 80 });
 		sendCurrentJobWebhook(jobId);
 
-		await uploadFileToS3(resultPath, outputPresignedUrl, "video/mp4");
+		outputUploadStarted = true;
+		await uploadFileToStorage(resultPath, outputUpload, "video/mp4");
 
 		let metadata: VideoMetadata | undefined;
 		try {
@@ -1859,6 +1903,14 @@ async function muxSegmentsAsync(
 
 		setTimeout(() => deleteJob(jobId), 5 * 60 * 1000);
 	} catch (error: unknown) {
+		if (!outputUploadStarted) {
+			await abortStorageUploadTarget(outputUpload).catch((abortError) => {
+				console.warn(
+					`[mux-segments] Failed to abort output upload for ${videoId}:`,
+					abortError instanceof Error ? abortError.message : abortError,
+				);
+			});
+		}
 		console.error(`Mux-segments job ${jobId} failed:`, error);
 		updateJob(jobId, {
 			phase: "error",
