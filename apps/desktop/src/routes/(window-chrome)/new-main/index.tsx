@@ -1568,13 +1568,6 @@ function createUpdateCheck() {
 			if (result) update = result;
 		} catch (e) {
 			console.error("Failed to check for updates:", e);
-			const openDownload = await dialog
-				.confirm(
-					"Couldn't check for updates automatically. You can download the latest version of Cap from cap.so/download \u2014 your data won't be lost.",
-					{ title: "Update Cap", okLabel: "Download", cancelLabel: "Later" },
-				)
-				.catch(() => false);
-			if (openDownload) await shell.open("https://cap.so/download");
 			return;
 		}
 
