@@ -561,6 +561,16 @@ export const MigrateFromLoomPage = () => {
 							Open it in your dashboard to import your first video.
 						</a>
 					</p>
+					<p className="mx-auto mt-2 text-sm text-center text-gray-9">
+						Prefer to keep the original files? Use our{" "}
+						<a
+							href="/tools/loom-downloader"
+							className="font-medium text-blue-500 transition-colors hover:text-blue-600"
+						>
+							free Loom video downloader
+						</a>
+						.
+					</p>
 				</motion.div>
 			</div>
 
