@@ -621,6 +621,62 @@ describe("POST /video/edit", () => {
 	});
 });
 
+describe("POST /video/mux-segments", () => {
+	beforeEach(() => {
+		mock.restore();
+	});
+
+	const baseMuxBody = {
+		videoId: "test-id",
+		userId: "user-id",
+		videoInitUrl: "https://example.com/video/init.mp4",
+		videoSegmentUrls: ["https://example.com/video/segment-1.m4s"],
+	};
+
+	test("returns 400 when output upload target is missing", async () => {
+		const response = await app.fetch(
+			videoPostRequest("/video/mux-segments", baseMuxBody),
+		);
+
+		expect(response.status).toBe(400);
+		const data = await response.json();
+		expect(data.error).toBe("Invalid request");
+	});
+
+	test("accepts multipart output upload target", async () => {
+		mock.module("../../lib/job-manager", () => ({
+			...jobManager,
+			canAcceptNewVideoProcess: () => false,
+		}));
+
+		const { default: appWithMock } = await import("../../app");
+
+		const response = await appWithMock.fetch(
+			videoPostRequest("/video/mux-segments", {
+				...baseMuxBody,
+				outputUpload: {
+					type: "multipart",
+					videoId: "test-id",
+					key: "user-id/test-id/result.mp4",
+					uploadId: "upload-id",
+					partSize: 5 * 1024 * 1024,
+					signPartUrl:
+						"https://cap.example.com/api/webhooks/media-server/multipart/sign-part",
+					completeUrl:
+						"https://cap.example.com/api/webhooks/media-server/multipart/complete",
+					abortUrl:
+						"https://cap.example.com/api/webhooks/media-server/multipart/abort",
+					webhookSecret: MEDIA_SERVER_SECRET,
+				},
+			}),
+		);
+
+		expect(response.status).toBe(503);
+		const data = await response.json();
+		expect(data.code).toBe("SERVER_BUSY");
+	});
+});
+
 describe("GET /video/process/:jobId/status", () => {
 	beforeEach(() => {
 		mock.restore();
