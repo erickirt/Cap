@@ -581,7 +581,8 @@ async function AuthorizedContent({
 		video.transcriptionStatus !== "COMPLETE" &&
 		video.transcriptionStatus !== "PROCESSING" &&
 		video.transcriptionStatus !== "SKIPPED" &&
-		video.transcriptionStatus !== "NO_AUDIO"
+		video.transcriptionStatus !== "NO_AUDIO" &&
+		video.transcriptionStatus !== "ERROR"
 	) {
 		console.log("[ShareVideoPage] Starting transcription for video:", videoId);
 		transcribeVideo(videoId, video.owner.id, aiGenerationEnabled).catch(
