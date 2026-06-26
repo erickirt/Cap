@@ -36,10 +36,12 @@ export function VideoDownloadMenu({
 		setIsDownloading(true);
 
 		const run = async () => {
-			const { downloadUrl, filename } = await getVideoDownloadInfo(
-				videoId,
-				variant,
-			);
+			const result = await getVideoDownloadInfo(videoId, variant);
+			if (!result.success) {
+				throw new Error(result.error);
+			}
+
+			const { downloadUrl, filename } = result;
 			const response = await fetch(downloadUrl);
 			if (!response.ok) throw new Error("Failed to download video");
 			const blob = await response.blob();
