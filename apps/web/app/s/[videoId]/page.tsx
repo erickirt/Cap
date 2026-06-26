@@ -844,14 +844,18 @@ async function AuthorizedContent({
 		video.orgSettings?.defaultPlaybackSpeed,
 	);
 
-	const canDownloadVideo = userId
-		? await canUserDownloadVideo({
-				userId,
-				ownerId: video.owner.id,
-				videoId,
-				orgId: video.orgId,
-			})
-		: false;
+	const isVideoDownloadReady =
+		!hasActiveUpload && video.source?.type !== "desktopSegments";
+
+	const canDownloadVideo =
+		userId && isVideoDownloadReady
+			? await canUserDownloadVideo({
+					userId,
+					ownerId: video.owner.id,
+					videoId,
+					orgId: video.orgId,
+				})
+			: false;
 
 	let videoHasEdits = false;
 	if (canDownloadVideo) {
