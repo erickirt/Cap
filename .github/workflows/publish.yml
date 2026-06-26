@@ -462,6 +462,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - name: Upload assets
+        if: ${{ runner.os != 'Linux' }}
         uses: crabnebula-dev/cloud-release@v0
         with:
           working-directory: apps/desktop
@@ -469,6 +470,19 @@ jobs:
           api-key: ${{ secrets.CN_API_KEY }}
         env:
           TAURI_BUNDLE_PATH: ../..
+
+      - name: Upload Linux deb asset
+        if: ${{ runner.os == 'Linux' }}
+        uses: crabnebula-dev/cloud-release@v0
+        with:
+          working-directory: apps/desktop
+          command: >
+            release upload ${{ env.CN_APPLICATION }} "${{ needs.draft.outputs.version }}"
+            --file "../../target/${{ matrix.settings.target }}/release/bundle/deb/Cap_${{ needs.draft.outputs.version }}_amd64.deb"
+            --signature "../../target/${{ matrix.settings.target }}/release/bundle/deb/Cap_${{ needs.draft.outputs.version }}_amd64.deb.sig"
+            --public-platform deb-x86_64
+            --update-platform linux-x86_64-deb
+          api-key: ${{ secrets.CN_API_KEY }}
 
       - uses: matbour/setup-sentry-cli@8ef22a4ff03bcd1ebbcaa3a36a81482ca8e3872e
 
