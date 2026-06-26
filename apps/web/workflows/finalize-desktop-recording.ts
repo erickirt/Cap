@@ -17,10 +17,28 @@ interface FinalizeDesktopRecordingWorkflowPayload {
 	userId: User.UserId;
 }
 
+type DesktopSegmentsOutputUpload =
+	| {
+			type: "put";
+			url: string;
+	  }
+	| {
+			type: "multipart";
+			videoId: string;
+			key: string;
+			uploadId: string;
+			partSize: number;
+			signPartUrl: string;
+			completeUrl: string;
+			abortUrl: string;
+			webhookSecret?: string;
+	  };
+
 interface DesktopSegmentsMuxBody {
 	videoId: string;
 	userId: string;
 	outputPresignedUrl: string;
+	outputUpload: DesktopSegmentsOutputUpload;
 	thumbnailPresignedUrl: string;
 	previewGifPresignedUrl: string;
 	videoInitUrl: string;
@@ -37,6 +55,7 @@ const MEDIA_SERVER_COMPLETION_MAX_ATTEMPTS = 720;
 const MEDIA_SERVER_COMPLETION_POLL_INTERVAL_MS = 5_000;
 const MEDIA_SERVER_PRESIGNED_GET_EXPIRES_SECONDS = 3 * 60 * 60;
 const MEDIA_SERVER_PRESIGNED_PUT_EXPIRES_SECONDS = 3 * 60 * 60;
+const MEDIA_SERVER_MULTIPART_OUTPUT_PART_SIZE_BYTES = 64 * 1024 * 1024;
 
 function getRetryDelay(attempt: number) {
 	return Math.min(
@@ -57,6 +76,39 @@ async function waitBeforeMuxRetry(delayMs: number): Promise<void> {
 
 function getErrorMessage(error: unknown) {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function getMediaServerWebhookUrl(baseUrl: string, path: string) {
+	const normalizedBaseUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+	return new URL(path.replace(/^\//, ""), normalizedBaseUrl).toString();
+}
+
+async function abortDesktopSegmentsOutputUpload(
+	outputUpload: DesktopSegmentsOutputUpload,
+): Promise<void> {
+	if (outputUpload.type === "put") return;
+
+	const headers: Record<string, string> = {
+		"Content-Type": "application/json",
+	};
+	if (outputUpload.webhookSecret) {
+		headers["x-media-server-secret"] = outputUpload.webhookSecret;
+	}
+
+	const response = await fetch(outputUpload.abortUrl, {
+		method: "POST",
+		headers,
+		body: JSON.stringify({
+			videoId: outputUpload.videoId,
+			key: outputUpload.key,
+			uploadId: outputUpload.uploadId,
+		}),
+		signal: AbortSignal.timeout(30_000),
+	});
+
+	if (!response.ok) {
+		throw new Error(`Failed to abort output upload: ${response.status}`);
+	}
 }
 
 function isRetryableMuxError(error: unknown) {
@@ -359,6 +411,9 @@ async function buildDesktopSegmentsMuxBody(
 	const outputKey = `${userId}/${videoId}/result.mp4`;
 	const thumbnailKey = `${userId}/${videoId}/screenshot/screen-capture.jpg`;
 	const previewGifKey = `${userId}/${videoId}/preview/animated-preview.gif`;
+	const env = serverEnv();
+	const webhookBaseUrl = env.MEDIA_SERVER_WEBHOOK_URL || env.WEB_URL;
+	const webhookSecret = env.MEDIA_SERVER_WEBHOOK_SECRET;
 
 	const outputPresignedUrl = await bucket
 		.getInternalPresignedPutUrl(
@@ -369,6 +424,10 @@ async function buildDesktopSegmentsMuxBody(
 			{ expiresIn: MEDIA_SERVER_PRESIGNED_PUT_EXPIRES_SECONDS },
 		)
 		.pipe(runPromise);
+	let outputUpload: DesktopSegmentsOutputUpload = {
+		type: "put",
+		url: outputPresignedUrl,
+	};
 	const thumbnailPresignedUrl = await bucket
 		.getInternalPresignedPutUrl(
 			thumbnailKey,
@@ -389,14 +448,50 @@ async function buildDesktopSegmentsMuxBody(
 		)
 		.pipe(runPromise);
 
-	const webhookBaseUrl =
-		serverEnv().MEDIA_SERVER_WEBHOOK_URL || serverEnv().WEB_URL;
-	const webhookSecret = serverEnv().MEDIA_SERVER_WEBHOOK_SECRET;
+	if (bucket.provider === "s3" && webhookSecret) {
+		try {
+			const signPartUrl = getMediaServerWebhookUrl(
+				webhookBaseUrl,
+				"/api/webhooks/media-server/multipart/sign-part",
+			);
+			const completeUrl = getMediaServerWebhookUrl(
+				webhookBaseUrl,
+				"/api/webhooks/media-server/multipart/complete",
+			);
+			const abortUrl = getMediaServerWebhookUrl(
+				webhookBaseUrl,
+				"/api/webhooks/media-server/multipart/abort",
+			);
+			const multipartUpload = await bucket.multipart
+				.create(outputKey, { ContentType: "video/mp4" })
+				.pipe(runPromise);
+			if (!multipartUpload.UploadId) {
+				throw new Error("Storage did not return a multipart upload id");
+			}
+			outputUpload = {
+				type: "multipart",
+				videoId,
+				key: outputKey,
+				uploadId: multipartUpload.UploadId,
+				partSize: MEDIA_SERVER_MULTIPART_OUTPUT_PART_SIZE_BYTES,
+				signPartUrl,
+				completeUrl,
+				abortUrl,
+				webhookSecret: webhookSecret || undefined,
+			};
+		} catch (error) {
+			console.warn(
+				`[finalizeDesktopRecordingWorkflow] Failed to create multipart output upload for ${videoId}:`,
+				error,
+			);
+		}
+	}
 
 	return {
 		videoId,
 		userId,
 		outputPresignedUrl,
+		outputUpload,
 		thumbnailPresignedUrl,
 		previewGifPresignedUrl,
 		videoInitUrl,
@@ -427,14 +522,35 @@ async function startDesktopSegmentsMuxJob(
 		headers["x-media-server-secret"] = body.webhookSecret;
 	}
 
-	const response = await fetch(`${mediaServerUrl}/video/mux-segments`, {
-		method: "POST",
-		headers,
-		body: JSON.stringify(body),
-		signal: AbortSignal.timeout(30_000),
-	});
+	let response: Response;
+	try {
+		response = await fetch(`${mediaServerUrl}/video/mux-segments`, {
+			method: "POST",
+			headers,
+			body: JSON.stringify(body),
+			signal: AbortSignal.timeout(30_000),
+		});
+	} catch (error) {
+		await abortDesktopSegmentsOutputUpload(body.outputUpload).catch(
+			(abortError) => {
+				console.warn(
+					`[finalizeDesktopRecordingWorkflow] Failed to abort output upload for ${videoId}:`,
+					abortError,
+				);
+			},
+		);
+		throw error;
+	}
 
 	if (!response.ok) {
+		await abortDesktopSegmentsOutputUpload(body.outputUpload).catch(
+			(abortError) => {
+				console.warn(
+					`[finalizeDesktopRecordingWorkflow] Failed to abort output upload for ${videoId}:`,
+					abortError,
+				);
+			},
+		);
 		const errorText = await response.text().catch(() => "");
 		throw new Error(
 			`Failed to start segment muxing: ${response.status} ${errorText}`,
