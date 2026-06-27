@@ -6,6 +6,7 @@ import {
 	hasDownloads,
 	type Release,
 	type ReleaseDownloads,
+	releasesRevalidateSeconds,
 } from "@/utils/releases";
 
 export const metadata: Metadata = {
@@ -14,7 +15,7 @@ export const metadata: Metadata = {
 		"Download previous versions of Cap for macOS, Windows, and Linux.",
 };
 
-export const revalidate = 3600;
+export const revalidate = releasesRevalidateSeconds;
 
 function DownloadLinks({
 	downloads,

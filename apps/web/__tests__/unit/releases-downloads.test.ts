@@ -16,6 +16,15 @@ describe("release downloads", () => {
 		expect(hasDownloads(downloads)).toBe(true);
 	});
 
+	it("maps generic Linux release metadata to the deb download slot", () => {
+		const downloads = parseDownloadsFromBody(`
+			<!-- DOWNLOADS_JSON {"linux":"https://example.com/Cap.deb"} -->
+		`);
+
+		expect(downloads["linux-deb"]).toBe("https://example.com/Cap.deb");
+		expect(hasDownloads(downloads)).toBe(true);
+	});
+
 	it("ignores unsupported Linux-only release metadata", () => {
 		const downloads = parseDownloadsFromBody(`
 			<!-- DOWNLOADS_JSON {"linux-appimage":"https://example.com/Cap.AppImage","linux-rpm":"https://example.com/Cap.rpm"} -->
