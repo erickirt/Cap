@@ -53,11 +53,13 @@ impl Default for CaptionData {
 
 lazy_static::lazy_static! {
     static ref WHISPER_CONTEXT: Arc<Mutex<Option<Arc<WhisperContext>>>> = Arc::new(Mutex::new(None));
-    // Serialises transcription so at most one WhisperState / Parakeet session
-    // exists at a time.  On Apple Silicon each WhisperState allocates ~700 MB
-    // of Metal (unified) memory.  Without this lock, rapid re-clicks create N
-    // concurrent states and exhaust RAM (observed: 44 GB for ~60 retries).
-    static ref TRANSCRIPTION_LOCK: Mutex<()> = Mutex::new(());
+    // std::sync::Mutex so the guard is held by the blocking thread itself.
+    // If the async future is dropped mid-transcription the blocking thread
+    // continues to hold this lock until it finishes, preventing a racing
+    // retry from spawning a second ML session concurrently.
+    // On Apple Silicon each WhisperState allocates ~700 MB of Metal (unified)
+    // memory; without serialisation rapid re-clicks exhausted 44 GB of RAM.
+    static ref TRANSCRIPTION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 }
 
 #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
@@ -1112,19 +1114,16 @@ pub async fn transcribe_audio(
         );
     }
 
-    // Hold the lock for the entire blocking call so that at most one
-    // WhisperState / Parakeet session exists at a time.  Without this, rapid
-    // re-clicks spawn N concurrent sessions each consuming ~700 MB of Metal
-    // (unified) memory on Apple Silicon, which produced the observed 44 GB spike.
-    let _transcription_guard = TRANSCRIPTION_LOCK.lock().await;
-
     let transcription_result = match engine {
         TranscriptionEngine::Parakeet => {
             log::info!("Using Parakeet TDT engine");
             let model_dir = model_path.clone();
-            tokio::task::spawn_blocking(move || process_with_parakeet(&audio_path, &model_dir))
-                .await
-                .map_err(|e| format!("Parakeet task panicked: {e}"))?
+            tokio::task::spawn_blocking(move || {
+                let _guard = TRANSCRIPTION_LOCK.lock().unwrap();
+                process_with_parakeet(&audio_path, &model_dir)
+            })
+            .await
+            .map_err(|e| format!("Parakeet task panicked: {e}"))?
         }
         TranscriptionEngine::Whisper => {
             let context = match get_whisper_context(&model_path).await {
@@ -1146,14 +1145,17 @@ pub async fn transcribe_audio(
 
             log::info!("Starting Whisper transcription in blocking task...");
             let result = tokio::task::spawn_blocking(move || {
+                let _guard = TRANSCRIPTION_LOCK.lock().unwrap();
                 process_with_whisper(&audio_path, context, &language, &transcription_hints)
             })
             .await
             .map_err(|e| format!("Whisper task panicked: {e}"))?;
 
-            // Release the cached context immediately after use so Metal buffers
-            // (~500 MB on Apple Silicon) are freed rather than held until the
-            // editor closes.  The next call will reload the model as needed.
+            // Release the cached context so Metal buffers (~500 MB on Apple Silicon)
+            // are freed after each run rather than held until the editor closes.
+            // Gated to aarch64 only: on other platforms the cache improves
+            // repeated-transcription latency with no meaningful memory cost.
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             {
                 let mut ctx = WHISPER_CONTEXT.lock().await;
                 *ctx = None;
