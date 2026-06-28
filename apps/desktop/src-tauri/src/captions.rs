@@ -53,6 +53,11 @@ impl Default for CaptionData {
 
 lazy_static::lazy_static! {
     static ref WHISPER_CONTEXT: Arc<Mutex<Option<Arc<WhisperContext>>>> = Arc::new(Mutex::new(None));
+    // Serialises transcription so at most one WhisperState / Parakeet session
+    // exists at a time.  On Apple Silicon each WhisperState allocates ~700 MB
+    // of Metal (unified) memory.  Without this lock, rapid re-clicks create N
+    // concurrent states and exhaust RAM (observed: 44 GB for ~60 retries).
+    static ref TRANSCRIPTION_LOCK: Mutex<()> = Mutex::new(());
 }
 
 #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
@@ -1107,6 +1112,12 @@ pub async fn transcribe_audio(
         );
     }
 
+    // Hold the lock for the entire blocking call so that at most one
+    // WhisperState / Parakeet session exists at a time.  Without this, rapid
+    // re-clicks spawn N concurrent sessions each consuming ~700 MB of Metal
+    // (unified) memory on Apple Silicon, which produced the observed 44 GB spike.
+    let _transcription_guard = TRANSCRIPTION_LOCK.lock().await;
+
     let transcription_result = match engine {
         TranscriptionEngine::Parakeet => {
             log::info!("Using Parakeet TDT engine");
@@ -1134,11 +1145,21 @@ pub async fn transcribe_audio(
                 .unwrap_or_default();
 
             log::info!("Starting Whisper transcription in blocking task...");
-            tokio::task::spawn_blocking(move || {
+            let result = tokio::task::spawn_blocking(move || {
                 process_with_whisper(&audio_path, context, &language, &transcription_hints)
             })
             .await
-            .map_err(|e| format!("Whisper task panicked: {e}"))?
+            .map_err(|e| format!("Whisper task panicked: {e}"))?;
+
+            // Release the cached context immediately after use so Metal buffers
+            // (~500 MB on Apple Silicon) are freed rather than held until the
+            // editor closes.  The next call will reload the model as needed.
+            {
+                let mut ctx = WHISPER_CONTEXT.lock().await;
+                *ctx = None;
+            }
+
+            result
         }
     };
 
