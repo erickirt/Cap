@@ -47,6 +47,7 @@ use std::{
     time::Duration,
 };
 use tauri::{AppHandle, Manager, path::BaseDirectory};
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogBuilder};
 use tauri_specta::Event;
 use tracing::*;
@@ -1435,13 +1436,17 @@ pub async fn start_recording(
         .set_pending_recording(inputs.mode, inputs.capture_target.clone());
 
     let countdown = general_settings.and_then(|v| v.recording_countdown);
+    let focus_manager = app.try_state::<crate::target_select_overlay::WindowFocusManager>();
     for (id, win) in app
         .webview_windows()
         .iter()
         .filter_map(|(label, win)| CapWindowId::from_str(label).ok().map(|id| (id, win)))
     {
-        if matches!(id, CapWindowId::TargetSelectOverlay { .. }) {
+        if let CapWindowId::TargetSelectOverlay { display_id } = id {
             hide_overlay(win);
+            if let Some(ref fm) = focus_manager {
+                fm.destroy(&display_id, app.global_shortcut());
+            }
         }
     }
     let _ = ShowCapWindow::InProgressRecording {
@@ -2695,6 +2700,20 @@ async fn handle_recording_end(
 
     if let Some(window) = CapWindowId::RecordingControls.get(&handle) {
         let _ = window.hide();
+    }
+
+    // Destroy any target-select overlays that were hidden when recording started
+    // so they don't reappear when the main window comes back.
+    let focus_manager = handle.try_state::<crate::target_select_overlay::WindowFocusManager>();
+    for (label, window) in handle.webview_windows() {
+        if let Ok(CapWindowId::TargetSelectOverlay { display_id }) =
+            CapWindowId::from_str(&label)
+        {
+            hide_overlay(&window);
+            if let Some(ref fm) = focus_manager {
+                fm.destroy(&display_id, handle.global_shortcut());
+            }
+        }
     }
 
     if let Some(camera) = CapWindowId::Camera.get(&handle) {

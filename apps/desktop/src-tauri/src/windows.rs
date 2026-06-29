@@ -2242,14 +2242,34 @@ impl ShowCapWindow {
                 }
 
                 #[cfg(windows)]
-                if let Some(bounds) = display.raw_handle().physical_bounds() {
-                    window_builder = window_builder
-                        .inner_size(bounds.size().width(), bounds.size().height())
-                        .position(bounds.position().x(), bounds.position().y());
+                {
+                    window_builder = window_builder.inner_size(100.0, 100.0).position(0.0, 0.0);
                 }
 
                 let window = window_builder.build()?;
                 lock_window_text_scale(&window);
+
+                #[cfg(windows)]
+                {
+                    let position = display.raw_handle().physical_position().unwrap();
+                    let logical_size = display.logical_size().unwrap();
+                    let physical_size = display.physical_size().unwrap();
+                    use tauri::{LogicalSize, PhysicalPosition};
+                    let _ = window.set_size(LogicalSize::new(
+                        logical_size.width(),
+                        logical_size.height(),
+                    ));
+                    let _ = window.set_position(PhysicalPosition::new(position.x(), position.y()));
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+                    let actual_physical_size = window.inner_size().unwrap();
+                    if physical_size.width() != actual_physical_size.width as f64 {
+                        let _ = window.set_size(LogicalSize::new(
+                            logical_size.width(),
+                            logical_size.height(),
+                        ));
+                    }
+                }
 
                 #[cfg(target_os = "macos")]
                 crate::platform::set_window_level(
