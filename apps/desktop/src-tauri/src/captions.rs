@@ -1119,7 +1119,7 @@ pub async fn transcribe_audio(
             log::info!("Using Parakeet TDT engine");
             let model_dir = model_path.clone();
             tokio::task::spawn_blocking(move || {
-                let _guard = TRANSCRIPTION_LOCK.lock().unwrap();
+                let _guard = TRANSCRIPTION_LOCK.lock().unwrap_or_else(|p| p.into_inner());
                 process_with_parakeet(&audio_path, &model_dir)
             })
             .await
@@ -1145,7 +1145,7 @@ pub async fn transcribe_audio(
 
             log::info!("Starting Whisper transcription in blocking task...");
             let result = tokio::task::spawn_blocking(move || {
-                let _guard = TRANSCRIPTION_LOCK.lock().unwrap();
+                let _guard = TRANSCRIPTION_LOCK.lock().unwrap_or_else(|p| p.into_inner());
                 process_with_whisper(&audio_path, context, &language, &transcription_hints)
             })
             .await
