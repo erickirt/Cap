@@ -724,7 +724,7 @@ function createRecordingMutations(
 				await commands.globalMessageDialog(
 					"You appear to be offline. Please check your internet connection and try again.",
 				);
-				throw new Error("No internet connection");
+				return;
 			}
 
 			// Check authentication first
