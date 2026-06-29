@@ -1,5 +1,3 @@
-"use client";
-
 import { Clapperboard, Zap } from "lucide-react";
 import { SeoPageTemplate } from "../../seo/SeoPageTemplate";
 import type { SeoPageContent } from "../../seo/types";
@@ -20,7 +18,7 @@ export const selfHostedScreenRecordingContent: SeoPageContent = {
 		{
 			title: "Connect Any S3-Compatible Storage",
 			description:
-				"Cap supports AWS S3, Cloudflare R2, Backblaze B2, MinIO, Wasabi, and any other S3-compatible object storage. Configure your bucket credentials once in Cap's settings and every recording uploads directly to your infrastructure — not Cap's cloud.",
+				"Cap supports AWS S3, Cloudflare R2, Backblaze B2, MinIO, Wasabi, and any other S3-compatible object storage. Configure your bucket credentials once in Cap's settings and every recording uploads directly to your infrastructure, not Cap's cloud. Prefer a consumer cloud? Cap also connects to your own <a href='/google-drive-screen-recorder'>Google Drive</a>.",
 		},
 		{
 			title: "Recordings Never Touch Third-Party Servers",

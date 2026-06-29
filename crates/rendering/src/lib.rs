@@ -21,10 +21,7 @@ use layers::{
 };
 use specta::Type;
 use spring_mass_damper::SpringMassDamperSimulationConfig;
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 use std::{path::PathBuf, time::Instant};
 use tokio::sync::mpsc;
 
@@ -51,7 +48,17 @@ pub mod zoom_focus_interpolation;
 pub use coord::*;
 pub use decoder::{DecodedFrame, DecoderStatus, DecoderType, PixelFormat};
 pub use frame_pipeline::{GpuOutputFormat, Nv12RenderedFrame, RenderedFrame, SharedNv12Buffer};
+pub use layers::{BackgroundTextureCache, clean_background_path};
 pub use project_recordings::{ProjectRecordingsMeta, SegmentRecordings, Video};
+
+/// Warms the process-wide system-font scan used by the text/captions/keyboard
+/// layers. The first scan is the slow part (hundreds of ms to over a second on
+/// macOS); calling this off the hot path at startup keeps the first editor or
+/// screenshot-editor open fast. Subsequent `FontSystem` creations clone the cached
+/// font database cheaply.
+pub fn prewarm_fonts() {
+    drop(layers::new_font_system());
+}
 
 pub use cursor_interpolation::PrecomputedCursorTimeline;
 use mask::interpolate_masks;
@@ -200,6 +207,7 @@ fn rounding_type_value(style: CornerStyle) -> f32 {
 pub struct RenderOptions {
     pub camera_size: Option<XY<u32>>,
     pub screen_size: XY<u32>,
+    pub preserve_screen_alpha: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -386,6 +394,7 @@ impl RecordingSegmentDecoders {
                 camera_frame,
                 segment_time,
                 recording_time: segment_time + self.segment_offset as f32,
+                segment_has_camera: self.camera.is_some(),
             })
         } else {
             let camera_frame = OptionFuture::from(
@@ -410,6 +419,7 @@ impl RecordingSegmentDecoders {
                 camera_frame,
                 segment_time,
                 recording_time: segment_time + self.segment_offset as f32,
+                segment_has_camera: self.camera.is_some(),
             })
         }
     }
@@ -443,6 +453,7 @@ impl RecordingSegmentDecoders {
                 camera_frame,
                 segment_time,
                 recording_time: segment_time + self.segment_offset as f32,
+                segment_has_camera: self.camera.is_some(),
             })
         } else {
             let camera_frame = OptionFuture::from(
@@ -467,6 +478,7 @@ impl RecordingSegmentDecoders {
                 camera_frame,
                 segment_time,
                 recording_time: segment_time + self.segment_offset as f32,
+                segment_has_camera: self.camera.is_some(),
             })
         }
     }
@@ -1502,7 +1514,7 @@ pub struct RenderVideoConstants {
     pub options: RenderOptions,
     pub meta: StudioRecordingMeta,
     pub recording_meta: RecordingMeta,
-    pub background_textures: std::sync::Arc<tokio::sync::RwLock<HashMap<String, wgpu::Texture>>>,
+    pub background_textures: std::sync::Arc<BackgroundTextureCache>,
     pub is_software_adapter: bool,
     adapter_name: String,
 }
@@ -1530,9 +1542,10 @@ impl RenderVideoConstants {
                 .camera
                 .as_ref()
                 .map(|c| XY::new(c.width, c.height)),
+            preserve_screen_alpha: false,
         };
 
-        let background_textures = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+        let background_textures = Arc::new(BackgroundTextureCache::default());
 
         let adapter_name = shared.adapter.get_info().name;
 
@@ -1559,6 +1572,7 @@ impl RenderVideoConstants {
         options: RenderOptions,
         meta: StudioRecordingMeta,
         recording_meta: RecordingMeta,
+        background_textures: Arc<BackgroundTextureCache>,
     ) -> Self {
         let adapter_name = shared.adapter.get_info().name;
         Self {
@@ -1567,7 +1581,7 @@ impl RenderVideoConstants {
             device: shared.device,
             queue: shared.queue,
             options,
-            background_textures: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            background_textures,
             meta,
             recording_meta,
             is_software_adapter: shared.is_software_adapter,
@@ -1588,6 +1602,7 @@ impl RenderVideoConstants {
                 .camera
                 .as_ref()
                 .map(|c| XY::new(c.width, c.height)),
+            preserve_screen_alpha: false,
         };
 
         let instance = create_wgpu_instance().await;
@@ -1665,7 +1680,7 @@ impl RenderVideoConstants {
 
         let (device, queue) = adapter.request_device(&device_descriptor).await?;
 
-        let background_textures = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+        let background_textures = Arc::new(BackgroundTextureCache::default());
 
         Ok(Self {
             _instance: instance,
@@ -3038,7 +3053,12 @@ impl ProjectUniforms {
                         0.0
                     },
                     border_width: project.background.border.as_ref().map_or(5.0, |b| b.width),
-                    _padding1: [0.0; 4],
+                    preserve_source_alpha: if options.preserve_screen_alpha {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                    _padding1: [0.0; 3],
                     border_color: if let Some(b) = project.background.border.as_ref() {
                         [
                             b.color[0] as f32 / 255.0,
@@ -3236,7 +3256,8 @@ impl ProjectUniforms {
                     opacity: scene.regular_camera_transition_opacity() as f32,
                     border_enabled: 0.0,
                     border_width: 0.0,
-                    _padding1: [0.0; 4],
+                    preserve_source_alpha: 0.0,
+                    _padding1: [0.0; 3],
                     border_color: [0.0, 0.0, 0.0, 0.0],
                 }
             });
@@ -3327,7 +3348,8 @@ impl ProjectUniforms {
                     opacity: scene.camera_only_transition_opacity() as f32,
                     border_enabled: 0.0,
                     border_width: 0.0,
-                    _padding1: [0.0; 4],
+                    preserve_source_alpha: 0.0,
+                    _padding1: [0.0; 3],
                     border_color: [0.0, 0.0, 0.0, 0.0],
                 }
             });
@@ -3390,6 +3412,7 @@ mod tests {
         RenderOptions {
             screen_size: XY::new(screen_width, screen_height),
             camera_size: None,
+            preserve_screen_alpha: false,
         }
     }
 
@@ -3599,6 +3622,7 @@ pub struct DecodedSegmentFrames {
     pub camera_frame: Option<DecodedFrame>,
     pub segment_time: f32,
     pub recording_time: f32,
+    pub segment_has_camera: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -4207,7 +4231,10 @@ impl RendererLayers {
             .prepare(
                 constants,
                 uniforms,
-                Background::from(uniforms.project.background.source.clone()),
+                Background::from_source(
+                    uniforms.project.background.source.clone(),
+                    constants.options.preserve_screen_alpha,
+                ),
             )
             .await?;
 
@@ -4234,28 +4261,45 @@ impl RendererLayers {
             constants,
         );
 
+        let camera_frame_data = if segment_frames.segment_has_camera {
+            constants.options.camera_size.and_then(|_| {
+                segment_frames.camera_frame.as_ref().map(|frame| {
+                    // Use the decoded frame's own dimensions rather than the project's
+                    // configured `camera_size` (which is taken from the first recording).
+                    // An imported clip can carry a camera recorded at a different
+                    // resolution; uploading it with the first clip's size makes the YUV
+                    // upload fail and leaves the previous clip's camera on screen.
+                    (
+                        XY::new(frame.width(), frame.height()),
+                        frame,
+                        segment_frames.recording_time,
+                    )
+                })
+            })
+        } else {
+            None
+        };
+
         self.camera.prepare(
             &constants.device,
             &constants.queue,
-            uniforms.camera,
-            constants.options.camera_size.and_then(|size| {
-                segment_frames
-                    .camera_frame
-                    .as_ref()
-                    .map(|frame| (size, frame, segment_frames.recording_time))
-            }),
+            if segment_frames.segment_has_camera {
+                uniforms.camera
+            } else {
+                None
+            },
+            camera_frame_data,
         );
 
         self.camera_only.prepare(
             &constants.device,
             &constants.queue,
-            uniforms.camera_only,
-            constants.options.camera_size.and_then(|size| {
-                segment_frames
-                    .camera_frame
-                    .as_ref()
-                    .map(|frame| (size, frame, segment_frames.recording_time))
-            }),
+            if segment_frames.segment_has_camera {
+                uniforms.camera_only
+            } else {
+                None
+            },
+            camera_frame_data,
         );
 
         if let Some(mode) = blur_mode_from_config(&uniforms.project.camera.background_blur) {
@@ -4324,7 +4368,10 @@ impl RendererLayers {
             .prepare(
                 constants,
                 uniforms,
-                Background::from(uniforms.project.background.source.clone()),
+                Background::from_source(
+                    uniforms.project.background.source.clone(),
+                    constants.options.preserve_screen_alpha,
+                ),
             )
             .await?;
         timings.background_prepare_duration = start.elapsed();
@@ -4359,17 +4406,35 @@ impl RendererLayers {
         );
         timings.cursor_prepare_duration = start.elapsed();
 
+        let camera_frame_data = if segment_frames.segment_has_camera {
+            constants.options.camera_size.and_then(|_| {
+                segment_frames.camera_frame.as_ref().map(|frame| {
+                    // Use the decoded frame's own dimensions rather than the project's
+                    // configured `camera_size` (which is taken from the first recording).
+                    // An imported clip can carry a camera recorded at a different
+                    // resolution; uploading it with the first clip's size makes the YUV
+                    // upload fail and leaves the previous clip's camera on screen.
+                    (
+                        XY::new(frame.width(), frame.height()),
+                        frame,
+                        segment_frames.recording_time,
+                    )
+                })
+            })
+        } else {
+            None
+        };
+
         let start = Instant::now();
         self.camera.prepare_with_encoder(
             &constants.device,
             &constants.queue,
-            uniforms.camera,
-            constants.options.camera_size.and_then(|size| {
-                segment_frames
-                    .camera_frame
-                    .as_ref()
-                    .map(|frame| (size, frame, segment_frames.recording_time))
-            }),
+            if segment_frames.segment_has_camera {
+                uniforms.camera
+            } else {
+                None
+            },
+            camera_frame_data,
             encoder,
         );
         timings.camera_prepare_duration = start.elapsed();
@@ -4378,13 +4443,12 @@ impl RendererLayers {
         self.camera_only.prepare_with_encoder(
             &constants.device,
             &constants.queue,
-            uniforms.camera_only,
-            constants.options.camera_size.and_then(|size| {
-                segment_frames
-                    .camera_frame
-                    .as_ref()
-                    .map(|frame| (size, frame, segment_frames.recording_time))
-            }),
+            if segment_frames.segment_has_camera {
+                uniforms.camera_only
+            } else {
+                None
+            },
+            camera_frame_data,
             encoder,
         );
         timings.camera_only_prepare_duration = start.elapsed();

@@ -268,5 +268,21 @@ describe("media-client", () => {
 				},
 			);
 		});
+
+		it("does not retry conversion failures that would repeat heavyweight work", async () => {
+			const mockResponse = {
+				ok: false,
+				status: 502,
+			} as Response;
+			mockFetch.mockResolvedValueOnce(mockResponse);
+
+			const result = await fetchConvertedVideoViaMediaServer(
+				"https://example.com/video.m3u8",
+				".m3u8",
+			);
+
+			expect(result).toBe(mockResponse);
+			expect(mockFetch).toHaveBeenCalledTimes(1);
+		});
 	});
 });

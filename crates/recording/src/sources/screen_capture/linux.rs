@@ -11,13 +11,11 @@ use ashpd::desktop::{
     screencast::{CursorMode, Screencast, SourceType, Stream as PortalStream},
 };
 use cap_timestamp::Timestamp;
-use ffmpeg::codec::packet::Packet;
 use futures::channel::mpsc;
 use kameo::Actor as _;
 use pipewire as pw;
 use pw::{properties::properties, spa};
 use std::{
-    ffi::CString,
     os::fd::OwnedFd,
     process::Command,
     sync::{
@@ -27,6 +25,9 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
+use x11rb::connection::Connection as _;
+use x11rb::protocol::xproto::{ConnectionExt as _, ImageFormat, ImageOrder};
+use x11rb::rust_connection::RustConnection;
 
 #[derive(Debug)]
 pub struct X11Capture;
@@ -35,7 +36,7 @@ impl ScreenCaptureFormat for X11Capture {
     type VideoFormat = ffmpeg::frame::Video;
 
     fn pixel_format() -> ffmpeg::format::Pixel {
-        ffmpeg::format::Pixel::BGRA
+        ffmpeg::format::Pixel::BGRZ
     }
 
     fn audio_info() -> AudioInfo {
@@ -127,33 +128,36 @@ impl ScreenCaptureConfig<X11Capture> {
             .physical_size()
             .ok_or_else(|| anyhow!("Display size unavailable"))?;
 
-        let (x, y, width, height) = if let Some(crop) = self.config.crop_bounds {
-            let position = crop.position();
-            let size = crop.size();
+        let crop = self.config.crop_bounds.map(|crop| {
             (
-                display_position.x() as i32 + position.x().max(0.0) as i32,
-                display_position.y() as i32 + position.y().max(0.0) as i32,
-                size.width().max(2.0) as u32,
-                size.height().max(2.0) as u32,
+                crop.position().x(),
+                crop.position().y(),
+                crop.size().width(),
+                crop.size().height(),
             )
-        } else {
-            (
-                display_position.x() as i32,
-                display_position.y() as i32,
-                display_size.width().max(2.0) as u32,
-                display_size.height().max(2.0) as u32,
-            )
+        });
+        let (x, y, width, height) = x11_capture_rect(
+            display_position.x(),
+            display_position.y(),
+            display_size.width(),
+            display_size.height(),
+            crop,
+        )?;
+        let video_info = VideoInfo {
+            width,
+            height,
+            ..self.video_info
         };
 
         Ok((
             VideoSourceConfig {
-                video_info: self.video_info,
+                video_info,
                 input: LinuxInputConfig::X11(X11InputConfig {
                     display_name: std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_string()),
                     x,
                     y,
-                    width: ensure_even(width),
-                    height: ensure_even(height),
+                    width,
+                    height,
                     fps: self.config.fps,
                     show_cursor: self.config.show_cursor,
                 }),
@@ -161,6 +165,64 @@ impl ScreenCaptureConfig<X11Capture> {
             system_audio,
         ))
     }
+}
+
+pub(crate) fn x11_capture_rect(
+    display_x: f64,
+    display_y: f64,
+    display_width: f64,
+    display_height: f64,
+    crop: Option<(f64, f64, f64, f64)>,
+) -> anyhow::Result<(i32, i32, u32, u32)> {
+    let display_left = floor_i32(display_x, "display x")?;
+    let display_top = floor_i32(display_y, "display y")?;
+    let display_right = ceil_i32(display_x + display_width.max(2.0), "display right")?;
+    let display_bottom = ceil_i32(display_y + display_height.max(2.0), "display bottom")?;
+
+    if display_right - display_left < 2 || display_bottom - display_top < 2 {
+        bail!("X11 display bounds are too small for capture");
+    }
+
+    let (raw_left, raw_top, raw_right, raw_bottom) = match crop {
+        Some((x, y, width, height)) => (
+            floor_i32(display_x + x, "capture x")?,
+            floor_i32(display_y + y, "capture y")?,
+            ceil_i32(display_x + x + width.max(2.0), "capture right")?,
+            ceil_i32(display_y + y + height.max(2.0), "capture bottom")?,
+        ),
+        None => (display_left, display_top, display_right, display_bottom),
+    };
+
+    let left = raw_left.clamp(display_left, display_right - 2);
+    let top = raw_top.clamp(display_top, display_bottom - 2);
+    let right = raw_right.clamp(left + 2, display_right);
+    let bottom = raw_bottom.clamp(top + 2, display_bottom);
+
+    Ok((
+        left,
+        top,
+        ensure_even((right - left) as u32),
+        ensure_even((bottom - top) as u32),
+    ))
+}
+
+fn floor_i32(value: f64, label: &str) -> anyhow::Result<i32> {
+    finite_i32(value, label)
+        .map(f64::floor)
+        .map(|value| value as i32)
+}
+
+fn ceil_i32(value: f64, label: &str) -> anyhow::Result<i32> {
+    finite_i32(value, label)
+        .map(f64::ceil)
+        .map(|value| value as i32)
+}
+
+fn finite_i32(value: f64, label: &str) -> anyhow::Result<f64> {
+    if !value.is_finite() || value < i32::MIN as f64 || value > i32::MAX as f64 {
+        bail!("Invalid X11 {label}: {value}");
+    }
+    Ok(value)
 }
 
 impl OutputVideoSource for VideoSource {
@@ -180,7 +242,7 @@ impl OutputVideoSource for VideoSource {
         let info = config.video_info;
         match config.input {
             LinuxInputConfig::X11(input) => {
-                ctx.tasks().spawn_thread("x11grab-capture-thread", {
+                ctx.tasks().spawn_thread("x11-capture-thread", {
                     let stop_token = stop_token.clone();
                     move || capture_x11(info, input, video_tx, stop_token, health_tx)
                 });
@@ -1060,38 +1122,32 @@ impl FrameScaler {
 }
 
 fn capture_x11(
-    video_info: VideoInfo,
+    _video_info: VideoInfo,
     input_config: X11InputConfig,
     mut video_tx: mpsc::Sender<FFmpegVideoFrame>,
     stop_token: CancellationToken,
     health_tx: output_pipeline::HealthSender,
 ) -> anyhow::Result<()> {
-    let mut input = open_x11_input(&input_config)?;
-    let stream = input
-        .streams()
-        .best(ffmpeg::media::Type::Video)
-        .ok_or_else(|| anyhow!("x11grab did not expose a video stream"))?;
-    let stream_index = stream.index();
-    let mut scaler = FrameScaler::new(
-        video_info.pixel_format,
-        video_info.width,
-        video_info.height,
-        video_info,
-    )?;
+    let mut grabber = X11Grabber::new(&input_config)?;
+    let frame_interval = Duration::from_secs_f64(1.0 / f64::from(input_config.fps.max(1)));
     let started = Instant::now();
+    let mut next_capture = Instant::now();
     let mut sent = 0u64;
     let mut dropped = 0u64;
 
-    for (stream, packet) in input.packets() {
-        if stop_token.is_cancelled() {
-            break;
-        }
-        if stream.index() != stream_index {
-            continue;
-        }
+    while !stop_token.is_cancelled() {
+        let mut frame = match grabber.grab() {
+            Ok(frame) => frame,
+            Err(error) => {
+                // X11 servers can transiently fail GetImage (e.g. while the
+                // root geometry changes). Log, back off one interval, retry.
+                tracing::warn!(error = %error, "X11 frame capture failed");
+                std::thread::sleep(frame_interval);
+                continue;
+            }
+        };
+        frame.set_pts(Some(started.elapsed().as_micros() as i64));
 
-        let raw_frame = frame_from_x11_packet(&packet, input_config.width, input_config.height)?;
-        let frame = scaler.scale(&raw_frame, video_info)?;
         let timestamp = Timestamp::Instant(Instant::now());
         match send_with_stall_budget_futures(
             &mut video_tx,
@@ -1106,6 +1162,16 @@ fn capture_x11(
             StallSendOutcome::StalledAndDropped { .. } => dropped += 1,
             StallSendOutcome::Disconnected => return Ok(()),
         }
+
+        // Pace to the requested framerate without accumulating drift, while
+        // staying responsive to stop requests (wake at most once per interval).
+        next_capture += frame_interval;
+        let now = Instant::now();
+        if next_capture > now {
+            std::thread::sleep((next_capture - now).min(frame_interval));
+        } else {
+            next_capture = now;
+        }
     }
 
     tracing::info!(
@@ -1118,76 +1184,284 @@ fn capture_x11(
     Ok(())
 }
 
-pub(crate) fn frame_from_x11_packet(
-    packet: &Packet,
-    width: u32,
-    height: u32,
-) -> anyhow::Result<ffmpeg::frame::Video> {
-    let data = packet
-        .data()
-        .ok_or_else(|| anyhow!("x11grab packet did not contain frame data"))?;
-    let source_stride = width as usize * 4;
-    let expected_len = source_stride * height as usize;
-    if data.len() < expected_len {
-        bail!(
-            "x11grab packet was too small: {} bytes for {}x{}",
-            data.len(),
-            width,
-            height
-        );
-    }
-
-    let mut frame = ffmpeg::frame::Video::new(ffmpeg::format::Pixel::BGRZ, width, height);
-    let target_stride = frame.stride(0);
-    if target_stride < source_stride {
-        bail!(
-            "x11grab frame stride was too small: {} for {}x{}",
-            target_stride,
-            width,
-            height
-        );
-    }
-
-    for y in 0..height as usize {
-        let source_start = y * source_stride;
-        let target_start = y * target_stride;
-        let target_end = target_start + source_stride;
-        frame.data_mut(0)[target_start..target_end]
-            .copy_from_slice(&data[source_start..source_start + source_stride]);
-    }
-
-    frame.set_pts(packet.pts());
-    Ok(frame)
+/// Native X11 screen capture via the (pure-Rust) `x11rb` protocol client.
+///
+/// This replaces FFmpeg's `x11grab` libavdevice input, which the bundled
+/// FFmpeg (spacedrive native-deps) is built without. Capturing with `x11rb`
+/// keeps us off any system FFmpeg/libavdevice and adds no new runtime
+/// shared-library dependency (`x11rb` speaks the X11 protocol over a socket).
+pub(crate) struct X11Grabber {
+    conn: RustConnection,
+    root: x11rb::protocol::xproto::Window,
+    x: i16,
+    y: i16,
+    width: u16,
+    height: u16,
+    source_pixel: ffmpeg::format::Pixel,
+    output: VideoInfo,
+    scaler: Option<FrameScaler>,
+    show_cursor: bool,
 }
 
-pub(crate) fn open_x11_input(
-    config: &X11InputConfig,
-) -> anyhow::Result<ffmpeg::format::context::Input> {
-    ffmpeg::init().context("initialize FFmpeg")?;
+impl X11Grabber {
+    pub(crate) fn new(config: &X11InputConfig) -> anyhow::Result<Self> {
+        ffmpeg::init().context("initialize FFmpeg")?;
 
-    let format_name = CString::new("x11grab")?;
-    let input_format = unsafe {
-        let ptr = ffmpeg::ffi::av_find_input_format(format_name.as_ptr());
-        if ptr.is_null() {
-            bail!("FFmpeg was built without x11grab input support");
+        let (conn, screen_num) = x11rb::connect(Some(config.display_name.as_str()))
+            .with_context(|| format!("connect to X11 display {}", config.display_name))?;
+
+        let setup = conn.setup();
+        let screen = setup
+            .roots
+            .get(screen_num)
+            .ok_or_else(|| anyhow!("X11 screen {screen_num} not found"))?;
+        let root = screen.root;
+        let root_depth = screen.root_depth;
+        let root_visual_id = screen.root_visual;
+
+        let visual = screen
+            .allowed_depths
+            .iter()
+            .flat_map(|depth| depth.visuals.iter())
+            .find(|visual| visual.visual_id == root_visual_id)
+            .ok_or_else(|| anyhow!("X11 root visual {root_visual_id} not found"))?;
+
+        let bits_per_pixel = setup
+            .pixmap_formats
+            .iter()
+            .find(|format| format.depth == root_depth)
+            .map(|format| format.bits_per_pixel)
+            .ok_or_else(|| anyhow!("X11 pixmap format for depth {root_depth} not found"))?;
+
+        let source_pixel = x11_source_pixel(
+            setup.image_byte_order == ImageOrder::MSB_FIRST,
+            bits_per_pixel,
+            visual.red_mask,
+            visual.green_mask,
+            visual.blue_mask,
+        )?;
+
+        let x = i16::try_from(config.x)
+            .map_err(|_| anyhow!("X11 capture x offset {} out of range", config.x))?;
+        let y = i16::try_from(config.y)
+            .map_err(|_| anyhow!("X11 capture y offset {} out of range", config.y))?;
+        let width = u16::try_from(config.width)
+            .map_err(|_| anyhow!("X11 capture width {} out of range", config.width))?;
+        let height = u16::try_from(config.height)
+            .map_err(|_| anyhow!("X11 capture height {} out of range", config.height))?;
+        if width == 0 || height == 0 {
+            bail!("X11 capture size must be non-zero");
         }
-        ffmpeg::format::Input::wrap(ptr as *mut _)
+
+        // xfixes is needed to fetch the cursor image; only probe it when asked
+        // to draw the cursor, and degrade gracefully if it is unavailable.
+        let show_cursor = config.show_cursor && {
+            use x11rb::protocol::xfixes::ConnectionExt as _;
+            conn.xfixes_query_version(5, 0)
+                .ok()
+                .and_then(|cookie| cookie.reply().ok())
+                .is_some()
+        };
+
+        let output = VideoInfo::from_raw_ffmpeg(
+            ffmpeg::format::Pixel::BGRZ,
+            u32::from(width),
+            u32::from(height),
+            config.fps.max(1),
+        );
+
+        Ok(Self {
+            conn,
+            root,
+            x,
+            y,
+            width,
+            height,
+            source_pixel,
+            output,
+            scaler: None,
+            show_cursor,
+        })
+    }
+
+    /// Capture one frame of the configured region as a BGRZ video frame.
+    pub(crate) fn grab(&mut self) -> anyhow::Result<ffmpeg::frame::Video> {
+        let reply = self
+            .conn
+            .get_image(
+                ImageFormat::Z_PIXMAP,
+                self.root,
+                self.x,
+                self.y,
+                self.width,
+                self.height,
+                u32::MAX,
+            )
+            .context("request X11 image")?
+            .reply()
+            .context("read X11 image")?;
+
+        let width = usize::from(self.width);
+        let height = usize::from(self.height);
+        let row_bytes = width * 4;
+        let source_stride = reply
+            .data
+            .len()
+            .checked_div(height)
+            .filter(|stride| *stride >= row_bytes)
+            .ok_or_else(|| {
+                anyhow!(
+                    "X11 image too small: {} bytes for {}x{}",
+                    reply.data.len(),
+                    width,
+                    height
+                )
+            })?;
+
+        let mut source = ffmpeg::frame::Video::new(
+            self.source_pixel,
+            u32::from(self.width),
+            u32::from(self.height),
+        );
+        let dst_stride = source.stride(0);
+        let copy = row_bytes.min(dst_stride);
+        for row in 0..height {
+            let src_start = row * source_stride;
+            let dst_start = row * dst_stride;
+            source.data_mut(0)[dst_start..dst_start + copy]
+                .copy_from_slice(&reply.data[src_start..src_start + copy]);
+        }
+
+        // Convert to BGRZ only when the server's visual differs; the common
+        // case (32-bit little-endian BGRX) is already BGRZ and short-circuits.
+        let mut frame = if self.source_pixel == self.output.pixel_format {
+            source
+        } else {
+            if self.scaler.is_none() {
+                self.scaler = Some(FrameScaler::new(
+                    self.source_pixel,
+                    u32::from(self.width),
+                    u32::from(self.height),
+                    self.output,
+                )?);
+            }
+            self.scaler
+                .as_mut()
+                .expect("scaler initialized")
+                .scale(&source, self.output)?
+        };
+
+        if self.show_cursor {
+            if let Err(error) = self.composite_cursor(&mut frame) {
+                tracing::trace!(error = %error, "X11 cursor composite skipped");
+            }
+        }
+
+        Ok(frame)
+    }
+
+    /// Alpha-blend the X11 cursor onto a BGRZ frame (mirrors x11grab's
+    /// `draw_mouse`). xfixes returns premultiplied ARGB, so we composite with
+    /// straight `src + dst * (1 - a)`.
+    fn composite_cursor(&self, frame: &mut ffmpeg::frame::Video) -> anyhow::Result<()> {
+        use x11rb::protocol::xfixes::ConnectionExt as _;
+
+        let cursor = self
+            .conn
+            .xfixes_get_cursor_image()
+            .context("request X11 cursor image")?
+            .reply()
+            .context("read X11 cursor image")?;
+
+        let cursor_width = i32::from(cursor.width);
+        let cursor_height = i32::from(cursor.height);
+        if cursor_width <= 0 || cursor_height <= 0 {
+            return Ok(());
+        }
+        if cursor.cursor_image.len() != (cursor_width * cursor_height) as usize {
+            return Ok(());
+        }
+
+        // Top-left of the cursor image in capture-region coordinates.
+        let origin_x = i32::from(cursor.x) - i32::from(cursor.xhot) - i32::from(self.x);
+        let origin_y = i32::from(cursor.y) - i32::from(cursor.yhot) - i32::from(self.y);
+
+        let frame_width = i32::from(self.width);
+        let frame_height = i32::from(self.height);
+        let stride = frame.stride(0);
+        let buf = frame.data_mut(0);
+
+        for cy in 0..cursor_height {
+            let fy = origin_y + cy;
+            if fy < 0 || fy >= frame_height {
+                continue;
+            }
+            for cx in 0..cursor_width {
+                let fx = origin_x + cx;
+                if fx < 0 || fx >= frame_width {
+                    continue;
+                }
+                let pixel = cursor.cursor_image[(cy * cursor_width + cx) as usize];
+                let alpha = (pixel >> 24) & 0xff;
+                if alpha == 0 {
+                    continue;
+                }
+                let inv = 255 - alpha;
+                let src_b = pixel & 0xff;
+                let src_g = (pixel >> 8) & 0xff;
+                let src_r = (pixel >> 16) & 0xff;
+                let idx = fy as usize * stride + fx as usize * 4;
+                buf[idx] = (src_b + buf[idx] as u32 * inv / 255).min(255) as u8;
+                buf[idx + 1] = (src_g + buf[idx + 1] as u32 * inv / 255).min(255) as u8;
+                buf[idx + 2] = (src_r + buf[idx + 2] as u32 * inv / 255).min(255) as u8;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Map an X11 32-bit TrueColor visual (byte order + RGB masks) to the matching
+/// packed FFmpeg pixel format. The overwhelmingly common desktop case
+/// (depth 24/32, little-endian, BGRX) resolves to BGRZ.
+fn x11_source_pixel(
+    msb_first: bool,
+    bits_per_pixel: u8,
+    red_mask: u32,
+    green_mask: u32,
+    blue_mask: u32,
+) -> anyhow::Result<ffmpeg::format::Pixel> {
+    if bits_per_pixel != 32 {
+        bail!("Unsupported X11 visual: {bits_per_pixel}bpp (expected a 32-bit TrueColor visual)");
+    }
+
+    // Address index (0 = lowest byte) that a colour channel occupies in memory.
+    let address_index = |mask: u32| -> Option<usize> {
+        let position = match mask {
+            0x0000_00ff => 0,
+            0x0000_ff00 => 1,
+            0x00ff_0000 => 2,
+            0xff00_0000 => 3,
+            _ => return None,
+        };
+        Some(if msb_first { 3 - position } else { position })
     };
 
-    let source = format!("{}+{},{}", config.display_name, config.x, config.y);
-    let mut options = ffmpeg::Dictionary::new();
-    options.set("framerate", &config.fps.to_string());
-    options.set("video_size", &format!("{}x{}", config.width, config.height));
-    options.set("draw_mouse", if config.show_cursor { "1" } else { "0" });
+    let (Some(red), Some(green), Some(blue)) = (
+        address_index(red_mask),
+        address_index(green_mask),
+        address_index(blue_mask),
+    ) else {
+        bail!(
+            "Unsupported X11 visual masks: r={red_mask:#010x} g={green_mask:#010x} b={blue_mask:#010x}"
+        );
+    };
 
-    Ok(
-        ffmpeg::format::open_with(&source, &ffmpeg::Format::Input(input_format), options)
-            .with_context(|| {
-                format!(
-                    "open x11grab source {source} at {}x{}",
-                    config.width, config.height
-                )
-            })?
-            .input(),
-    )
+    Ok(match (blue, green, red) {
+        (0, 1, 2) => ffmpeg::format::Pixel::BGRZ,
+        (2, 1, 0) => ffmpeg::format::Pixel::RGBZ,
+        (1, 2, 3) => ffmpeg::format::Pixel::ZBGR,
+        (3, 2, 1) => ffmpeg::format::Pixel::ZRGB,
+        _ => bail!("Unsupported X11 channel order: b={blue} g={green} r={red}"),
+    })
 }

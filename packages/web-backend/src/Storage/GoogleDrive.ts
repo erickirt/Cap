@@ -82,6 +82,14 @@ export type CreateGoogleDriveUploadInput = {
 const normalizeContentType = (contentType?: string | null) =>
 	contentType?.trim() ? contentType : "application/octet-stream";
 
+const getGoogleDriveBrowserUploadOrigin = () => {
+	try {
+		return new URL(serverEnv().WEB_URL).origin;
+	} catch {
+		return null;
+	}
+};
+
 const appendDriveQuery = (
 	url: string,
 	params: Record<string, string | undefined>,
@@ -960,10 +968,6 @@ export const createGoogleDriveResumableUpload = (
 ) =>
 	Effect.gen(function* () {
 		const contentType = normalizeContentType(input.contentType);
-		const [parentId, fileId] = yield* Effect.all([
-			getGoogleDriveUploadParentId(repo, config, input, tokenStore),
-			generateGoogleDriveFileId(config, tokenStore),
-		]);
 		const headers: Record<string, string> = {
 			"Content-Type": "application/json; charset=UTF-8",
 			"X-Upload-Content-Type": contentType,
@@ -971,6 +975,47 @@ export const createGoogleDriveResumableUpload = (
 		if (input.contentLength !== undefined) {
 			headers["X-Upload-Content-Length"] = input.contentLength.toString();
 		}
+		// Google ties the resumable session's Access-Control-Allow-Origin to the
+		// Origin sent on this initiation request, so browser direct PUTs are
+		// CORS-blocked unless we set it here.
+		const browserUploadOrigin = getGoogleDriveBrowserUploadOrigin();
+		if (browserUploadOrigin) headers.Origin = browserUploadOrigin;
+
+		const existing = yield* repo.getObjectByKey(input.integrationId, input.key);
+		if (Option.isSome(existing)) {
+			const response = yield* driveFetch(
+				config,
+				appendSharedDriveCreateParams(
+					`${DRIVE_UPLOAD_BASE}/files/${encodeURIComponent(existing.value.providerObjectId)}?uploadType=resumable&fields=id,name,mimeType,size`,
+				),
+				{
+					method: "PATCH",
+					headers,
+					body: JSON.stringify({
+						name: getDriveFileName(input.key),
+						mimeType: contentType,
+						appProperties: {
+							capObjectKey: input.key,
+						},
+					}),
+				},
+				tokenStore,
+			);
+			const uploadUrl = response.headers.get("Location");
+			if (!uploadUrl) {
+				return yield* Effect.fail(
+					new Storage.StorageError({
+						cause: new Error("Google Drive did not return an upload URL"),
+					}),
+				);
+			}
+			return uploadUrl;
+		}
+
+		const [parentId, fileId] = yield* Effect.all([
+			getGoogleDriveUploadParentId(repo, config, input, tokenStore),
+			generateGoogleDriveFileId(config, tokenStore),
+		]);
 
 		const response = yield* driveFetch(
 			config,

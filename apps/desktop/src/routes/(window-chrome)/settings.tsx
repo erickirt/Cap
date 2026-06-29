@@ -23,6 +23,7 @@ import { SignInButton } from "~/components/SignInButton";
 import { authStore, userProfileStore } from "~/store";
 import { trackEvent } from "~/utils/analytics";
 import { createSignInMutation } from "~/utils/auth";
+import { getUpdaterCheckOptions } from "~/utils/updater";
 import {
 	apiClient,
 	getConfiguredServerUrl,
@@ -30,6 +31,7 @@ import {
 } from "~/utils/web-api";
 import IconLucideTerminal from "~icons/lucide/terminal";
 import IconLucideUserRound from "~icons/lucide/user-round";
+import IconLucideZap from "~icons/lucide/zap";
 
 const USER_PROFILE_CACHE_GC_MS = 2 * 60 * 60 * 1000;
 const USER_PROFILE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -215,6 +217,11 @@ export default function Settings(props: RouteSectionProps) {
 			href: "screenshots",
 			name: "Screenshots",
 			icon: IconLucideImage,
+		},
+		{
+			href: "automations",
+			name: "Automations",
+			icon: IconLucideZap,
 		},
 		{
 			href: "transcription",
@@ -404,7 +411,7 @@ export default function Settings(props: RouteSectionProps) {
 		setIsCheckingForUpdates(true);
 
 		try {
-			const update = await check();
+			const update = await check(getUpdaterCheckOptions());
 
 			if (!update) {
 				await dialog.message(
@@ -425,10 +432,13 @@ export default function Settings(props: RouteSectionProps) {
 			if (shouldUpdate) navigate("/update");
 		} catch (e) {
 			console.error("Failed to check for updates:", e);
-			await dialog.message(
-				"Unable to check for updates. Please download the latest version manually from cap.so/download. Your data will not be lost.\n\nIf this issue persists, please contact support.",
-				{ title: "Update Error", kind: "error" },
-			);
+			const openDownload = await dialog
+				.confirm(
+					"Couldn't check for updates automatically. You can download the latest version of Cap from cap.so/download \u2014 your data won't be lost.",
+					{ title: "Update Cap", okLabel: "Download", cancelLabel: "Later" },
+				)
+				.catch(() => false);
+			if (openDownload) await shell.open("https://cap.so/download");
 		} finally {
 			setIsCheckingForUpdates(false);
 		}

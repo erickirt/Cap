@@ -4,7 +4,6 @@ import { createElementSize } from "@solid-primitives/resize-observer";
 import { makePersisted } from "@solid-primitives/storage";
 import { useSearchParams } from "@solidjs/router";
 import { createMutation, useQuery } from "@tanstack/solid-query";
-import { invoke } from "@tauri-apps/api/core";
 import {
 	LogicalPosition,
 	type PhysicalPosition,
@@ -626,7 +625,14 @@ function Inner() {
 												}}
 												onRecordingStart={() => {
 													setOriginalCameraBounds(null);
-													setOptions("targetMode", null);
+													if (options.targetModeSource === "editor") {
+														setOptions({
+															targetMode: null,
+															targetModeSource: "editorRecording",
+														});
+													} else {
+														setOptions("targetMode", null);
+													}
 													commands.closeTargetSelectOverlays();
 												}}
 												onClose={() => {
@@ -1073,10 +1079,12 @@ function Inner() {
 									}
 									await new Promise((resolve) => setTimeout(resolve, 50));
 
-									const path = await invoke<string>("take_screenshot", {
-										target,
-									});
-									await commands.showWindow({ ScreenshotEditor: { path } });
+									const path = await commands.takeScreenshot(target);
+									const shouldOpenEditor =
+										await commands.automationShouldOpenScreenshotEditor(target);
+									if (shouldOpenEditor) {
+										await commands.showWindow({ ScreenshotEditor: { path } });
+									}
 									await commands.closeTargetSelectOverlays();
 								} catch (e) {
 									const message = e instanceof Error ? e.message : String(e);
@@ -1666,6 +1674,7 @@ function RecordingControls(props: {
 									props.onClose();
 								} else {
 									setOptions("targetMode", null);
+									commands.setEditorRecordingTarget(null);
 									commands.closeTargetSelectOverlays();
 								}
 							}}
@@ -1716,10 +1725,14 @@ function RecordingControls(props: {
 											}
 										}
 
-										const path = await invoke<string>("take_screenshot", {
-											target: props.target,
-										});
-										await commands.showWindow({ ScreenshotEditor: { path } });
+										const path = await commands.takeScreenshot(props.target);
+										const shouldOpenEditor =
+											await commands.automationShouldOpenScreenshotEditor(
+												props.target,
+											);
+										if (shouldOpenEditor) {
+											await commands.showWindow({ ScreenshotEditor: { path } });
+										}
 										await commands.closeTargetSelectOverlays();
 									} catch (e) {
 										const message = e instanceof Error ? e.message : String(e);

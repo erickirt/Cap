@@ -275,6 +275,7 @@ async fn load_recording(
                     start: 0.0,
                     end: duration,
                     timescale: 1.0,
+                    name: None,
                 }]
             }
             StudioRecordingMeta::MultipleSegments { inner } => inner
@@ -295,6 +296,7 @@ async fn load_recording(
                         start: 0.0,
                         end: duration,
                         timescale: 1.0,
+                        name: None,
                     })
                 })
                 .collect(),
@@ -309,6 +311,7 @@ async fn load_recording(
                 text_segments: Vec::new(),
                 caption_segments: Vec::new(),
                 keyboard_segments: Vec::new(),
+                audio_segments: Vec::new(),
             });
         }
     }

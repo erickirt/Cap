@@ -612,6 +612,8 @@ pub struct TimelineSegment {
     pub timescale: f64,
     pub start: f64,
     pub end: f64,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 impl TimelineSegment {
@@ -863,6 +865,45 @@ pub struct SceneSegment {
     pub transition_out: f64,
 }
 
+/// A timeline-positioned audio clip (background music or imported audio).
+///
+/// Unlike the recording's mic/system audio (which is keyed to recording clips),
+/// these segments live in output/timeline time exactly like zoom/text/mask
+/// segments. `path` is resolved relative to the project directory so projects
+/// stay portable when moved.
+#[derive(Type, Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioTrackSegment {
+    pub start: f64,
+    pub end: f64,
+    #[serde(default)]
+    pub track: u32,
+    pub path: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default = "AudioTrackSegment::default_enabled")]
+    pub enabled: bool,
+    /// Offset into the source audio file (seconds) at which playback begins.
+    #[serde(default)]
+    pub trim_start: f64,
+    #[serde(default)]
+    pub volume_db: f32,
+    #[serde(default)]
+    pub fade_in: f64,
+    #[serde(default)]
+    pub fade_out: f64,
+    /// Source duration in seconds, persisted so the UI can clamp resizing
+    /// without re-decoding the file.
+    #[serde(default)]
+    pub duration: Option<f64>,
+}
+
+impl AudioTrackSegment {
+    fn default_enabled() -> bool {
+        true
+    }
+}
+
 #[derive(Type, Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct TimelineConfiguration {
@@ -878,6 +919,8 @@ pub struct TimelineConfiguration {
     pub caption_segments: Vec<CaptionTrackSegment>,
     #[serde(default)]
     pub keyboard_segments: Vec<crate::KeyboardTrackSegment>,
+    #[serde(default)]
+    pub audio_segments: Vec<AudioTrackSegment>,
 }
 
 #[derive(Type, Serialize, Deserialize, Clone, Debug)]
@@ -988,6 +1031,13 @@ pub struct CaptionSettings {
     pub word_transition_duration: f32,
     #[serde(alias = "activeWordHighlight")]
     pub active_word_highlight: bool,
+    #[serde(alias = "manualPosition")]
+    pub manual_position: Option<XY<f32>>,
+    pub preset: String,
+    pub animation: String,
+    #[serde(alias = "highlightStyle")]
+    pub highlight_style: String,
+    pub uppercase: bool,
 }
 
 impl CaptionSettings {
@@ -1014,6 +1064,18 @@ impl CaptionSettings {
     fn default_active_word_highlight() -> bool {
         false
     }
+
+    fn default_preset() -> String {
+        "classic".to_string()
+    }
+
+    fn default_animation() -> String {
+        "bounce".to_string()
+    }
+
+    fn default_highlight_style() -> String {
+        "color".to_string()
+    }
 }
 
 impl Default for CaptionSettings {
@@ -1036,6 +1098,11 @@ impl Default for CaptionSettings {
             linger_duration: Self::default_linger_duration(),
             word_transition_duration: Self::default_word_transition_duration(),
             active_word_highlight: Self::default_active_word_highlight(),
+            manual_position: None,
+            preset: Self::default_preset(),
+            animation: Self::default_animation(),
+            highlight_style: Self::default_highlight_style(),
+            uppercase: false,
         }
     }
 }
@@ -1045,6 +1112,14 @@ impl Default for CaptionSettings {
 pub struct CaptionsData {
     pub segments: Vec<CaptionSegment>,
     pub settings: CaptionSettings,
+    /// When true, `segments` are stored in source/recording time and the
+    /// rendered `timeline.caption_segments` are derived by projecting them
+    /// through the current edit list, so captions stay aligned to their spoken
+    /// content as clips are trimmed, deleted, reordered, or inserted. Legacy
+    /// projects (false) stored segments in already-edited output time and are
+    /// migrated to source time on first load.
+    #[serde(default)]
+    pub source_timed: bool,
 }
 
 #[derive(Type, Serialize, Deserialize, Clone, Debug)]

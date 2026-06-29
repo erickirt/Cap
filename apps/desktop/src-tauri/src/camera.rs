@@ -49,6 +49,51 @@ const CAMERA_PREVIEW_TARGET_FRAME_INTERVAL: Duration = Duration::from_micros(16_
 const CAMERA_PREVIEW_FRAME_INTERVAL_SLACK: Duration = Duration::from_millis(1);
 const CAMERA_PREVIEW_BLUR_INFERENCE_INTERVAL: Duration = Duration::from_millis(150);
 
+// ── Low-spec preview profile ────────────────────────────────────────────────
+// On low-RAM machines (e.g. an 8GB iMac) the full-quality preview is laggy, so
+// we opt those machines into a cheaper preview: smaller textures, 30fps pacing,
+// and (most importantly) NO background-blur init at all. This is gated by a
+// single startup RAM check (see `init_preview_profile`); on every machine with
+// more than the threshold, `is_low_spec_preview()` returns `false` and the
+// preview path uses the high-spec constants above bit-for-bit, so there is zero
+// behavioural change for >8GB machines. This affects ONLY the preview — the
+// recording pipeline is entirely separate and untouched.
+const CAMERA_PREVIEW_LOW_SPEC_MAX_TEXTURE_WIDTH: u32 = 640;
+const CAMERA_PREVIEW_LOW_SPEC_MAX_TEXTURE_HEIGHT: u32 = 360;
+const CAMERA_PREVIEW_LOW_SPEC_TARGET_FRAME_INTERVAL: Duration = Duration::from_micros(33_333);
+
+/// Machines with total RAM at or below this are treated as low-spec for preview.
+pub const LOW_SPEC_PREVIEW_RAM_THRESHOLD_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+static LOW_SPEC_PREVIEW: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Detect the preview profile once at startup from the machine's total RAM and
+/// log the result. Subsequent calls are no-ops (the first value wins), so this
+/// is safe to call from a single startup site. Reading via
+/// `is_low_spec_preview()` never touches sysinfo, so there are no per-frame
+/// system queries.
+pub fn init_preview_profile(total_ram_bytes: u64) -> bool {
+    let low_spec = total_ram_bytes <= LOW_SPEC_PREVIEW_RAM_THRESHOLD_BYTES;
+    // Only the first set takes effect; ignore the (impossible in practice)
+    // racing second caller.
+    let _ = LOW_SPEC_PREVIEW.set(low_spec);
+    let active = *LOW_SPEC_PREVIEW.get().unwrap_or(&low_spec);
+    info!(
+        total_ram_mb = total_ram_bytes / 1_048_576,
+        low_spec_preview = active,
+        "Camera preview profile detected"
+    );
+    active
+}
+
+/// Whether the low-spec preview profile is active. Defaults to `false` (the
+/// high-spec / current behaviour) if detection never ran, so any unexpected
+/// ordering can only ever fall back to the existing >8GB behaviour.
+#[inline]
+pub fn is_low_spec_preview() -> bool {
+    *LOW_SPEC_PREVIEW.get().unwrap_or(&false)
+}
+
 pub const MIN_CAMERA_SIZE: f32 = 150.0;
 pub const MAX_CAMERA_SIZE: f32 = 600.0;
 pub const DEFAULT_CAMERA_SIZE: f32 = 230.0;
@@ -161,21 +206,37 @@ fn preferred_alpha_mode(alpha_modes: &[CompositeAlphaMode]) -> CompositeAlphaMod
 }
 
 fn camera_preview_frame_due(last_render_at: Option<Instant>, now: Instant) -> bool {
+    // High-spec keeps the original 60fps target; low-spec paces at 30fps.
+    let target_interval = if is_low_spec_preview() {
+        CAMERA_PREVIEW_LOW_SPEC_TARGET_FRAME_INTERVAL
+    } else {
+        CAMERA_PREVIEW_TARGET_FRAME_INTERVAL
+    };
     last_render_at.is_none_or(|last| {
-        now.saturating_duration_since(last) + CAMERA_PREVIEW_FRAME_INTERVAL_SLACK
-            >= CAMERA_PREVIEW_TARGET_FRAME_INTERVAL
+        now.saturating_duration_since(last) + CAMERA_PREVIEW_FRAME_INTERVAL_SLACK >= target_interval
     })
 }
 
 fn camera_preview_texture_dimensions(
     source_width: u32,
     source_height: u32,
-    window_px: u32,
+    region_width: u32,
+    region_height: u32,
     blur_enabled: bool,
 ) -> (u32, u32) {
     let source_width = source_width.max(1);
     let source_height = source_height.max(1);
-    let (max_width, max_height) = if blur_enabled {
+    let region_width = region_width.max(1);
+    let region_height = region_height.max(1);
+    let (max_width, max_height) = if is_low_spec_preview() {
+        // Low-spec caps preview to 640x360 regardless of blur (blur is skipped
+        // entirely on low-spec, so `blur_enabled` is effectively always false
+        // here, but we clamp unconditionally to stay safe if that ever changes).
+        (
+            CAMERA_PREVIEW_LOW_SPEC_MAX_TEXTURE_WIDTH,
+            CAMERA_PREVIEW_LOW_SPEC_MAX_TEXTURE_HEIGHT,
+        )
+    } else if blur_enabled {
         (
             CAMERA_PREVIEW_BLUR_MAX_TEXTURE_WIDTH,
             CAMERA_PREVIEW_BLUR_MAX_TEXTURE_HEIGHT,
@@ -186,7 +247,9 @@ fn camera_preview_texture_dimensions(
             CAMERA_PREVIEW_MAX_TEXTURE_HEIGHT,
         )
     };
-    let requested_width = window_px
+    let source_aspect = source_width as f64 / source_height as f64;
+    let cover_width = (region_width as f64).max(region_height as f64 * source_aspect);
+    let requested_width = (cover_width.ceil() as u32)
         .max(CAMERA_PREVIEW_MIN_TEXTURE_WIDTH)
         .div_ceil(CAMERA_PREVIEW_TEXTURE_WIDTH_BUCKET)
         .saturating_mul(CAMERA_PREVIEW_TEXTURE_WIDTH_BUCKET)
@@ -984,14 +1047,17 @@ impl Renderer {
 
                     let surface_result = self.acquire_surface_texture();
                     if let Some(surface) = surface_result {
-                        let window_px = (clamp_size(state.size) as f64
-                            * self.surface_scale.max(1.0))
-                        .round() as u32;
+                        let surface_scale = self.surface_scale.max(1.0);
+                        let toolbar_px = (TOOLBAR_HEIGHT as f64 * surface_scale).round() as u32;
+                        let region_width = self.surface_config.width.max(1);
+                        let region_height =
+                            self.surface_config.height.saturating_sub(toolbar_px).max(1);
                         let blur_mode = blur_mode_from_project(state.background_blur);
                         let (output_width, output_height) = camera_preview_texture_dimensions(
                             source_width,
                             source_height,
-                            window_px,
+                            region_width,
+                            region_height,
                             blur_mode.is_some(),
                         );
 
@@ -1421,6 +1487,15 @@ impl Renderer {
             return true;
         }
 
+        // Low-spec: never spin up the ONNX/wgpu blur processor (the heaviest
+        // cost in the preview). Both callers treat `false` as "blur unavailable"
+        // and fall back to rendering the raw camera frame, so the preview stays
+        // functional, just unblurred. The UI blur toggle is unaffected; it just
+        // does not take visual effect on these machines.
+        if is_low_spec_preview() {
+            return false;
+        }
+
         if self.blur_processor_init_attempted {
             return false;
         }
@@ -1713,10 +1788,30 @@ async fn resize_window(
 
 #[cfg(test)]
 mod tests {
-    use super::{preferred_alpha_mode, wait_for_shutdown_signal};
+    use super::{
+        CAMERA_PREVIEW_MAX_TEXTURE_HEIGHT, CAMERA_PREVIEW_MAX_TEXTURE_WIDTH,
+        camera_preview_texture_dimensions, preferred_alpha_mode, wait_for_shutdown_signal,
+    };
     use std::thread;
     use tokio::{runtime::Runtime, sync::oneshot, time::Duration};
     use wgpu::CompositeAlphaMode;
+
+    #[test]
+    fn texture_covers_square_region_without_upscaling() {
+        let (width, height) = camera_preview_texture_dimensions(1280, 720, 460, 460, false);
+        let cover_scale = (460.0 / width as f64).max(460.0 / height as f64);
+        assert!(
+            cover_scale <= 1.0,
+            "texture {width}x{height} would upscale to cover a 460x460 region (scale {cover_scale})"
+        );
+    }
+
+    #[test]
+    fn texture_dimensions_stay_within_caps() {
+        let (width, height) = camera_preview_texture_dimensions(1920, 1080, 4000, 2200, false);
+        assert!(width <= CAMERA_PREVIEW_MAX_TEXTURE_WIDTH);
+        assert!(height <= CAMERA_PREVIEW_MAX_TEXTURE_HEIGHT);
+    }
 
     #[test]
     fn preferred_alpha_mode_avoids_unsupported_inherit_fallback() {

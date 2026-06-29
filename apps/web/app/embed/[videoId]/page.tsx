@@ -258,7 +258,8 @@ async function EmbedContent({
 		video.transcriptionStatus !== "COMPLETE" &&
 		video.transcriptionStatus !== "PROCESSING" &&
 		video.transcriptionStatus !== "SKIPPED" &&
-		video.transcriptionStatus !== "NO_AUDIO"
+		video.transcriptionStatus !== "NO_AUDIO" &&
+		video.transcriptionStatus !== "ERROR"
 	) {
 		transcribeVideo(video.id, video.ownerId, aiGenerationEnabled);
 	}

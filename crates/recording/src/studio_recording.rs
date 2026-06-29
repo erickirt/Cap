@@ -1098,6 +1098,7 @@ async fn stop_recording(
                 start: 0.0,
                 end: segment.duration,
                 timescale: 1.0,
+                name: None,
             })
         })
         .collect();
@@ -1173,6 +1174,7 @@ async fn stop_recording(
             text_segments: Vec::new(),
             caption_segments: Vec::new(),
             keyboard_segments: Vec::new(),
+            audio_segments: Vec::new(),
         });
     }
     if let Some(clips) = clip_configs {
