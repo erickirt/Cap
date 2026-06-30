@@ -126,7 +126,27 @@ app.get(
 					.from(videos)
 					.where(eq(videos.id, Video.VideoId.make(videoId)));
 
-				if (video)
+				if (video) {
+					if (video.ownerId !== user.id)
+						return c.json({ error: "forbidden" }, { status: 403 });
+
+					if (isScreenshot || video.isScreenshot) {
+						await db().transaction(async (tx) => {
+							if (isScreenshot && !video.isScreenshot) {
+								await tx
+									.update(videos)
+									.set({ isScreenshot: true })
+									.where(
+										and(eq(videos.id, video.id), eq(videos.ownerId, user.id)),
+									);
+							}
+
+							await tx
+								.delete(videoUploads)
+								.where(eq(videoUploads.videoId, video.id));
+						});
+					}
+
 					return c.json({
 						id: video.id,
 						// All deprecated
@@ -134,6 +154,7 @@ app.get(
 						aws_region: "n/a",
 						aws_bucket: "n/a",
 					});
+				}
 			}
 
 			const [ownedOrganizations, memberOrganizations] = await Promise.all([
@@ -256,7 +277,7 @@ app.get(
 				UPLOAD_PROGRESS_VERSION,
 			);
 
-			if (clientSupportsUploadProgress)
+			if (clientSupportsUploadProgress && !isScreenshot)
 				await db().insert(videoUploads).values({
 					videoId: idToUse,
 					mode: "singlepart",
