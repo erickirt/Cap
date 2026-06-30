@@ -57,7 +57,9 @@ export const Toolbar = ({
 	const handleEmojiClick = async (emoji: string) => {
 		if (!canReact || !user) return;
 		const videoElement = document.querySelector("video") as HTMLVideoElement;
-		const currentTime = videoElement?.currentTime || 0;
+		const currentTime = data.isScreenshot
+			? null
+			: videoElement?.currentTime || 0;
 		const optimisticComment: CommentType = {
 			id: Comment.CommentId.make(`temp-${Date.now()}`),
 			authorId: user.id,
@@ -100,7 +102,9 @@ export const Toolbar = ({
 			return;
 		}
 		const videoElement = document.querySelector("video") as HTMLVideoElement;
-		const currentTime = videoElement?.currentTime || 0;
+		const currentTime = data.isScreenshot
+			? null
+			: videoElement?.currentTime || 0;
 		const optimisticComment: CommentType = {
 			id: Comment.CommentId.make(`temp-${Date.now()}`),
 			authorId: user.id,
