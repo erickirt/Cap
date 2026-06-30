@@ -1359,6 +1359,7 @@ dependencies = [
  "kameo",
  "keyed_priority_queue",
  "lazy_static",
+ "libappindicator",
  "log",
  "lz4_flex",
  "md5",
