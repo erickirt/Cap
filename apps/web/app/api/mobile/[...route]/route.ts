@@ -1377,14 +1377,30 @@ const ApiLive = HttpApiBuilder.api(Mobile.MobileApiContract).pipe(
 					)
 					.handle("updateUploadProgress", ({ path, payload }) =>
 						withMappedErrors(
-							videos
-								.updateUploadProgress({
+							Effect.gen(function* () {
+								const user = yield* CurrentUser;
+								const [video] = yield* database.use((db) =>
+									db
+										.select({ id: Db.videos.id })
+										.from(Db.videos)
+										.where(
+											and(
+												eq(Db.videos.id, path.id),
+												eq(Db.videos.ownerId, user.id),
+											),
+										),
+								);
+								if (!video)
+									return yield* Effect.fail(new HttpApiError.NotFound());
+
+								yield* videos.updateUploadProgress({
 									videoId: path.id,
 									uploaded: Math.max(0, Math.trunc(payload.uploaded)),
 									total: Math.max(0, Math.trunc(payload.total)),
 									updatedAt: new Date(),
-								})
-								.pipe(Effect.map(() => ({ success: true as const }))),
+								});
+								return { success: true as const };
+							}),
 						),
 					)
 					.handle("completeUpload", ({ path, payload }) =>
