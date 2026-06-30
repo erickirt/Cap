@@ -220,7 +220,7 @@ export function Header() {
 						>
 							<IconLucideArrowLeft class="size-4" />
 						</Show>
-						{isTranscriptOpen() ? "Back" : "Transcript"}
+						{isTranscriptOpen() ? "Back" : "Captions"}
 					</Button>
 				</Show>
 				<button
