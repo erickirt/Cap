@@ -2378,7 +2378,6 @@ impl ShowCapWindow {
                     ));
                 }
 
-
                 #[cfg(target_os = "macos")]
                 crate::platform::set_window_level(
                     window.as_ref().window(),

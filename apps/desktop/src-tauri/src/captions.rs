@@ -55,6 +55,7 @@ impl Default for CaptionData {
 lazy_static::lazy_static! {
     static ref WHISPER_CONTEXT: Arc<Mutex<Option<Arc<WhisperContext>>>> = Arc::new(Mutex::new(None));
     static ref MODEL_DOWNLOADS: Mutex<HashMap<String, ActiveModelDownload>> = Mutex::new(HashMap::new());
+    static ref TRANSCRIPTION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 }
 
 #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
@@ -643,8 +644,14 @@ async fn extract_audio_from_video(video_path: &str, output_path: &PathBuf) -> Re
     }
 }
 
-async fn get_whisper_context(model_path: &str) -> Result<Arc<WhisperContext>, String> {
-    let mut context_guard = WHISPER_CONTEXT.lock().await;
+fn lock_transcription_worker_slot() -> std::sync::MutexGuard<'static, ()> {
+    TRANSCRIPTION_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn get_whisper_context_blocking(model_path: &str) -> Result<Arc<WhisperContext>, String> {
+    let mut context_guard = WHISPER_CONTEXT.blocking_lock();
 
     if let Some(ref existing) = *context_guard {
         log::info!("Reusing cached Whisper context");
@@ -660,6 +667,15 @@ async fn get_whisper_context(model_path: &str) -> Result<Arc<WhisperContext>, St
 
     Ok(ctx_arc)
 }
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn release_whisper_context_after_transcription() {
+    let mut ctx = WHISPER_CONTEXT.blocking_lock();
+    *ctx = None;
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+fn release_whisper_context_after_transcription() {}
 
 fn is_special_token(token_text: &str) -> bool {
     let trimmed = token_text.trim();
@@ -1314,22 +1330,14 @@ pub async fn transcribe_audio(
         TranscriptionEngine::Parakeet => {
             log::info!("Using Parakeet TDT engine");
             let model_dir = model_path.clone();
-            tokio::task::spawn_blocking(move || process_with_parakeet(&audio_path, &model_dir))
-                .await
-                .map_err(|e| format!("Parakeet task panicked: {e}"))?
+            tokio::task::spawn_blocking(move || {
+                let _guard = lock_transcription_worker_slot();
+                process_with_parakeet(&audio_path, &model_dir)
+            })
+            .await
+            .map_err(|e| format!("Parakeet task panicked: {e}"))?
         }
         TranscriptionEngine::Whisper => {
-            let context = match get_whisper_context(&model_path).await {
-                Ok(ctx) => {
-                    log::info!("Whisper context ready");
-                    ctx
-                }
-                Err(e) => {
-                    log::error!("Failed to initialize Whisper context: {e}");
-                    return Err(format!("Failed to initialize transcription model: {e}"));
-                }
-            };
-
             let transcription_hints = GeneralSettingsStore::get(&app)
                 .ok()
                 .flatten()
@@ -1338,7 +1346,21 @@ pub async fn transcribe_audio(
 
             log::info!("Starting Whisper transcription in blocking task...");
             tokio::task::spawn_blocking(move || {
-                process_with_whisper(&audio_path, context, &language, &transcription_hints)
+                let _guard = lock_transcription_worker_slot();
+                let context = match get_whisper_context_blocking(&model_path) {
+                    Ok(ctx) => {
+                        log::info!("Whisper context ready");
+                        ctx
+                    }
+                    Err(e) => {
+                        log::error!("Failed to initialize Whisper context: {e}");
+                        return Err(format!("Failed to initialize transcription model: {e}"));
+                    }
+                };
+                let result =
+                    process_with_whisper(&audio_path, context, &language, &transcription_hints);
+                release_whisper_context_after_transcription();
+                result
             })
             .await
             .map_err(|e| format!("Whisper task panicked: {e}"))?
@@ -2311,7 +2333,7 @@ async fn parakeet_model_file_sizes(
             let part_size = resp
                 .content_length()
                 .filter(|size| *size > 0)
-                .or_else(|| parakeet_known_part_size(*url))
+                .or_else(|| parakeet_known_part_size(url))
                 .unwrap_or(0);
             file_size = file_size.saturating_add(part_size);
         }

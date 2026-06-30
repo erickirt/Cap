@@ -47,8 +47,8 @@ use std::{
     time::Duration,
 };
 use tauri::{AppHandle, Manager, path::BaseDirectory};
-use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogBuilder};
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use tauri_specta::Event;
 use tracing::*;
 
@@ -3015,9 +3015,7 @@ async fn handle_recording_end(
     // so they don't reappear when the main window comes back.
     let focus_manager = handle.try_state::<crate::target_select_overlay::WindowFocusManager>();
     for (label, window) in handle.webview_windows() {
-        if let Ok(CapWindowId::TargetSelectOverlay { display_id }) =
-            CapWindowId::from_str(&label)
-        {
+        if let Ok(CapWindowId::TargetSelectOverlay { display_id }) = CapWindowId::from_str(&label) {
             hide_overlay(&window);
             if let Some(ref fm) = focus_manager {
                 fm.destroy(&display_id, handle.global_shortcut());
