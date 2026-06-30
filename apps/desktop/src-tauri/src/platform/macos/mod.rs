@@ -432,7 +432,7 @@ unsafe fn force_glass_view_always_active(glass_view: cocoa::base::id) -> bool {
         }
 
         if !responds_to_set_state && !responds_to_set_active {
-            tracing::warn!(
+            tracing::debug!(
                 target: "cap_desktop_lib::liquid_glass",
                 "NSGlassEffectView responds to neither setState: nor setActive: — \
                  cannot pin material to always-active; falling back to vibrancy"
