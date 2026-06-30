@@ -65,7 +65,7 @@ export const getPlatformIcon = (platform: string | null): React.ReactNode => {
 				width={20}
 				height={20}
 				alt=""
-				className="mr-2 size-5 shrink-0 object-contain"
+				className="mr-2 block size-5 shrink-0 object-contain"
 			/>
 		);
 	} else {
@@ -93,7 +93,7 @@ export const PlatformIcons: React.FC<PlatformIconsProps> = ({
 	source = "unknown",
 }) => {
 	return (
-		<div className="flex relative z-10 gap-3 mt-5">
+		<div className="flex relative z-10 items-center gap-3 mt-5">
 			<div>
 				<button
 					type="button"
@@ -106,7 +106,7 @@ export const PlatformIcons: React.FC<PlatformIconsProps> = ({
 						});
 						window.location.href = "/download/apple-silicon";
 					}}
-					className="focus:outline-none"
+					className="inline-flex size-6 items-center justify-center focus:outline-none"
 					aria-label="Download for free"
 				>
 					<svg
@@ -133,7 +133,7 @@ export const PlatformIcons: React.FC<PlatformIconsProps> = ({
 							target_url: "/download/windows",
 						})
 					}
-					className="focus:outline-none"
+					className="inline-flex size-6 items-center justify-center focus:outline-none"
 					aria-label="Download for Windows"
 				>
 					<svg
@@ -162,7 +162,7 @@ export const PlatformIcons: React.FC<PlatformIconsProps> = ({
 							target_url: "/download/linux-deb",
 						})
 					}
-					className="focus:outline-none"
+					className="inline-flex size-6 items-center justify-center focus:outline-none"
 					aria-label="Download for Linux"
 				>
 					<Image
@@ -170,7 +170,7 @@ export const PlatformIcons: React.FC<PlatformIconsProps> = ({
 						width={24}
 						height={24}
 						alt=""
-						className="size-[24px] object-contain opacity-90"
+						className="block size-[24px] object-contain opacity-90"
 					/>
 					<span className="sr-only">Download for Linux</span>
 				</a>
