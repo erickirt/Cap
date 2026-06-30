@@ -23,6 +23,7 @@ function contentTypeForSubpath(subpath: string): string {
 	if (subpath.endsWith(".mp4") || subpath.endsWith(".m4s")) return "video/mp4";
 	if (subpath.endsWith(".jpg") || subpath.endsWith(".jpeg"))
 		return "image/jpeg";
+	if (subpath.endsWith(".png")) return "image/png";
 	if (subpath.endsWith(".aac")) return "audio/aac";
 	if (subpath.endsWith(".webm")) return "audio/webm";
 	if (subpath.endsWith(".m3u8")) return "application/x-mpegURL";
@@ -145,7 +146,11 @@ app.post(
 							? "audio/mpeg"
 							: fileKey.endsWith(".m3u8")
 								? "application/x-mpegURL"
-								: "video/mp2t";
+								: fileKey.endsWith(".jpg") || fileKey.endsWith(".jpeg")
+									? "image/jpeg"
+									: fileKey.endsWith(".png")
+										? "image/png"
+										: "video/mp2t";
 
 			const data = await Effect.gen(function* () {
 				const [bucket] = yield* Storage.getAccessForVideo(videoDomain);
