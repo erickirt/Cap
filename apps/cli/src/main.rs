@@ -13,7 +13,7 @@ mod update;
 mod upload;
 
 use std::{
-    io::{Write, stderr, stdout},
+    io::{IsTerminal, Write, stderr, stdout},
     path::PathBuf,
 };
 
@@ -24,6 +24,121 @@ use serde::Serialize;
 use tracing_subscriber::{filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 const TOKIO_WORKER_THREAD_STACK_SIZE: usize = 16 * 1024 * 1024;
+const ANSI_RESET: &str = "\x1b[0m";
+const ANSI_BOLD: &str = "\x1b[1m";
+const ANSI_BLUE: &str = "\x1b[38;2;71;133;255m";
+const ANSI_SOFT_BLUE: &str = "\x1b[38;2;173;201;255m";
+const ANSI_MUTED: &str = "\x1b[38;2;118;128;145m";
+
+const WELCOME_LINES: &[&[(&str, &str)]] = &[
+    &[
+        (ANSI_MUTED, "       .----------------------.      "),
+        (ANSI_BOLD, "  _____"),
+    ],
+    &[
+        (ANSI_MUTED, "     .'                        '.    "),
+        (ANSI_BOLD, " / ____|__ _ _ __"),
+    ],
+    &[
+        (ANSI_MUTED, "    /                            \\   "),
+        (ANSI_BOLD, "| |   / _` | '_ \\"),
+    ],
+    &[
+        (ANSI_MUTED, "   |                              |  "),
+        (ANSI_BOLD, "| |__| (_| | |_) |"),
+    ],
+    &[
+        (ANSI_MUTED, "   |          "),
+        (ANSI_BLUE, ".----------."),
+        (ANSI_MUTED, "          |   "),
+        (ANSI_BOLD, "\\_____\\__,_| .__/"),
+    ],
+    &[
+        (ANSI_MUTED, "   |       "),
+        (ANSI_BLUE, ".-'            '-."),
+        (ANSI_MUTED, "       |              "),
+        (ANSI_BOLD, "|_|"),
+    ],
+    &[
+        (ANSI_MUTED, "   |     "),
+        (ANSI_BLUE, ".'    "),
+        (ANSI_SOFT_BLUE, ".------."),
+        (ANSI_BLUE, "    '."),
+        (ANSI_MUTED, "     |"),
+    ],
+    &[
+        (ANSI_MUTED, "   |    "),
+        (ANSI_BLUE, "/     "),
+        (ANSI_SOFT_BLUE, "/        \\"),
+        (ANSI_BLUE, "     \\"),
+        (ANSI_MUTED, "    |"),
+    ],
+    &[
+        (ANSI_MUTED, "   |   "),
+        (ANSI_BLUE, "|     "),
+        (ANSI_SOFT_BLUE, "|  "),
+        (ANSI_RESET, ".----."),
+        (ANSI_SOFT_BLUE, "  |"),
+        (ANSI_BLUE, "     |"),
+        (ANSI_MUTED, "   |"),
+    ],
+    &[
+        (ANSI_MUTED, "   |   "),
+        (ANSI_BLUE, "|     "),
+        (ANSI_SOFT_BLUE, "| "),
+        (ANSI_RESET, "(      )"),
+        (ANSI_SOFT_BLUE, " |"),
+        (ANSI_BLUE, "     |"),
+        (ANSI_MUTED, "   |"),
+    ],
+    &[
+        (ANSI_MUTED, "   |   "),
+        (ANSI_BLUE, "|     "),
+        (ANSI_SOFT_BLUE, "|  "),
+        (ANSI_RESET, "'----'"),
+        (ANSI_SOFT_BLUE, "  |"),
+        (ANSI_BLUE, "     |"),
+        (ANSI_MUTED, "   |"),
+    ],
+    &[
+        (ANSI_MUTED, "   |    "),
+        (ANSI_BLUE, "\\     "),
+        (ANSI_SOFT_BLUE, "\\        /"),
+        (ANSI_BLUE, "     /"),
+        (ANSI_MUTED, "    |"),
+    ],
+    &[
+        (ANSI_MUTED, "   |     "),
+        (ANSI_BLUE, "'.    "),
+        (ANSI_SOFT_BLUE, "'------'"),
+        (ANSI_BLUE, "    .'"),
+        (ANSI_MUTED, "     |"),
+    ],
+    &[
+        (ANSI_MUTED, "   |       "),
+        (ANSI_BLUE, "'-.            .-'"),
+        (ANSI_MUTED, "       |"),
+    ],
+    &[
+        (ANSI_MUTED, "   |          "),
+        (ANSI_BLUE, "'----------'"),
+        (ANSI_MUTED, "          |"),
+    ],
+    &[(ANSI_MUTED, "    \\                            /")],
+    &[(ANSI_MUTED, "     '.                        .'")],
+    &[(ANSI_MUTED, "       '----------------------'")],
+    &[],
+    &[(
+        ANSI_BOLD,
+        "  Record, edit, and share screen recordings from the command line.",
+    )],
+    &[],
+    &[(ANSI_BLUE, "  cap record start --screen <id> --detach")],
+    &[(
+        ANSI_MUTED,
+        "  cap targets     cap doctor     cap guide --json     cap --help",
+    )],
+];
 
 /// Long-form help epilogue. Agents read `cap --help` before doing anything, so the conventions they
 /// need to drive the CLI correctly (JSON on stdout, env vars, the canonical workflow) live here.
@@ -75,7 +190,7 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -138,6 +253,14 @@ enum Commands {
 impl Commands {
     fn exit_after_success(&self) -> bool {
         matches!(self, Self::Export(_) | Self::ExportPreview(_))
+    }
+}
+
+impl Cli {
+    fn exit_after_success(&self) -> bool {
+        self.command
+            .as_ref()
+            .is_some_and(Commands::exit_after_success)
     }
 }
 
@@ -342,7 +465,7 @@ fn main() {
         )
         .init();
 
-    let exit_after_success = cli.command.exit_after_success();
+    let exit_after_success = cli.exit_after_success();
 
     // Windows export exercises deep WGPU/MediaFoundation/FFmpeg stacks. Running the CLI runtime
     // on an explicitly large stack is what stopped the export worker from overflowing before
@@ -396,7 +519,11 @@ fn main() {
 
 async fn run(cli: Cli) -> Result<(), String> {
     let json = cli.json;
-    match cli.command {
+    let Some(command) = cli.command else {
+        return print_welcome(json);
+    };
+
+    match command {
         Commands::Export(e) => e.run(json).await,
         Commands::ExportPreview(e) => e.run().await,
         Commands::Project(args) => args.run(json),
@@ -440,7 +567,7 @@ async fn run(cli: Cli) -> Result<(), String> {
             }
         },
         Commands::Targets(args) => args.run(json),
-        Commands::Doctor(args) => doctor::run_doctor(resolve_format(json, args.format)),
+        Commands::Doctor(args) => doctor::run_doctor(resolve_format(json, args.format)).await,
         Commands::Version(args) => {
             let format = resolve_format(json, args.format);
             finish_json(format, doctor::run_version(format))
@@ -461,6 +588,31 @@ async fn run(cli: Cli) -> Result<(), String> {
             Ok(())
         }
     }
+}
+
+fn print_welcome(json: bool) -> Result<(), String> {
+    if json {
+        return write_json(&serde_json::json!({
+            "name": "cap",
+            "about": "Cap screen recording from the command line",
+            "commands": ["record", "targets", "doctor", "guide", "upload"],
+        }));
+    }
+
+    let ansi = stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    let mut stdout = stdout();
+    for line in WELCOME_LINES {
+        for segment in *line {
+            let (style, text) = *segment;
+            if ansi && !text.is_empty() {
+                write!(stdout, "{style}{text}{ANSI_RESET}").map_err(|e| e.to_string())?;
+            } else {
+                write!(stdout, "{text}").map_err(|e| e.to_string())?;
+            }
+        }
+        writeln!(stdout).map_err(|e| e.to_string())?;
+    }
+    stdout.flush().map_err(|e| e.to_string())
 }
 
 /// `--json` is a global convenience that forces JSON regardless of a command's local `--format`
