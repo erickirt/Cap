@@ -376,6 +376,9 @@ async saveCaptions(videoId: string, captions: CaptionData) : Promise<null> {
 async loadCaptions(videoId: string) : Promise<CaptionData | null> {
     return await TAURI_INVOKE("load_captions", { videoId });
 },
+async getModelDownloadStatus(targetPath: string) : Promise<ModelDownloadStatus | null> {
+    return await TAURI_INVOKE("get_model_download_status", { targetPath });
+},
 async downloadWhisperModel(modelName: string, outputPath: string) : Promise<null> {
     return await TAURI_INVOKE("download_whisper_model", { modelName, outputPath });
 },
@@ -694,6 +697,8 @@ export type MatchMode = "all" | "any"
 export type MicrophoneDeviceSettings = { sampleRate: number | null; channels: number | null }
 export type MicrophoneFormatInfo = { sampleRate: number; channels: number }
 export type MicrophoneInfo = { name: string; sampleRate: number; channels: number; formats: MicrophoneFormatInfo[] }
+export type ModelDownloadState = "downloading" | "completed" | "failed"
+export type ModelDownloadStatus = { state: ModelDownloadState; progress: number; message: string }
 export type ModelIDType = string
 export type MovExportSettings = { fps: number; resolution_base: XY<number>; cursor_only?: boolean }
 export type Mp4ExportSettings = { fps: number; resolution_base: XY<number>; compression: ExportCompression; custom_bpp: number | null; force_ffmpeg_decoder?: boolean; optimize_filesize?: boolean }
