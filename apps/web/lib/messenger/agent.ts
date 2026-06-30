@@ -11,6 +11,49 @@ type ConversationMessage = {
 	content: string;
 };
 
+type SupportEmailToolInput = {
+	subject: string;
+	message: string;
+};
+
+type SupportEmailToolResult =
+	| {
+			status: "sent";
+			remainingToday: number;
+	  }
+	| {
+			status: "rate_limited";
+			remainingToday: 0;
+	  };
+
+type SupportEmailTool = {
+	execute: (input: SupportEmailToolInput) => Promise<SupportEmailToolResult>;
+};
+
+type AnthropicTextBlock = {
+	type: "text";
+	text: string;
+};
+
+type AnthropicToolUseBlock = {
+	type: "tool_use";
+	id: string;
+	name: string;
+	input: unknown;
+};
+
+type AnthropicResponseBlock = AnthropicTextBlock | AnthropicToolUseBlock;
+
+type AnthropicToolResultBlock = {
+	type: "tool_result";
+	tool_use_id: string;
+	content: string;
+	is_error?: boolean;
+};
+
+const MESSENGER_ANTHROPIC_MODEL = "claude-sonnet-5";
+const MESSENGER_MAX_TOKENS = 350;
+
 const normalizeContext = (sections: string[]) =>
 	sections
 		.map((entry) => entry.trim())
@@ -19,12 +62,36 @@ const normalizeContext = (sections: string[]) =>
 		.join("\n\n")
 		.slice(0, 7000);
 
+const supportEmailToolDefinition = {
+	name: "send_support_email",
+	description:
+		"Send a concise support email to the Cap team after the signed-in user explicitly asks or agrees. The server controls the recipient, sender, reply-to address, account email, conversation id, and rate limit.",
+	input_schema: {
+		type: "object",
+		properties: {
+			subject: {
+				type: "string",
+				description: "A concise support email subject.",
+			},
+			message: {
+				type: "string",
+				description:
+					"A concise support email body summarizing the user's issue and relevant context from the chat.",
+			},
+		},
+		required: ["subject", "message"],
+		additionalProperties: false,
+	},
+} as const;
+
 const buildSystemPrompt = ({
 	userIdentity,
 	context,
+	supportEmailAvailable,
 }: {
 	userIdentity: string;
 	context: string;
+	supportEmailAvailable: boolean;
 }) =>
 	[
 		MESSENGER_AGENT_PROMPT,
@@ -42,10 +109,18 @@ Critical rules:
 - Never make up features, pricing, dates, or technical details. If you're not sure, say so honestly. Always use the Cap Reference Guide below for accurate facts, URLs, and pricing.
 - When linking to Cap pages, ALWAYS use the full URL from the reference guide (e.g. https://cap.so/download, not just "cap.so"). Get the exact URL right.
 - If you genuinely can't help, say something like "I'm not sure on that one, let me get someone from the team to take a look" rather than stiff corporate escalation language.
-- Keep responses focused, usually 1-3 short paragraphs max. This is a chat, not an email.
+- Keep responses focused, usually 1-2 short paragraphs max and under 120 words unless the user asks for detailed steps.
 - Be genuinely helpful, personable, and respectful. You represent Cap and should leave the user feeling good about the interaction.
 - ONLY discuss Cap and topics directly related to Cap (screen recording, sharing, account, billing, technical issues with Cap, etc.). If a user asks about other apps, competitors, or unrelated topics, politely steer the conversation back to Cap. Never recommend, compare, or discuss competing products or unrelated software.
-- If you notice the conversation is going in circles, the user seems frustrated, or their issue isn't getting resolved after a few back-and-forth messages, gently suggest they email the team directly at hello@cap.so for more hands-on help. Say something natural like "this one might need a closer look from the team, if you shoot an email to hello@cap.so we can dig into it properly" rather than stiff escalation language.`,
+- If you notice the conversation is going in circles, the user seems frustrated, or their issue isn't getting resolved after a few back-and-forth messages, offer to send it to the team if the support email tool is available. If the tool is unavailable, gently suggest emailing hello@cap.so for more hands-on help.`,
+		supportEmailAvailable
+			? `Support email tool:
+- You can send one support email to hello@cap.so by using send_support_email, but only after the user explicitly asks you to send it or agrees to your offer.
+- Never ask for, accept, or invent a sender or recipient email address. The server uses the signed-in account email automatically.
+- Keep the email subject short and the body factual. Include the user's issue, useful details already shared, and what they need from the team.
+- After the tool result, tell the user briefly whether it was sent. If the tool says rate_limited, say they can still email hello@cap.so directly.`
+			: `Support email:
+- You cannot send support email for this user in the current chat. If a hands-on review is needed, ask them to email hello@cap.so directly.`,
 		CAP_REFERENCE_GUIDE,
 		`The person you're talking to: ${userIdentity}`,
 		context
@@ -61,33 +136,119 @@ const mapHistoryForLlm = (history: ConversationMessage[]) =>
 		content: message.content.slice(0, 6000),
 	}));
 
-const parseAnthropicContent = (payload: unknown) => {
+const parseAnthropicMessage = (payload: unknown) => {
 	if (!payload || typeof payload !== "object") return null;
 	const content = (payload as { content?: unknown }).content;
 	if (!Array.isArray(content)) return null;
-	const text = content
-		.map((block) => {
-			if (!block || typeof block !== "object") return "";
-			const type = (block as { type?: unknown }).type;
-			const value = (block as { text?: unknown }).text;
-			if (type !== "text" || typeof value !== "string") return "";
-			return value;
-		})
+
+	const blocks = content.flatMap((block): AnthropicResponseBlock[] => {
+		if (!block || typeof block !== "object") return [];
+		const type = (block as { type?: unknown }).type;
+		if (type === "text") {
+			const text = (block as { text?: unknown }).text;
+			return typeof text === "string" ? [{ type, text }] : [];
+		}
+		if (type === "tool_use") {
+			const id = (block as { id?: unknown }).id;
+			const name = (block as { name?: unknown }).name;
+			if (typeof id !== "string" || typeof name !== "string") return [];
+			return [
+				{
+					type,
+					id,
+					name,
+					input: (block as { input?: unknown }).input,
+				},
+			];
+		}
+		return [];
+	});
+	if (!blocks.length) return null;
+
+	const text = blocks
+		.map((block) => (block.type === "text" ? block.text : ""))
 		.join("\n")
 		.trim();
-	return text.length > 0 ? text : null;
+
+	return {
+		content: blocks,
+		text: text.length > 0 ? text : null,
+	};
 };
 
-const callAnthropic = async ({
-	systemPrompt,
-	history,
-}: {
-	systemPrompt: string;
-	history: ConversationMessage[];
-}) => {
-	const key = serverEnv().ANTHROPIC_API_KEY;
-	if (!key) return null;
+const readToolString = (input: unknown, key: keyof SupportEmailToolInput) => {
+	if (!input || typeof input !== "object") return null;
+	const value = (input as Record<string, unknown>)[key];
+	if (typeof value !== "string") return null;
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : null;
+};
 
+const readSupportEmailInput = (input: unknown) => {
+	const subject = readToolString(input, "subject");
+	const message = readToolString(input, "message");
+	if (!subject || !message) return null;
+	return {
+		subject,
+		message,
+	};
+};
+
+const formatSupportEmailToolResult = (result: SupportEmailToolResult) => {
+	if (result.status === "sent") {
+		return `Support email sent to hello@cap.so from the user's account email. Remaining sends today: ${result.remainingToday}.`;
+	}
+	return "Support email was not sent because this user has reached the 2 emails per day limit.";
+};
+
+const executeSupportEmailToolUse = async ({
+	toolUse,
+	supportEmailTool,
+}: {
+	toolUse: AnthropicToolUseBlock;
+	supportEmailTool: SupportEmailTool;
+}): Promise<AnthropicToolResultBlock> => {
+	if (toolUse.name !== supportEmailToolDefinition.name) {
+		return {
+			type: "tool_result",
+			tool_use_id: toolUse.id,
+			content: "Unknown tool.",
+			is_error: true,
+		};
+	}
+
+	const input = readSupportEmailInput(toolUse.input);
+	if (!input) {
+		return {
+			type: "tool_result",
+			tool_use_id: toolUse.id,
+			content: "Missing subject or message.",
+			is_error: true,
+		};
+	}
+
+	const result = await supportEmailTool.execute(input);
+	return {
+		type: "tool_result",
+		tool_use_id: toolUse.id,
+		content: formatSupportEmailToolResult(result),
+	};
+};
+
+const postAnthropicMessages = async ({
+	key,
+	systemPrompt,
+	messages,
+	tools,
+}: {
+	key: string;
+	systemPrompt: string;
+	messages: Array<{
+		role: "user" | "assistant";
+		content: string | AnthropicResponseBlock[] | AnthropicToolResultBlock[];
+	}>;
+	tools?: [typeof supportEmailToolDefinition];
+}) => {
 	const response = await fetch("https://api.anthropic.com/v1/messages", {
 		method: "POST",
 		headers: {
@@ -96,11 +257,12 @@ const callAnthropic = async ({
 			"Content-Type": "application/json",
 		},
 		body: JSON.stringify({
-			model: "claude-sonnet-4-6",
+			model: MESSENGER_ANTHROPIC_MODEL,
 			temperature: 0.65,
-			max_tokens: 500,
+			max_tokens: MESSENGER_MAX_TOKENS,
 			system: systemPrompt,
-			messages: mapHistoryForLlm(history),
+			messages,
+			tools,
 		}),
 		signal: AbortSignal.timeout(35000),
 	});
@@ -111,7 +273,77 @@ const callAnthropic = async ({
 	}
 
 	const payload = await response.json();
-	return parseAnthropicContent(payload);
+	return parseAnthropicMessage(payload);
+};
+
+const callAnthropic = async ({
+	systemPrompt,
+	history,
+	supportEmailTool,
+}: {
+	systemPrompt: string;
+	history: ConversationMessage[];
+	supportEmailTool: SupportEmailTool | null;
+}) => {
+	const key = serverEnv().ANTHROPIC_API_KEY;
+	if (!key) return null;
+
+	const initial = await postAnthropicMessages({
+		key,
+		systemPrompt,
+		messages: mapHistoryForLlm(history),
+		tools: supportEmailTool ? [supportEmailToolDefinition] : undefined,
+	});
+
+	if (!initial) return null;
+	const toolUses = supportEmailTool
+		? initial.content.filter((block) => block.type === "tool_use")
+		: [];
+
+	if (!supportEmailTool || toolUses.length === 0) {
+		return initial.text;
+	}
+
+	const toolResults: AnthropicToolResultBlock[] = [];
+	let sentEmailToolResult = false;
+	for (const toolUse of toolUses) {
+		if (sentEmailToolResult) {
+			toolResults.push({
+				type: "tool_result",
+				tool_use_id: toolUse.id,
+				content: "Only one support email can be sent per assistant response.",
+				is_error: true,
+			});
+			continue;
+		}
+		toolResults.push(
+			await executeSupportEmailToolUse({ toolUse, supportEmailTool }),
+		);
+		sentEmailToolResult = true;
+	}
+
+	const final = await postAnthropicMessages({
+		key,
+		systemPrompt,
+		messages: [
+			...mapHistoryForLlm(history),
+			{
+				role: "assistant",
+				content: initial.content,
+			},
+			{
+				role: "user",
+				content: toolResults,
+			},
+		],
+	});
+
+	if (final?.text) return final.text;
+	const firstToolResult = toolResults[0]?.content ?? "";
+	if (firstToolResult.includes("Support email sent")) {
+		return "Done, I sent that to the team from your account email. We'll follow up with you there.";
+	}
+	return "I couldn't send another support email from your account today. You're limited to 2 per day, but you can still email hello@cap.so directly.";
 };
 
 const parseOpenAiContent = (payload: unknown) => {
@@ -147,7 +379,7 @@ const callOpenAi = async ({
 		body: JSON.stringify({
 			model: "gpt-4o-mini",
 			temperature: 0.65,
-			max_tokens: 500,
+			max_tokens: MESSENGER_MAX_TOKENS,
 			messages: [
 				{ role: "system", content: systemPrompt },
 				...mapHistoryForLlm(history),
@@ -178,7 +410,7 @@ const callGroq = async ({
 	const completion = await client.chat.completions.create({
 		model: GROQ_MODEL,
 		temperature: 0.65,
-		max_tokens: 500,
+		max_tokens: MESSENGER_MAX_TOKENS,
 		messages: [
 			{ role: "system", content: systemPrompt },
 			...mapHistoryForLlm(history),
@@ -195,11 +427,13 @@ export const generateMessengerAgentReply = async ({
 	identityTag,
 	query,
 	history,
+	supportEmailTool = null,
 }: {
 	userIdentity: string;
 	identityTag: string;
 	query: string;
 	history: ConversationMessage[];
+	supportEmailTool?: SupportEmailTool | null;
 }) => {
 	const [personalContext, knowledgeContext] = await Promise.all([
 		searchSupermemory({ query, containerTag: identityTag, limit: 4 }).catch(
@@ -215,19 +449,34 @@ export const generateMessengerAgentReply = async ({
 	const systemPrompt = buildSystemPrompt({
 		userIdentity,
 		context: normalizeContext([...knowledgeContext, ...personalContext]),
+		supportEmailAvailable: Boolean(supportEmailTool),
 	});
 
-	const fromAnthropic = await callAnthropic({ systemPrompt, history }).catch(
-		() => null,
-	);
+	const fromAnthropic = await callAnthropic({
+		systemPrompt,
+		history,
+		supportEmailTool,
+	}).catch(() => null);
 	if (fromAnthropic) return fromAnthropic;
 
-	const fromOpenAi = await callOpenAi({ systemPrompt, history }).catch(
-		() => null,
-	);
+	const fallbackSystemPrompt = supportEmailTool
+		? buildSystemPrompt({
+				userIdentity,
+				context: normalizeContext([...knowledgeContext, ...personalContext]),
+				supportEmailAvailable: false,
+			})
+		: systemPrompt;
+
+	const fromOpenAi = await callOpenAi({
+		systemPrompt: fallbackSystemPrompt,
+		history,
+	}).catch(() => null);
 	if (fromOpenAi) return fromOpenAi;
 
-	const fromGroq = await callGroq({ systemPrompt, history }).catch(() => null);
+	const fromGroq = await callGroq({
+		systemPrompt: fallbackSystemPrompt,
+		history,
+	}).catch(() => null);
 	if (fromGroq) return fromGroq;
 
 	return "Oh no, I'm so sorry about this! I'm having a little technical hiccup on my end. Someone from the team will jump in here shortly to help you out though!";
