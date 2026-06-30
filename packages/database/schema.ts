@@ -35,6 +35,8 @@ import { relations } from "drizzle-orm/relations";
 import { nanoIdLength } from "./helpers.ts";
 import type { VideoEditSpec, VideoMetadata } from "./types/index.ts";
 
+export type AuthApiKeySource = "desktop" | "extension" | "mobile";
+
 type GoogleDriveStorageQuotaCache = {
 	limit?: string | null;
 	usage?: string | null;
@@ -740,6 +742,7 @@ export const authApiKeys = mysqlTable(
 	{
 		id: varchar("id", { length: 36 }).notNull().primaryKey(),
 		userId: nanoId("userId").notNull().$type<User.UserId>(),
+		source: varchar("source", { length: 32 }).$type<AuthApiKeySource>(),
 		createdAt: timestamp("createdAt").defaultNow().notNull(),
 	},
 	(table) => ({

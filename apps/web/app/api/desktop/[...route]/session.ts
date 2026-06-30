@@ -186,7 +186,9 @@ app.get(
 			};
 		} else {
 			const id = crypto.randomUUID();
-			await db().insert(authApiKeys).values({ id, userId: user.id });
+			await db()
+				.insert(authApiKeys)
+				.values({ id, userId: user.id, source: "desktop" });
 
 			data = { type: "api_key", api_key: id };
 		}

@@ -52,6 +52,7 @@ export class Extensions extends Effect.Service<Extensions>()("Extensions", {
 					db.insert(Db.authApiKeys).values({
 						id: authApiKey,
 						userId,
+						source: "extension",
 					}),
 				);
 

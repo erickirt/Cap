@@ -315,9 +315,20 @@ const createMobileApiKey = Effect.fn("Mobile.createMobileApiKey")(function* (
 	const database = yield* Database;
 	const apiKey = crypto.randomUUID();
 	yield* database.use((db) =>
-		db.insert(Db.authApiKeys).values({
-			id: apiKey,
-			userId,
+		db.transaction(async (tx) => {
+			await tx
+				.delete(Db.authApiKeys)
+				.where(
+					and(
+						eq(Db.authApiKeys.userId, userId),
+						eq(Db.authApiKeys.source, "mobile"),
+					),
+				);
+			await tx.insert(Db.authApiKeys).values({
+				id: apiKey,
+				userId,
+				source: "mobile",
+			});
 		}),
 	);
 
