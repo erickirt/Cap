@@ -18,6 +18,7 @@ interface SharedCapCardProps {
 		totalReactions: number;
 		ownerName: string | null;
 		metadata?: VideoMetadata;
+		isScreenshot: boolean;
 		hasPassword?: boolean;
 		hasInheritedPassword?: boolean;
 		inheritedPasswordSources?: SpaceRuleSource[];

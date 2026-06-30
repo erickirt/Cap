@@ -53,6 +53,7 @@ type SharedVideoData = {
 	totalReactions: number;
 	ownerName: string | null;
 	metadata?: VideoMetadata;
+	isScreenshot: boolean;
 	hasPassword?: boolean;
 	hasInheritedPassword?: boolean;
 	inheritedPasswordSources?: SpaceRuleSource[];
@@ -420,7 +421,9 @@ export const SharedCaps = ({
 
 			{data.length > 0 && (
 				<>
-					<h1 className="mb-4 text-2xl font-medium text-gray-12">Videos</h1>
+					<h1 className="mb-4 text-2xl font-medium text-gray-12">
+						Videos and screenshots
+					</h1>
 					<div className="grid grid-cols-1 gap-4 sm:gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
 						{data.map((cap) => {
 							const isOwner = cap.ownerId === currentUserId;
