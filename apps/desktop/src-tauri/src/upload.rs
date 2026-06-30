@@ -112,6 +112,8 @@ fn content_type_for_upload_subpath(subpath: &str) -> &'static str {
         "video/mp4"
     } else if subpath.ends_with(".jpg") || subpath.ends_with(".jpeg") {
         "image/jpeg"
+    } else if subpath.ends_with(".png") {
+        "image/png"
     } else if subpath.ends_with(".aac") {
         "audio/aac"
     } else if subpath.ends_with(".webm") {
@@ -254,25 +256,72 @@ async fn file_reader_stream(path: impl AsRef<Path>) -> Result<(ReaderStream<File
     Ok((ReaderStream::new(file), metadata.len()))
 }
 
-#[instrument(skip(app))]
-pub async fn upload_image(
+fn screenshot_upload_subpath(content_type: &str) -> &'static str {
+    if content_type.eq_ignore_ascii_case("image/png") {
+        "screenshot/screen-capture.png"
+    } else {
+        "screenshot/screen-capture.jpg"
+    }
+}
+
+fn screenshot_content_type_from_path(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        _ => "image/jpeg",
+    }
+}
+
+pub async fn upload_screenshot_bytes(
     app: &AppHandle,
-    file_path: PathBuf,
+    image_bytes: Vec<u8>,
+    content_type: &str,
+    video_id: Option<String>,
+    organization_id: Option<String>,
 ) -> Result<UploadedItem, AuthedApiError> {
-    let file_name = file_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or("Invalid file path")?
-        .to_string();
+    let s3_config = create_or_get_video(app, true, video_id, None, None, organization_id).await?;
+    let subpath = screenshot_upload_subpath(content_type);
+    let total_size = image_bytes.len() as u64;
 
-    let s3_config = create_or_get_video(app, true, None, None, None, None).await?;
-
-    let (stream, total_size) = file_reader_stream(file_path).await?;
     singlepart_uploader(
         app.clone(),
         PresignedS3PutRequest {
             video_id: s3_config.id.clone(),
-            subpath: file_name,
+            subpath: subpath.to_string(),
+            method: PresignedS3PutRequestMethod::Put,
+            meta: None,
+        },
+        total_size,
+        stream::once(async move { Ok::<_, std::io::Error>(Bytes::from(image_bytes)) }),
+    )
+    .await?;
+
+    Ok(UploadedItem {
+        link: app.make_app_url(format!("/s/{}", &s3_config.id)).await,
+        id: s3_config.id,
+    })
+}
+
+pub async fn upload_screenshot_file(
+    app: &AppHandle,
+    file_path: PathBuf,
+    video_id: Option<String>,
+    organization_id: Option<String>,
+) -> Result<UploadedItem, AuthedApiError> {
+    let content_type = screenshot_content_type_from_path(&file_path);
+    let s3_config = create_or_get_video(app, true, video_id, None, None, organization_id).await?;
+    let subpath = screenshot_upload_subpath(content_type);
+    let (stream, total_size) = file_reader_stream(file_path).await?;
+
+    singlepart_uploader(
+        app.clone(),
+        PresignedS3PutRequest {
+            video_id: s3_config.id.clone(),
+            subpath: subpath.to_string(),
             method: PresignedS3PutRequestMethod::Put,
             meta: None,
         },
@@ -319,7 +368,12 @@ pub async fn create_or_get_video_with_mode(
     recording_mode: &str,
 ) -> Result<S3UploadMeta, AuthedApiError> {
     let mut s3_config_url = if let Some(id) = video_id {
-        format!("/api/desktop/video/create?recordingMode={recording_mode}&videoId={id}")
+        let mut url =
+            format!("/api/desktop/video/create?recordingMode={recording_mode}&videoId={id}");
+        if is_screenshot {
+            url.push_str("&isScreenshot=true");
+        }
+        url
     } else if is_screenshot {
         format!("/api/desktop/video/create?recordingMode={recording_mode}&isScreenshot=true")
     } else {
@@ -790,6 +844,7 @@ impl PresignedUrlCache {
             },
         )
         .await
+        .map(|target| target.url)
     }
 
     async fn extend_prefetch(&self, app: &AppHandle, video_id: &str, from: u32, count: u32) {
@@ -1019,7 +1074,8 @@ impl SegmentUploader {
                 meta: None,
             },
         )
-        .await?;
+        .await?
+        .url;
 
         let client = app
             .state::<RetryableHttpClient>()
@@ -2273,15 +2329,23 @@ pub async fn singlepart_uploader(
     total_size: u64,
     stream: impl Stream<Item = io::Result<Bytes>> + Send + 'static,
 ) -> Result<(), AuthedApiError> {
-    let presigned_url = api::upload_signed(&app, request).await?;
+    let upload_target = api::upload_signed(&app, request).await?;
+    let presigned_url = upload_target.url;
 
-    let request = app
+    let mut request = app
         .state::<RetryableHttpClient>()
         .as_ref()
         .map_err(|err| format!("singlepart_uploader/client: {err:?}"))?
         .put(&presigned_url)
         .header("Content-Length", total_size)
         .body(reqwest::Body::wrap_stream(stream));
+
+    for (key, value) in upload_target.headers {
+        if key.eq_ignore_ascii_case("content-length") {
+            continue;
+        }
+        request = request.header(key, value);
+    }
 
     let resp = with_drive_content_range(request, &presigned_url, 0, total_size, total_size)
         .send()
@@ -2458,6 +2522,26 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    #[test]
+    fn screenshot_upload_subpath_matches_content_type() {
+        assert_eq!(
+            screenshot_upload_subpath("image/png"),
+            "screenshot/screen-capture.png"
+        );
+        assert_eq!(
+            screenshot_upload_subpath("image/jpeg"),
+            "screenshot/screen-capture.jpg"
+        );
+        assert_eq!(
+            screenshot_content_type_from_path(Path::new("screen-capture.png")),
+            "image/png"
+        );
+        assert_eq!(
+            screenshot_content_type_from_path(Path::new("screen-capture.jpg")),
+            "image/jpeg"
+        );
+    }
 
     #[tokio::test]
     async fn read_segment_data_returns_existing_file() {
