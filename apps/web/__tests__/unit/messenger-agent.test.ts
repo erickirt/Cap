@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const serverEnvMock = vi.hoisted(() =>
 	vi.fn(() => ({
@@ -54,6 +54,10 @@ describe("generateMessengerAgentReply", () => {
 		vi.clearAllMocks();
 		searchSupermemoryMock.mockResolvedValue([]);
 		getGroqClientMock.mockReturnValue(null);
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
 	});
 
 	it("uses Sonnet 5 and executes the constrained support email tool", async () => {
