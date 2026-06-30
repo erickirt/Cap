@@ -5211,20 +5211,7 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
                                 restore_main_windows_if_no_editors(app);
                             }
                             CapWindowId::Settings => {
-                                for (label, window) in app.webview_windows() {
-                                    if let Ok(id) = CapWindowId::from_str(&label) {
-                                        match id {
-                                            CapWindowId::TargetSelectOverlay { .. } => {
-                                                show_overlay(&window);
-                                            }
-                                            CapWindowId::Main => {
-                                                let _ = window.show();
-                                                restore_main_window_inputs(app);
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                }
+                                restore_main_and_target_select_windows(app);
 
                                 restore_camera_window(app);
 
@@ -5237,20 +5224,7 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
                                 return;
                             }
                             CapWindowId::Upgrade | CapWindowId::ModeSelect => {
-                                for (label, window) in app.webview_windows() {
-                                    if let Ok(id) = CapWindowId::from_str(&label) {
-                                        match id {
-                                            CapWindowId::TargetSelectOverlay { .. } => {
-                                                show_overlay(&window);
-                                            }
-                                            CapWindowId::Main => {
-                                                let _ = window.show();
-                                                restore_main_window_inputs(app);
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                }
+                                restore_main_and_target_select_windows(app);
                                 restore_camera_window(app);
                                 #[cfg(target_os = "macos")]
                                 return;
@@ -5610,6 +5584,32 @@ fn restore_main_windows_if_no_editors(app: &AppHandle) {
         }
 
         spawn_on_runtime(captions::release_ml_models());
+    }
+}
+
+fn restore_main_and_target_select_windows(app: &AppHandle) {
+    let target_select_overlays_hidden_for_restore = app
+        .try_state::<target_select_overlay::WindowFocusManager>()
+        .map(|focus_manager| focus_manager.take_overlay_restore_labels())
+        .unwrap_or_default();
+
+    for (label, window) in app.webview_windows() {
+        if let Ok(id) = CapWindowId::from_str(&label) {
+            match id {
+                CapWindowId::TargetSelectOverlay { .. } => {
+                    if window.is_visible().unwrap_or(false)
+                        || target_select_overlays_hidden_for_restore.contains(label.as_str())
+                    {
+                        show_overlay(&window);
+                    }
+                }
+                CapWindowId::Main => {
+                    let _ = window.show();
+                    restore_main_window_inputs(app);
+                }
+                _ => {}
+            }
+        }
     }
 }
 
