@@ -22,6 +22,9 @@ export const isMobileAuthRedirectUri = (redirectUri: string) => {
 		if (redirectUrl.protocol === "cap:") {
 			return (
 				redirectUrl.hostname === "auth" &&
+				redirectUrl.username === "" &&
+				redirectUrl.password === "" &&
+				redirectUrl.port === "" &&
 				redirectUrl.pathname === "" &&
 				redirectUrl.search === "" &&
 				redirectUrl.hash === ""
@@ -31,6 +34,9 @@ export const isMobileAuthRedirectUri = (redirectUri: string) => {
 		if (
 			redirectUrl.protocol !== "exp+cap:" ||
 			redirectUrl.hostname !== "expo-development-client" ||
+			redirectUrl.username !== "" ||
+			redirectUrl.password !== "" ||
+			redirectUrl.port !== "" ||
 			redirectUrl.hash !== ""
 		) {
 			return false;

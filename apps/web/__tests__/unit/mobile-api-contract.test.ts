@@ -83,9 +83,13 @@ describe("mobile API contract schemas", () => {
 
 		expect(() => decodeRedirect("cap://auth/")).toThrow();
 		expect(() => decodeRedirect("cap://auth?next=cap://settings")).toThrow();
+		expect(() => decodeRedirect("cap://user:pass@auth")).toThrow();
 		expect(() => decodeRedirect("cap://settings")).toThrow();
 		expect(() => decodeRedirect("cap://auth.evil")).toThrow();
 		expect(() => decodeRedirect("https://cap.so/auth")).toThrow();
+		expect(() =>
+			decodeRedirect("exp+cap://expo-development-client:123/--/auth"),
+		).toThrow();
 		expect(() =>
 			decodeRedirect("exp+cap://expo-development-client/--/settings"),
 		).toThrow();
