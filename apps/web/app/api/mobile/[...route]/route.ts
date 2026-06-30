@@ -81,6 +81,9 @@ const toIsoString = (value: Date) => value.toISOString();
 
 const normalizeEmail = (email: string) => email.trim().toLowerCase();
 
+const getMobileEmailVerificationIdentifier = (email: string) =>
+	`mobile:${crypto.createHash("sha256").update(email).digest("hex")}`;
+
 const getAffectedRows = (result: unknown) => {
 	if (Array.isArray(result)) {
 		return (
@@ -348,25 +351,26 @@ const requestEmailSession = Effect.fn("Mobile.requestEmailSession")(function* (
 	const code = crypto.randomInt(100000, 1000000).toString();
 	const token = hashEmailCode(code);
 	const expires = new Date(Date.now() + emailCodeTtlMs);
+	const identifier = getMobileEmailVerificationIdentifier(email);
 	const database = yield* Database;
 
 	yield* database.use(async (db) => {
 		const [existingToken] = await db
 			.select({ identifier: Db.verificationTokens.identifier })
 			.from(Db.verificationTokens)
-			.where(eq(Db.verificationTokens.identifier, email))
+			.where(eq(Db.verificationTokens.identifier, identifier))
 			.limit(1);
 
 		if (existingToken) {
 			await db
 				.update(Db.verificationTokens)
 				.set({ token, expires })
-				.where(eq(Db.verificationTokens.identifier, email));
+				.where(eq(Db.verificationTokens.identifier, identifier));
 			return;
 		}
 
 		await db.insert(Db.verificationTokens).values({
-			identifier: email,
+			identifier,
 			token,
 			expires,
 		});
@@ -395,11 +399,12 @@ const verifyEmailSession = Effect.fn("Mobile.verifyEmailSession")(function* ({
 
 	const database = yield* Database;
 	const token = hashEmailCode(code);
+	const identifier = getMobileEmailVerificationIdentifier(email);
 	const verificationStatus = yield* database.use(async (db) => {
 		const [verificationToken] = await db
 			.select()
 			.from(Db.verificationTokens)
-			.where(eq(Db.verificationTokens.identifier, email))
+			.where(eq(Db.verificationTokens.identifier, identifier))
 			.limit(1);
 
 		if (!verificationToken) return "missing" as const;
@@ -407,14 +412,14 @@ const verifyEmailSession = Effect.fn("Mobile.verifyEmailSession")(function* ({
 		if (verificationToken.expires.valueOf() < Date.now()) {
 			await db
 				.delete(Db.verificationTokens)
-				.where(eq(Db.verificationTokens.identifier, email));
+				.where(eq(Db.verificationTokens.identifier, identifier));
 			return "expired" as const;
 		}
 
 		if (verificationToken.token !== token) {
 			await db
 				.delete(Db.verificationTokens)
-				.where(eq(Db.verificationTokens.identifier, email));
+				.where(eq(Db.verificationTokens.identifier, identifier));
 			return "invalid" as const;
 		}
 
@@ -422,7 +427,7 @@ const verifyEmailSession = Effect.fn("Mobile.verifyEmailSession")(function* ({
 			.delete(Db.verificationTokens)
 			.where(
 				and(
-					eq(Db.verificationTokens.identifier, email),
+					eq(Db.verificationTokens.identifier, identifier),
 					eq(Db.verificationTokens.token, token),
 				),
 			);
@@ -843,6 +848,39 @@ const getCapById = Effect.fn("Mobile.getCapById")(function* (
 	return { row, cap: toMobileCapSummary(row, thumbnailUrl, analytics) };
 });
 
+const assertCanCreateFeedback = Effect.fn("Mobile.assertCanCreateFeedback")(
+	function* (videoId: Video.VideoId) {
+		const user = yield* CurrentUser;
+		const database = yield* Database;
+		const [row] = yield* database.use((db) =>
+			db
+				.select({
+					ownerId: Db.videos.ownerId,
+					sharedOrganizationId: Db.sharedVideos.organizationId,
+				})
+				.from(Db.videos)
+				.leftJoin(
+					Db.sharedVideos,
+					and(
+						eq(Db.sharedVideos.videoId, Db.videos.id),
+						eq(Db.sharedVideos.organizationId, user.activeOrganizationId),
+					),
+				)
+				.where(eq(Db.videos.id, videoId))
+				.limit(1),
+		);
+
+		if (!row) return yield* Effect.fail(new HttpApiError.NotFound());
+		if (row.ownerId === user.id) return;
+		if (row.sharedOrganizationId) {
+			yield* assertOrganizationAccess(row.sharedOrganizationId);
+			return;
+		}
+
+		return yield* Effect.fail(new HttpApiError.NotFound());
+	},
+);
+
 const getComments = Effect.fn("Mobile.getComments")(function* (
 	videoId: Video.VideoId,
 ) {
@@ -931,7 +969,7 @@ const createMobileComment = Effect.fn("Mobile.createComment")(function* ({
 	type: "text" | "emoji";
 }) {
 	const user = yield* CurrentUser;
-	yield* getCapById(videoId);
+	yield* assertCanCreateFeedback(videoId);
 
 	const trimmedContent = content.trim();
 	if (trimmedContent.length === 0) {
