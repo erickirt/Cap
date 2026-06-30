@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     str::FromStr,
     sync::{Mutex, PoisonError},
     time::{Duration, Instant},
@@ -318,6 +318,10 @@ pub fn close_target_select_overlay_windows(app: &AppHandle) {
     let state = app.try_state::<WindowFocusManager>();
     let mut saw_overlay = false;
 
+    if let Some(state) = state.as_ref() {
+        state.clear_overlay_restore_labels();
+    }
+
     for (id, window) in app.webview_windows() {
         if let Ok(CapWindowId::TargetSelectOverlay { display_id }) = CapWindowId::from_str(&id) {
             saw_overlay = true;
@@ -430,6 +434,7 @@ pub struct WindowFocusManager {
     task: Mutex<Option<JoinHandle<()>>>,
     tasks: Mutex<HashMap<String, JoinHandle<()>>>,
     escape_registered: Mutex<bool>,
+    restore_overlay_labels: Mutex<HashSet<String>>,
 }
 
 impl WindowFocusManager {
@@ -507,6 +512,30 @@ impl WindowFocusManager {
         if let Some(task) = tasks.insert(task_id, handle) {
             task.abort();
         }
+    }
+
+    pub fn remember_overlay_for_restore(&self, label: String) {
+        let mut labels = self
+            .restore_overlay_labels
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        labels.insert(label);
+    }
+
+    pub fn take_overlay_restore_labels(&self) -> HashSet<String> {
+        let mut labels = self
+            .restore_overlay_labels
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        std::mem::take(&mut *labels)
+    }
+
+    pub fn clear_overlay_restore_labels(&self) {
+        let mut labels = self
+            .restore_overlay_labels
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        labels.clear();
     }
 
     fn finish<R: tauri::Runtime>(&self, id: &DisplayId, global_shortcut: &GlobalShortcut<R>) {
