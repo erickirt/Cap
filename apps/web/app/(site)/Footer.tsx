@@ -1,7 +1,6 @@
 "use client";
 
 import { Logo } from "@cap/ui";
-import type { IconDefinition } from "@fortawesome/fontawesome-svg-core";
 import {
 	faDiscord,
 	faLinkedinIn,
@@ -10,7 +9,7 @@ import {
 import { faChevronDown } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import Link from "next/link";
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { useState } from "react";
 
 type FooterLink = {
@@ -113,9 +112,17 @@ const footerLinks = {
 	] as FooterLink[],
 };
 
-const socialLinks: { label: string; href: string; icon: IconDefinition }[] = [
+const socialLinks: {
+	label: string;
+	href: string;
+	icon: ComponentProps<typeof FontAwesomeIcon>["icon"];
+}[] = [
 	{ label: "X (@Cap)", href: "https://x.com/cap", icon: faXTwitter },
-	{ label: "Discord", href: "https://discord.gg/y8gdQ3WRN3", icon: faDiscord },
+	{
+		label: "Discord",
+		href: "https://discord.gg/y8gdQ3WRN3",
+		icon: faDiscord,
+	},
 	{
 		label: "LinkedIn",
 		href: "https://www.linkedin.com/company/caprecorder/",

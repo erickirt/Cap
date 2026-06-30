@@ -365,7 +365,10 @@ function createScreenshotEditorContext() {
 			setIsRenderReady(true);
 
 			try {
-				const imageData = new ImageData(processedData, width, height);
+				const imageBuffer = new ArrayBuffer(processedData.byteLength);
+				const imagePixels = new Uint8ClampedArray(imageBuffer);
+				imagePixels.set(processedData);
+				const imageData = new ImageData(imagePixels, width, height);
 				const bitmap = await createImageBitmap(imageData);
 				const existing = latestFrame();
 				if (existing?.bitmap && existing.bitmap !== bitmap) {
