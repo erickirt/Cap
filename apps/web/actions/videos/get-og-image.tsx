@@ -1,6 +1,6 @@
 import { db } from "@cap/database";
 import { videos } from "@cap/database/schema";
-import { Storage } from "@cap/web-backend";
+import { findScreenshotObjectKey, Storage } from "@cap/web-backend";
 import type { Video } from "@cap/web-domain";
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
@@ -61,7 +61,6 @@ export async function generateVideoOgImage(videoId: Video.VideoId) {
 		);
 	}
 
-	const screenshotKey = `${video.ownerId}/${video.id}/screenshot/screen-capture.jpg`;
 	let screenshotUrl = null;
 
 	try {
@@ -69,7 +68,14 @@ export async function generateVideoOgImage(videoId: Video.VideoId) {
 			const [bucket] = yield* Storage.getAccessForVideo(
 				decodeStorageVideo(video),
 			);
+			const listResponse = yield* bucket.listObjects({
+				prefix: `${video.ownerId}/${video.id}/`,
+			});
+			const screenshotKey = findScreenshotObjectKey(
+				listResponse.Contents || [],
+			);
 
+			if (!screenshotKey) return;
 			screenshotUrl = yield* bucket.getSignedObjectUrl(screenshotKey);
 		}).pipe(runPromise);
 	} catch (error) {
