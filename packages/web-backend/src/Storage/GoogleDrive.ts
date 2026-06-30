@@ -1009,6 +1009,23 @@ export const createGoogleDriveResumableUpload = (
 					}),
 				);
 			}
+			yield* repo.upsertObject({
+				integrationId: input.integrationId,
+				ownerId: input.ownerId,
+				videoId: input.videoId,
+				objectKey: input.key,
+				providerObjectId: existing.value.providerObjectId,
+				uploadSessionUrl: uploadUrl,
+				uploadStatus: "pending",
+				contentType,
+				contentLength: input.contentLength ?? existing.value.contentLength,
+				metadata: {
+					...(existing.value.metadata ?? {}),
+					videoId: input.videoId ?? undefined,
+					fileName: getDriveFileName(input.key),
+					contentType,
+				},
+			});
 			return uploadUrl;
 		}
 
