@@ -210,416 +210,289 @@ pub async fn save_model_file(path: String, data: Vec<u8>) -> Result<(), String> 
     std::fs::write(&path, &data).map_err(|e| format!("Failed to write model file: {e}"))
 }
 
+enum AudioExtractionSource {
+    ProjectDirectory {
+        base_path: PathBuf,
+        meta_path: PathBuf,
+    },
+    MediaFile(PathBuf),
+}
+
+fn resolve_audio_extraction_source(video_path: &str) -> Result<AudioExtractionSource, String> {
+    let path = PathBuf::from(video_path);
+    let metadata =
+        std::fs::metadata(&path).map_err(|e| format!("Failed to read video path metadata: {e}"))?;
+
+    if metadata.is_dir() {
+        let meta_path = path.join("recording-meta.json");
+        if !meta_path.is_file() {
+            return Err("Recording directory is missing recording-meta.json".to_string());
+        }
+
+        return Ok(AudioExtractionSource::ProjectDirectory {
+            base_path: path,
+            meta_path,
+        });
+    }
+
+    if metadata.is_file() {
+        return Ok(AudioExtractionSource::MediaFile(path));
+    }
+
+    Err("Video path is neither a file nor a recording directory".to_string())
+}
+
 async fn extract_audio_from_video(video_path: &str, output_path: &PathBuf) -> Result<(), String> {
     log::info!("=== EXTRACT AUDIO START ===");
     log::info!("Attempting to extract audio from: {video_path}");
     log::info!("Output path: {output_path:?}");
 
-    if video_path.ends_with(".cap") {
-        log::info!("Detected .cap project directory");
+    match resolve_audio_extraction_source(video_path)? {
+        AudioExtractionSource::ProjectDirectory {
+            base_path,
+            meta_path,
+        } => {
+            log::info!("Detected recording project directory");
 
-        let meta_path = std::path::Path::new(video_path).join("recording-meta.json");
-        let meta_content = std::fs::read_to_string(&meta_path)
-            .map_err(|e| format!("Failed to read recording metadata: {e}"))?;
+            let meta_content = std::fs::read_to_string(&meta_path)
+                .map_err(|e| format!("Failed to read recording metadata: {e}"))?;
 
-        let meta: serde_json::Value = serde_json::from_str(&meta_content)
-            .map_err(|e| format!("Failed to parse recording metadata: {e}"))?;
+            let meta: serde_json::Value = serde_json::from_str(&meta_content)
+                .map_err(|e| format!("Failed to parse recording metadata: {e}"))?;
 
-        let base_path = std::path::Path::new(video_path);
-
-        struct SegmentAudio {
-            sources: Vec<PathBuf>,
-        }
-
-        let mut segment_audios: Vec<SegmentAudio> = Vec::new();
-
-        if let Some(segments) = meta["segments"].as_array() {
-            for segment in segments {
-                let mut sources = Vec::new();
-                let mut push_source = |path: Option<&str>| {
-                    if let Some(path) = path {
-                        let full_path = base_path.join(path);
-                        if full_path.exists() && !sources.contains(&full_path) {
-                            sources.push(full_path);
-                        }
-                    }
-                };
-
-                push_source(segment["system_audio"]["path"].as_str());
-                push_source(segment["mic"]["path"].as_str());
-                push_source(segment["audio"]["path"].as_str());
-
-                if !sources.is_empty() {
-                    segment_audios.push(SegmentAudio { sources });
-                }
-            }
-        }
-
-        if segment_audios.is_empty() {
-            return Err("No audio sources found in the recording metadata".to_string());
-        }
-
-        log::info!("Found {} segments with audio sources", segment_audios.len());
-
-        let mut final_samples: Vec<f32> = Vec::new();
-
-        for (segment_idx, segment_audio) in segment_audios.iter().enumerate() {
-            log::info!(
-                "Processing segment {} with {} audio sources",
-                segment_idx,
-                segment_audio.sources.len()
-            );
-
-            let mut segment_samples: Vec<f32> = Vec::new();
-
-            for source in &segment_audio.sources {
-                match AudioData::from_file(source) {
-                    Ok(audio) => {
-                        log::info!(
-                            "Processing audio source {:?}: {} channels, {} samples",
-                            source,
-                            audio.channels(),
-                            audio.sample_count()
-                        );
-
-                        let mono_samples = if audio.channels() > 1 {
-                            convert_to_mono(audio.samples(), audio.channels() as usize)
-                        } else {
-                            audio.samples().to_vec()
-                        };
-
-                        if segment_samples.is_empty() {
-                            segment_samples = mono_samples;
-                        } else {
-                            mix_samples(&mut segment_samples, &mono_samples);
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to process audio source {source:?}: {e}");
-                        continue;
-                    }
-                }
+            struct SegmentAudio {
+                sources: Vec<PathBuf>,
             }
 
-            if !segment_samples.is_empty() {
-                log::info!(
-                    "Segment {} produced {} samples, appending to final audio",
-                    segment_idx,
-                    segment_samples.len()
-                );
-                final_samples.extend(segment_samples);
-            }
-        }
+            let mut segment_audios: Vec<SegmentAudio> = Vec::new();
 
-        let mut mixed_samples = final_samples;
-        let channel_count = 1_usize;
-
-        if mixed_samples.is_empty() {
-            log::error!("No audio samples after processing all sources");
-            return Err("Failed to process any audio sources".to_string());
-        }
-
-        let gain = normalize_audio_for_transcription(&mut mixed_samples);
-        if (gain - 1.0).abs() > 0.01 {
-            log::info!("Applied transcription audio gain: {gain:.2}x");
-        }
-
-        log::info!("Final mixed audio: {} samples", mixed_samples.len());
-        let mix_rms =
-            (mixed_samples.iter().map(|&s| s * s).sum::<f32>() / mixed_samples.len() as f32).sqrt();
-        log::info!("Mixed audio RMS: {mix_rms:.4}");
-
-        if mix_rms < 0.001 {
-            log::warn!(
-                "WARNING: Mixed audio RMS is very low ({mix_rms:.6}) - audio may be nearly silent!"
-            );
-        }
-
-        let mut output = avformat::output(&output_path)
-            .map_err(|e| format!("Failed to create output file: {e}"))?;
-
-        let codec = avcodec::encoder::find_by_name("pcm_s16le")
-            .ok_or_else(|| "PCM encoder not found".to_string())?;
-
-        let mut encoder = avcodec::Context::new()
-            .encoder()
-            .audio()
-            .map_err(|e| format!("Failed to create encoder: {e}"))?;
-
-        encoder.set_rate(WHISPER_SAMPLE_RATE as i32);
-        let channel_layout = ChannelLayout::MONO;
-        encoder.set_channel_layout(channel_layout);
-        encoder.set_format(avformat::Sample::I16(avformat::sample::Type::Packed));
-
-        let mut encoder = encoder
-            .open_as(codec)
-            .map_err(|e| format!("Failed to open encoder: {e}"))?;
-
-        let mut stream = output
-            .add_stream(codec)
-            .map_err(|e| format!("Failed to add stream: {e}"))?;
-        stream.set_parameters(&encoder);
-
-        output
-            .write_header()
-            .map_err(|e| format!("Failed to write header: {e}"))?;
-
-        let mut resampler = resampling::Context::get(
-            avformat::Sample::F32(avformat::sample::Type::Packed),
-            channel_layout,
-            AudioData::SAMPLE_RATE,
-            avformat::Sample::I16(avformat::sample::Type::Packed),
-            channel_layout,
-            WHISPER_SAMPLE_RATE,
-        )
-        .map_err(|e| format!("Failed to create resampler: {e}"))?;
-
-        let frame_size = encoder.frame_size() as usize;
-        let frame_size = if frame_size == 0 { 1024 } else { frame_size };
-
-        log::info!(
-            "Using frame size: {}, total samples: {}, channel count: {}",
-            frame_size,
-            mixed_samples.len(),
-            channel_count
-        );
-
-        let mut frame = ffmpeg::frame::Audio::new(
-            avformat::Sample::I16(avformat::sample::Type::Packed),
-            frame_size,
-            ChannelLayout::MONO,
-        );
-        frame.set_rate(WHISPER_SAMPLE_RATE);
-
-        if !mixed_samples.is_empty() && frame_size * channel_count > 0 {
-            for (chunk_idx, chunk) in mixed_samples.chunks(frame_size * channel_count).enumerate() {
-                if chunk_idx % 100 == 0 {
-                    log::info!("Processing chunk {}, size: {}", chunk_idx, chunk.len());
-                }
-
-                let mut input_frame = ffmpeg::frame::Audio::new(
-                    avformat::Sample::F32(avformat::sample::Type::Packed),
-                    chunk.len() / channel_count,
-                    channel_layout,
-                );
-                input_frame.set_rate(AudioData::SAMPLE_RATE);
-
-                let bytes = unsafe {
-                    std::slice::from_raw_parts(
-                        chunk.as_ptr() as *const u8,
-                        std::mem::size_of_val(chunk),
-                    )
-                };
-                input_frame.data_mut(0)[0..bytes.len()].copy_from_slice(bytes);
-
-                let mut output_frame = ffmpeg::frame::Audio::new(
-                    avformat::Sample::I16(avformat::sample::Type::Packed),
-                    frame_size,
-                    ChannelLayout::MONO,
-                );
-                output_frame.set_rate(WHISPER_SAMPLE_RATE);
-
-                match resampler.run(&input_frame, &mut output_frame) {
-                    Ok(_) => {
-                        if chunk_idx % 100 == 0 {
-                            log::info!(
-                                "Successfully resampled chunk {}, output samples: {}",
-                                chunk_idx,
-                                output_frame.samples()
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("Failed to resample chunk {chunk_idx}: {e}");
-                        continue;
-                    }
-                }
-
-                if let Err(e) = encoder.send_frame(&output_frame) {
-                    log::error!("Failed to send frame to encoder: {e}");
-                    continue;
-                }
-
-                loop {
-                    let mut packet = ffmpeg::Packet::empty();
-                    match encoder.receive_packet(&mut packet) {
-                        Ok(_) => {
-                            if let Err(e) = packet.write_interleaved(&mut output) {
-                                log::error!("Failed to write packet: {e}");
+            if let Some(segments) = meta["segments"].as_array() {
+                for segment in segments {
+                    let mut sources = Vec::new();
+                    let mut push_source = |path: Option<&str>| {
+                        if let Some(path) = path {
+                            let full_path = base_path.join(path);
+                            if full_path.exists() && !sources.contains(&full_path) {
+                                sources.push(full_path);
                             }
                         }
-                        Err(_) => break,
+                    };
+
+                    push_source(segment["system_audio"]["path"].as_str());
+                    push_source(segment["mic"]["path"].as_str());
+                    push_source(segment["audio"]["path"].as_str());
+
+                    if !sources.is_empty() {
+                        segment_audios.push(SegmentAudio { sources });
                     }
                 }
             }
-        }
 
-        encoder
-            .send_eof()
-            .map_err(|e| format!("Failed to send EOF: {e}"))?;
-
-        loop {
-            let mut packet = ffmpeg::Packet::empty();
-            let received = encoder.receive_packet(&mut packet);
-
-            if received.is_err() {
-                break;
+            if segment_audios.is_empty() {
+                return Err("No audio sources found in the recording metadata".to_string());
             }
 
-            {
-                if let Err(e) = packet.write_interleaved(&mut output) {
-                    return Err(format!("Failed to write final packet: {e}"));
+            log::info!("Found {} segments with audio sources", segment_audios.len());
+
+            let mut final_samples: Vec<f32> = Vec::new();
+
+            for (segment_idx, segment_audio) in segment_audios.iter().enumerate() {
+                log::info!(
+                    "Processing segment {} with {} audio sources",
+                    segment_idx,
+                    segment_audio.sources.len()
+                );
+
+                let mut segment_samples: Vec<f32> = Vec::new();
+
+                for source in &segment_audio.sources {
+                    match AudioData::from_file(source) {
+                        Ok(audio) => {
+                            log::info!(
+                                "Processing audio source {:?}: {} channels, {} samples",
+                                source,
+                                audio.channels(),
+                                audio.sample_count()
+                            );
+
+                            let mono_samples = if audio.channels() > 1 {
+                                convert_to_mono(audio.samples(), audio.channels() as usize)
+                            } else {
+                                audio.samples().to_vec()
+                            };
+
+                            if segment_samples.is_empty() {
+                                segment_samples = mono_samples;
+                            } else {
+                                mix_samples(&mut segment_samples, &mono_samples);
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to process audio source {source:?}: {e}");
+                            continue;
+                        }
+                    }
+                }
+
+                if !segment_samples.is_empty() {
+                    log::info!(
+                        "Segment {} produced {} samples, appending to final audio",
+                        segment_idx,
+                        segment_samples.len()
+                    );
+                    final_samples.extend(segment_samples);
                 }
             }
-        }
 
-        output
-            .write_trailer()
-            .map_err(|e| format!("Failed to write trailer: {e}"))?;
+            let mut mixed_samples = final_samples;
+            let channel_count = 1_usize;
 
-        log::info!("=== EXTRACT AUDIO END (from .cap) ===");
-        Ok(())
-    } else {
-        let mut input =
-            avformat::input(&video_path).map_err(|e| format!("Failed to open video file: {e}"))?;
+            if mixed_samples.is_empty() {
+                log::error!("No audio samples after processing all sources");
+                return Err("Failed to process any audio sources".to_string());
+            }
 
-        let stream = input
-            .streams()
-            .best(ffmpeg::media::Type::Audio)
-            .ok_or_else(|| "No audio stream found".to_string())?;
+            let gain = normalize_audio_for_transcription(&mut mixed_samples);
+            if (gain - 1.0).abs() > 0.01 {
+                log::info!("Applied transcription audio gain: {gain:.2}x");
+            }
 
-        let codec_params = stream.parameters();
+            log::info!("Final mixed audio: {} samples", mixed_samples.len());
+            let mix_rms = (mixed_samples.iter().map(|&s| s * s).sum::<f32>()
+                / mixed_samples.len() as f32)
+                .sqrt();
+            log::info!("Mixed audio RMS: {mix_rms:.4}");
 
-        let decoder_ctx = avcodec::Context::from_parameters(codec_params.clone())
-            .map_err(|e| format!("Failed to create decoder context: {e}"))?;
+            if mix_rms < 0.001 {
+                log::warn!(
+                    "WARNING: Mixed audio RMS is very low ({mix_rms:.6}) - audio may be nearly silent!"
+                );
+            }
 
-        let mut decoder = decoder_ctx
-            .decoder()
-            .audio()
-            .map_err(|e| format!("Failed to create decoder: {e}"))?;
+            let mut output = avformat::output(&output_path)
+                .map_err(|e| format!("Failed to create output file: {e}"))?;
 
-        let decoder_format = decoder.format();
-        let decoder_channel_layout = decoder.channel_layout();
-        let decoder_rate = decoder.rate();
+            let codec = avcodec::encoder::find_by_name("pcm_s16le")
+                .ok_or_else(|| "PCM encoder not found".to_string())?;
 
-        let channel_layout = ChannelLayout::MONO;
+            let mut encoder = avcodec::Context::new()
+                .encoder()
+                .audio()
+                .map_err(|e| format!("Failed to create encoder: {e}"))?;
 
-        let mut encoder_ctx = avcodec::Context::new()
-            .encoder()
-            .audio()
-            .map_err(|e| format!("Failed to create encoder: {e}"))?;
+            encoder.set_rate(WHISPER_SAMPLE_RATE as i32);
+            let channel_layout = ChannelLayout::MONO;
+            encoder.set_channel_layout(channel_layout);
+            encoder.set_format(avformat::Sample::I16(avformat::sample::Type::Packed));
 
-        encoder_ctx.set_rate(WHISPER_SAMPLE_RATE as i32);
-        encoder_ctx.set_channel_layout(channel_layout);
-        encoder_ctx.set_format(avformat::Sample::I16(avformat::sample::Type::Packed));
+            let mut encoder = encoder
+                .open_as(codec)
+                .map_err(|e| format!("Failed to open encoder: {e}"))?;
 
-        let codec = avcodec::encoder::find_by_name("pcm_s16le")
-            .ok_or_else(|| "PCM encoder not found".to_string())?;
-
-        let mut encoder = encoder_ctx
-            .open_as(codec)
-            .map_err(|e| format!("Failed to open encoder: {e}"))?;
-
-        let mut output = avformat::output(&output_path)
-            .map_err(|e| format!("Failed to create output file: {e}"))?;
-
-        let stream_params = {
-            let mut output_stream = output
+            let mut stream = output
                 .add_stream(codec)
                 .map_err(|e| format!("Failed to add stream: {e}"))?;
+            stream.set_parameters(&encoder);
 
-            output_stream.set_parameters(&encoder);
+            output
+                .write_header()
+                .map_err(|e| format!("Failed to write header: {e}"))?;
 
-            (output_stream.index(), output_stream.id())
-        };
+            let mut resampler = resampling::Context::get(
+                avformat::Sample::F32(avformat::sample::Type::Packed),
+                channel_layout,
+                AudioData::SAMPLE_RATE,
+                avformat::Sample::I16(avformat::sample::Type::Packed),
+                channel_layout,
+                WHISPER_SAMPLE_RATE,
+            )
+            .map_err(|e| format!("Failed to create resampler: {e}"))?;
 
-        output
-            .write_header()
-            .map_err(|e| format!("Failed to write header: {e}"))?;
+            let frame_size = encoder.frame_size() as usize;
+            let frame_size = if frame_size == 0 { 1024 } else { frame_size };
 
-        let mut resampler = resampling::Context::get(
-            decoder_format,
-            decoder_channel_layout,
-            decoder_rate,
-            avformat::Sample::I16(avformat::sample::Type::Packed),
-            channel_layout,
-            WHISPER_SAMPLE_RATE,
-        )
-        .map_err(|e| format!("Failed to create resampler: {e}"))?;
+            log::info!(
+                "Using frame size: {}, total samples: {}, channel count: {}",
+                frame_size,
+                mixed_samples.len(),
+                channel_count
+            );
 
-        let mut decoded_frame = ffmpeg::frame::Audio::empty();
-        let mut resampled_frame = ffmpeg::frame::Audio::new(
-            avformat::Sample::I16(avformat::sample::Type::Packed),
-            encoder.frame_size() as usize,
-            channel_layout,
-        );
+            let mut frame = ffmpeg::frame::Audio::new(
+                avformat::Sample::I16(avformat::sample::Type::Packed),
+                frame_size,
+                ChannelLayout::MONO,
+            );
+            frame.set_rate(WHISPER_SAMPLE_RATE);
 
-        let input_stream_index = stream.index();
-
-        let mut packet_queue = Vec::new();
-
-        {
-            for (stream_idx, packet) in input.packets() {
-                if stream_idx.index() == input_stream_index
-                    && let Some(data) = packet.data()
+            if !mixed_samples.is_empty() && frame_size * channel_count > 0 {
+                for (chunk_idx, chunk) in
+                    mixed_samples.chunks(frame_size * channel_count).enumerate()
                 {
-                    let mut cloned_packet = ffmpeg::Packet::copy(data);
-                    if let Some(pts) = packet.pts() {
-                        cloned_packet.set_pts(Some(pts));
+                    if chunk_idx % 100 == 0 {
+                        log::info!("Processing chunk {}, size: {}", chunk_idx, chunk.len());
                     }
-                    if let Some(dts) = packet.dts() {
-                        cloned_packet.set_dts(Some(dts));
-                    }
-                    packet_queue.push(cloned_packet);
-                }
-            }
-        }
 
-        for packet_res in packet_queue {
-            if let Err(e) = decoder.send_packet(&packet_res) {
-                log::warn!("Failed to send packet to decoder: {e}");
-                continue;
-            }
+                    let mut input_frame = ffmpeg::frame::Audio::new(
+                        avformat::Sample::F32(avformat::sample::Type::Packed),
+                        chunk.len() / channel_count,
+                        channel_layout,
+                    );
+                    input_frame.set_rate(AudioData::SAMPLE_RATE);
 
-            while decoder.receive_frame(&mut decoded_frame).is_ok() {
-                if let Err(e) = resampler.run(&decoded_frame, &mut resampled_frame) {
-                    log::warn!("Failed to resample audio: {e}");
-                    continue;
-                }
+                    let bytes = unsafe {
+                        std::slice::from_raw_parts(
+                            chunk.as_ptr() as *const u8,
+                            std::mem::size_of_val(chunk),
+                        )
+                    };
+                    input_frame.data_mut(0)[0..bytes.len()].copy_from_slice(bytes);
 
-                if let Err(e) = encoder.send_frame(&resampled_frame) {
-                    log::warn!("Failed to send frame to encoder: {e}");
-                    continue;
-                }
+                    let mut output_frame = ffmpeg::frame::Audio::new(
+                        avformat::Sample::I16(avformat::sample::Type::Packed),
+                        frame_size,
+                        ChannelLayout::MONO,
+                    );
+                    output_frame.set_rate(WHISPER_SAMPLE_RATE);
 
-                loop {
-                    let mut packet = ffmpeg::Packet::empty();
-                    match encoder.receive_packet(&mut packet) {
+                    match resampler.run(&input_frame, &mut output_frame) {
                         Ok(_) => {
-                            packet.set_stream(stream_params.0);
-
-                            if let Err(e) = packet.write_interleaved(&mut output) {
-                                log::error!("Failed to write packet: {e}");
+                            if chunk_idx % 100 == 0 {
+                                log::info!(
+                                    "Successfully resampled chunk {}, output samples: {}",
+                                    chunk_idx,
+                                    output_frame.samples()
+                                );
                             }
                         }
-                        Err(_) => break,
+                        Err(e) => {
+                            log::error!("Failed to resample chunk {chunk_idx}: {e}");
+                            continue;
+                        }
+                    }
+
+                    if let Err(e) = encoder.send_frame(&output_frame) {
+                        log::error!("Failed to send frame to encoder: {e}");
+                        continue;
+                    }
+
+                    loop {
+                        let mut packet = ffmpeg::Packet::empty();
+                        match encoder.receive_packet(&mut packet) {
+                            Ok(_) => {
+                                if let Err(e) = packet.write_interleaved(&mut output) {
+                                    log::error!("Failed to write packet: {e}");
+                                }
+                            }
+                            Err(_) => break,
+                        }
                     }
                 }
             }
-        }
-
-        decoder
-            .send_eof()
-            .map_err(|e| format!("Failed to send EOF to decoder: {e}"))?;
-
-        while decoder.receive_frame(&mut decoded_frame).is_ok() {
-            resampler
-                .run(&decoded_frame, &mut resampled_frame)
-                .map_err(|e| format!("Failed to resample final audio: {e}"))?;
 
             encoder
-                .send_frame(&resampled_frame)
-                .map_err(|e| format!("Failed to send final frame: {e}"))?;
+                .send_eof()
+                .map_err(|e| format!("Failed to send EOF: {e}"))?;
 
             loop {
                 let mut packet = ffmpeg::Packet::empty();
@@ -629,18 +502,183 @@ async fn extract_audio_from_video(video_path: &str, output_path: &PathBuf) -> Re
                     break;
                 }
 
-                packet
-                    .write_interleaved(&mut output)
-                    .map_err(|e| format!("Failed to write final packet: {e}"))?;
+                {
+                    if let Err(e) = packet.write_interleaved(&mut output) {
+                        return Err(format!("Failed to write final packet: {e}"));
+                    }
+                }
             }
+
+            output
+                .write_trailer()
+                .map_err(|e| format!("Failed to write trailer: {e}"))?;
+
+            log::info!("=== EXTRACT AUDIO END (from recording project) ===");
+            Ok(())
         }
+        AudioExtractionSource::MediaFile(video_path) => {
+            let mut input = avformat::input(&video_path)
+                .map_err(|e| format!("Failed to open video file: {e}"))?;
 
-        output
-            .write_trailer()
-            .map_err(|e| format!("Failed to write trailer: {e}"))?;
+            let stream = input
+                .streams()
+                .best(ffmpeg::media::Type::Audio)
+                .ok_or_else(|| "No audio stream found".to_string())?;
 
-        log::info!("=== EXTRACT AUDIO END (from video) ===");
-        Ok(())
+            let codec_params = stream.parameters();
+
+            let decoder_ctx = avcodec::Context::from_parameters(codec_params.clone())
+                .map_err(|e| format!("Failed to create decoder context: {e}"))?;
+
+            let mut decoder = decoder_ctx
+                .decoder()
+                .audio()
+                .map_err(|e| format!("Failed to create decoder: {e}"))?;
+
+            let decoder_format = decoder.format();
+            let decoder_channel_layout = decoder.channel_layout();
+            let decoder_rate = decoder.rate();
+
+            let channel_layout = ChannelLayout::MONO;
+
+            let mut encoder_ctx = avcodec::Context::new()
+                .encoder()
+                .audio()
+                .map_err(|e| format!("Failed to create encoder: {e}"))?;
+
+            encoder_ctx.set_rate(WHISPER_SAMPLE_RATE as i32);
+            encoder_ctx.set_channel_layout(channel_layout);
+            encoder_ctx.set_format(avformat::Sample::I16(avformat::sample::Type::Packed));
+
+            let codec = avcodec::encoder::find_by_name("pcm_s16le")
+                .ok_or_else(|| "PCM encoder not found".to_string())?;
+
+            let mut encoder = encoder_ctx
+                .open_as(codec)
+                .map_err(|e| format!("Failed to open encoder: {e}"))?;
+
+            let mut output = avformat::output(&output_path)
+                .map_err(|e| format!("Failed to create output file: {e}"))?;
+
+            let stream_params = {
+                let mut output_stream = output
+                    .add_stream(codec)
+                    .map_err(|e| format!("Failed to add stream: {e}"))?;
+
+                output_stream.set_parameters(&encoder);
+
+                (output_stream.index(), output_stream.id())
+            };
+
+            output
+                .write_header()
+                .map_err(|e| format!("Failed to write header: {e}"))?;
+
+            let mut resampler = resampling::Context::get(
+                decoder_format,
+                decoder_channel_layout,
+                decoder_rate,
+                avformat::Sample::I16(avformat::sample::Type::Packed),
+                channel_layout,
+                WHISPER_SAMPLE_RATE,
+            )
+            .map_err(|e| format!("Failed to create resampler: {e}"))?;
+
+            let mut decoded_frame = ffmpeg::frame::Audio::empty();
+            let mut resampled_frame = ffmpeg::frame::Audio::new(
+                avformat::Sample::I16(avformat::sample::Type::Packed),
+                encoder.frame_size() as usize,
+                channel_layout,
+            );
+
+            let input_stream_index = stream.index();
+
+            let mut packet_queue = Vec::new();
+
+            {
+                for (stream_idx, packet) in input.packets() {
+                    if stream_idx.index() == input_stream_index
+                        && let Some(data) = packet.data()
+                    {
+                        let mut cloned_packet = ffmpeg::Packet::copy(data);
+                        if let Some(pts) = packet.pts() {
+                            cloned_packet.set_pts(Some(pts));
+                        }
+                        if let Some(dts) = packet.dts() {
+                            cloned_packet.set_dts(Some(dts));
+                        }
+                        packet_queue.push(cloned_packet);
+                    }
+                }
+            }
+
+            for packet_res in packet_queue {
+                if let Err(e) = decoder.send_packet(&packet_res) {
+                    log::warn!("Failed to send packet to decoder: {e}");
+                    continue;
+                }
+
+                while decoder.receive_frame(&mut decoded_frame).is_ok() {
+                    if let Err(e) = resampler.run(&decoded_frame, &mut resampled_frame) {
+                        log::warn!("Failed to resample audio: {e}");
+                        continue;
+                    }
+
+                    if let Err(e) = encoder.send_frame(&resampled_frame) {
+                        log::warn!("Failed to send frame to encoder: {e}");
+                        continue;
+                    }
+
+                    loop {
+                        let mut packet = ffmpeg::Packet::empty();
+                        match encoder.receive_packet(&mut packet) {
+                            Ok(_) => {
+                                packet.set_stream(stream_params.0);
+
+                                if let Err(e) = packet.write_interleaved(&mut output) {
+                                    log::error!("Failed to write packet: {e}");
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                }
+            }
+
+            decoder
+                .send_eof()
+                .map_err(|e| format!("Failed to send EOF to decoder: {e}"))?;
+
+            while decoder.receive_frame(&mut decoded_frame).is_ok() {
+                resampler
+                    .run(&decoded_frame, &mut resampled_frame)
+                    .map_err(|e| format!("Failed to resample final audio: {e}"))?;
+
+                encoder
+                    .send_frame(&resampled_frame)
+                    .map_err(|e| format!("Failed to send final frame: {e}"))?;
+
+                loop {
+                    let mut packet = ffmpeg::Packet::empty();
+                    let received = encoder.receive_packet(&mut packet);
+
+                    if received.is_err() {
+                        break;
+                    }
+
+                    packet
+                        .write_interleaved(&mut output)
+                        .map_err(|e| format!("Failed to write final packet: {e}"))?;
+                }
+            }
+
+            output
+                .write_trailer()
+                .map_err(|e| format!("Failed to write trailer: {e}"))?;
+
+            log::info!("=== EXTRACT AUDIO END (from video) ===");
+            Ok(())
+        }
     }
 }
 
@@ -2690,8 +2728,8 @@ fn mix_samples(dest: &mut [f32], source: &[f32]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        CaptionWord, caption_text_from_words, caption_word_chunks, normalize_caption_words,
-        resolve_path_with_base,
+        AudioExtractionSource, CaptionWord, caption_text_from_words, caption_word_chunks,
+        normalize_caption_words, resolve_audio_extraction_source, resolve_path_with_base,
     };
     use tempfile::tempdir;
 
@@ -2733,6 +2771,48 @@ mod tests {
         let resolved = resolve_path_with_base(&base, target.to_string_lossy().as_ref()).unwrap();
 
         assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn audio_extraction_source_accepts_project_directory_without_cap_extension() {
+        let dir = tempdir().unwrap();
+        let project_dir = dir.path().join("recording");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(project_dir.join("recording-meta.json"), "{}").unwrap();
+
+        match resolve_audio_extraction_source(project_dir.to_string_lossy().as_ref()).unwrap() {
+            AudioExtractionSource::ProjectDirectory {
+                base_path,
+                meta_path,
+            } => {
+                assert_eq!(base_path, project_dir);
+                assert_eq!(meta_path, base_path.join("recording-meta.json"));
+            }
+            AudioExtractionSource::MediaFile(_) => panic!("expected project directory"),
+        }
+    }
+
+    #[test]
+    fn audio_extraction_source_rejects_directory_without_recording_metadata() {
+        let dir = tempdir().unwrap();
+        let result = resolve_audio_extraction_source(dir.path().to_string_lossy().as_ref());
+
+        match result {
+            Ok(_) => panic!("expected missing metadata error"),
+            Err(error) => assert_eq!(error, "Recording directory is missing recording-meta.json"),
+        }
+    }
+
+    #[test]
+    fn audio_extraction_source_accepts_media_file() {
+        let dir = tempdir().unwrap();
+        let media_file = dir.path().join("recording.mp4");
+        std::fs::write(&media_file, []).unwrap();
+
+        match resolve_audio_extraction_source(media_file.to_string_lossy().as_ref()).unwrap() {
+            AudioExtractionSource::MediaFile(path) => assert_eq!(path, media_file),
+            AudioExtractionSource::ProjectDirectory { .. } => panic!("expected media file"),
+        }
     }
 
     #[test]
