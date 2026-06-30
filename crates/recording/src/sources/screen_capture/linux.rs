@@ -582,7 +582,10 @@ fn process_pipewire_frame(
         return Ok(None);
     }
 
-    let raw_frame = frame_from_pipewire_data(&mut datas[0], state.format, state.crop_bounds)?;
+    let Some(raw_frame) = frame_from_pipewire_data(&mut datas[0], state.format, state.crop_bounds)?
+    else {
+        return Ok(Some(StallSendOutcome::StalledAndDropped { waited_ms: 0 }));
+    };
     if state.scaler.is_none() {
         state.scaler = Some(FrameScaler::new(
             raw_frame.format(),
@@ -613,7 +616,7 @@ fn frame_from_pipewire_data(
     data: &mut spa::buffer::Data,
     format: spa::param::video::VideoInfoRaw,
     crop_bounds: Option<CropBounds>,
-) -> anyhow::Result<ffmpeg::frame::Video> {
+) -> anyhow::Result<Option<ffmpeg::frame::Video>> {
     let (pixel_format, bytes_per_pixel) =
         pipewire_pixel_format(format.format()).ok_or_else(|| {
             anyhow!(
@@ -633,7 +636,8 @@ fn frame_from_pipewire_data(
     let chunk_offset = data.chunk().offset();
     let chunk_size = data.chunk().size();
     if chunk_flags.contains(spa::buffer::ChunkFlags::CORRUPTED) {
-        bail!("PipeWire screen capture frame was marked corrupted");
+        tracing::warn!("PipeWire screen capture frame was marked corrupted; skipping frame");
+        return Ok(None);
     }
     if chunk_stride < 0 {
         bail!("PipeWire screen capture frame used a negative stride");
@@ -688,7 +692,7 @@ fn frame_from_pipewire_data(
             .copy_from_slice(&source[source_start..source_end]);
     }
 
-    Ok(frame)
+    Ok(Some(frame))
 }
 
 fn pipewire_crop(
