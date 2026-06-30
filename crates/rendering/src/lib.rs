@@ -21,7 +21,10 @@ use layers::{
 };
 use specta::Type;
 use spring_mass_damper::SpringMassDamperSimulationConfig;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::{path::PathBuf, time::Instant};
 use tokio::sync::mpsc;
 
@@ -108,6 +111,8 @@ impl Nv12RenderStartupBreakdownMs {
     }
 }
 
+static FORCE_SOFTWARE_WGPU_ADAPTER: AtomicBool = AtomicBool::new(false);
+
 const NON_HARDWARE_WGPU_ADAPTER_MARKERS: &[&str] = &[
     "parsec",
     "displaylink",
@@ -131,55 +136,55 @@ pub fn is_software_wgpu_adapter(info: &wgpu::AdapterInfo) -> bool {
     }
 }
 
-fn force_software_wgpu_adapter() -> bool {
-    std::env::var("CAP_RENDER_FORCE_SOFTWARE_ADAPTER").is_ok_and(|value| {
-        matches!(
-            value.to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
+pub fn set_force_software_wgpu_adapter(value: bool) {
+    FORCE_SOFTWARE_WGPU_ADAPTER.store(value, Ordering::Release);
 }
 
-pub async fn create_wgpu_instance() -> wgpu::Instance {
+pub fn force_software_wgpu_adapter() -> bool {
+    FORCE_SOFTWARE_WGPU_ADAPTER.load(Ordering::Acquire)
+        || std::env::var("CAP_RENDER_FORCE_SOFTWARE_ADAPTER").is_ok_and(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+}
+
+pub fn create_wgpu_instance_sync() -> wgpu::Instance {
     #[cfg(not(target_os = "windows"))]
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
 
     #[cfg(target_os = "windows")]
-    let instance = {
-        let dx12_instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::DX12,
-            ..Default::default()
-        });
-        let has_dx12 = dx12_instance
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::DX12,
+        ..Default::default()
+    });
+
+    instance
+}
+
+pub async fn create_wgpu_instance() -> wgpu::Instance {
+    create_wgpu_instance_sync()
+}
+
+pub async fn probe_software_adapter() -> Option<(bool, String)> {
+    let instance = create_wgpu_instance().await;
+
+    let force_software_adapter = force_software_wgpu_adapter();
+    let hardware_adapter = if force_software_adapter {
+        None
+    } else {
+        instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 force_fallback_adapter: false,
                 compatible_surface: None,
             })
             .await
-            .is_ok();
-        if has_dx12 {
-            dx12_instance
-        } else {
-            wgpu::Instance::new(&wgpu::InstanceDescriptor::default())
-        }
+            .ok()
     };
 
-    instance
-}
-
-pub async fn probe_software_adapter() -> Option<(bool, String)> {
-    let instance = create_wgpu_instance().await;
-
-    let adapter = match instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            force_fallback_adapter: false,
-            compatible_surface: None,
-        })
-        .await
-        .ok()
-    {
+    let adapter = match hardware_adapter {
         Some(adapter) => adapter,
         None => instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -252,6 +257,9 @@ pub struct RecordingSegmentDecoders {
     camera: Option<AsyncVideoDecoderHandle>,
     pub segment_offset: f64,
 }
+
+const SCREEN_MAX_FALLBACK_DISTANCE: u32 = 4;
+const CAMERA_MAX_FALLBACK_DISTANCE: u32 = 2;
 
 pub struct SegmentVideoPaths {
     pub display: PathBuf,
@@ -328,6 +336,7 @@ impl RecordingSegmentDecoders {
                 force_ffmpeg,
             )
             .await
+            .map(|decoder| decoder.with_max_fallback_distance(SCREEN_MAX_FALLBACK_DISTANCE))
             .map_err(|e| format!("Screen:{e}"))
         };
 
@@ -344,7 +353,7 @@ impl RecordingSegmentDecoders {
                 force_ffmpeg,
             )
             .await
-            .map(|decoder| decoder.with_max_fallback_distance(2))
+            .map(|decoder| decoder.with_max_fallback_distance(CAMERA_MAX_FALLBACK_DISTANCE))
             .map_err(|e| format!("Camera:{e}"))?;
             Ok(Some(camera))
         };
