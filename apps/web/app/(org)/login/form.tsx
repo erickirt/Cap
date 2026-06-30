@@ -51,11 +51,19 @@ export function LoginForm() {
 	);
 	const mobileGoogleSignInStarted = useRef(false);
 	const mobileWorkosSignInStarted = useRef(false);
+	const loginFormMounted = useRef(false);
 	const theme = Cookies.get("theme") || "light";
 	const getNextPath = useCallback(
 		() => (next ? getSafeNextPath(next, window.location.origin) : null),
 		[next],
 	);
+
+	useEffect(() => {
+		loginFormMounted.current = true;
+		return () => {
+			loginFormMounted.current = false;
+		};
+	}, []);
 
 	useEffect(() => {
 		document.body.className = theme === "dark" ? "dark" : "light";
@@ -162,6 +170,7 @@ export function LoginForm() {
 		mobileWorkosSignInStarted.current = true;
 
 		handleWorkosSignIn(mobileOrganizationId).catch(() => {
+			if (!loginFormMounted.current) return;
 			setOrganizationId(mobileOrganizationId);
 			setShowOrgInput(true);
 			toast.error("Organization not found or SSO not configured");

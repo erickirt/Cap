@@ -1301,18 +1301,21 @@ const ApiLive = HttpApiBuilder.api(Mobile.MobileApiContract).pipe(
 					)
 					.handle("getDownload", ({ path }) =>
 						withMappedErrors(
-							videos.getDownloadInfo(path.id).pipe(
-								Effect.flatMap(
-									Option.match({
-										onNone: () => Effect.fail(new HttpApiError.NotFound()),
-										onSome: (info) =>
-											Effect.succeed({
-												fileName: info.fileName,
-												url: info.downloadUrl,
-											}),
-									}),
-								),
-							),
+							Effect.gen(function* () {
+								yield* getCapById(path.id);
+								return yield* videos.getDownloadInfo(path.id).pipe(
+									Effect.flatMap(
+										Option.match({
+											onNone: () => Effect.fail(new HttpApiError.NotFound()),
+											onSome: (info) =>
+												Effect.succeed({
+													fileName: info.fileName,
+													url: info.downloadUrl,
+												}),
+										}),
+									),
+								);
+							}),
 						),
 					)
 					.handle("createComment", ({ path, payload }) =>
