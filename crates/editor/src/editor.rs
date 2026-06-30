@@ -387,7 +387,7 @@ impl RendererHandle {
             .await
             .is_err()
         {
-            tracing::warn!("Failed to send stop message to renderer");
+            tracing::debug!("Renderer stop message skipped because renderer task already stopped");
         }
         let _ = rx.await;
     }
