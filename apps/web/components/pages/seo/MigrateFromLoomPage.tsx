@@ -27,7 +27,7 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Script from "next/script";
-import { type JSX, useState } from "react";
+import { type JSX, useId, useState } from "react";
 import { LoomMark } from "@/components/icons/LoomMark";
 
 const IMPORT_HREF = "/dashboard/import/loom";
@@ -374,7 +374,7 @@ const ImportDemo = () => {
 										variant="dark"
 										onClick={goToImport}
 									>
-										Import Video
+										Import Loom
 									</Button>
 								</div>
 							</div>
@@ -463,14 +463,13 @@ const createFaqStructuredData = () =>
 
 export const MigrateFromLoomPage = () => {
 	const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(null);
+	const faqScriptId = useId();
 
 	return (
 		<>
-			<Script
-				id="migrate-from-loom-faq"
-				type="application/ld+json"
-				dangerouslySetInnerHTML={{ __html: createFaqStructuredData() }}
-			/>
+			<Script id={faqScriptId} type="application/ld+json">
+				{createFaqStructuredData()}
+			</Script>
 
 			<div className="overflow-hidden relative px-5 pt-[140px] md:pt-[200px]">
 				<div className="mx-auto text-center max-w-[820px]">
