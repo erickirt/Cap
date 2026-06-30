@@ -510,20 +510,14 @@ pub fn target_to_display_and_crop(
                 let logical_display_size = display
                     .logical_size()
                     .ok_or_else(|| anyhow!("No display logical size"))?;
-                Some(PhysicalBounds::new(
-                    PhysicalPosition::new(
-                        (relative_bounds.position().x() / logical_display_size.width())
-                            * raw_display_size.width(),
-                        (relative_bounds.position().y() / logical_display_size.height())
-                            * raw_display_size.height(),
-                    ),
-                    PhysicalSize::new(
-                        (relative_bounds.size().width() / logical_display_size.width())
-                            * raw_display_size.width(),
-                        (relative_bounds.size().height() / logical_display_size.height())
-                            * raw_display_size.height(),
-                    ),
-                ))
+                Some(
+                    screen_capture::logical_area_to_physical_bounds(
+                        *relative_bounds,
+                        logical_display_size,
+                        raw_display_size,
+                    )
+                    .ok_or_else(|| anyhow!("Invalid display bounds"))?,
+                )
             }
 
             #[cfg(target_os = "linux")]
@@ -534,20 +528,14 @@ pub fn target_to_display_and_crop(
                 let logical_display_size = display
                     .logical_size()
                     .ok_or_else(|| anyhow!("No display logical size"))?;
-                Some(PhysicalBounds::new(
-                    PhysicalPosition::new(
-                        (relative_bounds.position().x() / logical_display_size.width())
-                            * raw_display_size.width(),
-                        (relative_bounds.position().y() / logical_display_size.height())
-                            * raw_display_size.height(),
-                    ),
-                    PhysicalSize::new(
-                        (relative_bounds.size().width() / logical_display_size.width())
-                            * raw_display_size.width(),
-                        (relative_bounds.size().height() / logical_display_size.height())
-                            * raw_display_size.height(),
-                    ),
-                ))
+                Some(
+                    screen_capture::logical_area_to_physical_bounds(
+                        *relative_bounds,
+                        logical_display_size,
+                        raw_display_size,
+                    )
+                    .ok_or_else(|| anyhow!("Invalid display bounds"))?,
+                )
             }
         }
         ScreenCaptureTarget::CameraOnly => {
