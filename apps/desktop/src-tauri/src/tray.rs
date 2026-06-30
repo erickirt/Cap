@@ -513,7 +513,7 @@ fn build_tray_menu(app: &AppHandle, cache: &PreviousItemsCache) -> tauri::Result
     menu.append(&MenuItem::with_id(
         app,
         TrayItem::ImportVideo,
-        "Import Video...",
+        "Import Media...",
         true,
         None::<&str>,
     )?)?;
@@ -849,8 +849,19 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
                             .dialog()
                             .file()
                             .add_filter(
+                                "Media Files",
+                                &[
+                                    "mp4", "mov", "avi", "mkv", "webm", "wmv", "m4v", "flv", "png",
+                                    "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff",
+                                ],
+                            )
+                            .add_filter(
                                 "Video Files",
                                 &["mp4", "mov", "avi", "mkv", "webm", "wmv", "m4v", "flv"],
+                            )
+                            .add_filter(
+                                "Image Files",
+                                &["png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff"],
                             )
                             .blocking_pick_file();
 
@@ -863,18 +874,44 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
                                 }
                             };
 
-                            match crate::import::start_video_import(app.clone(), path).await {
-                                Ok(project_path) => {
-                                    let _ = ShowCapWindow::Editor { project_path }.show(&app).await;
+                            if crate::import::is_supported_video_import_path(&path) {
+                                match crate::import::start_video_import(app.clone(), path).await {
+                                    Ok(project_path) => {
+                                        let _ =
+                                            ShowCapWindow::Editor { project_path }.show(&app).await;
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Failed to import video: {e}");
+                                        app.dialog()
+                                            .message(format!("Failed to import video: {e}"))
+                                            .title("Import Error")
+                                            .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+                                            .blocking_show();
+                                    }
                                 }
-                                Err(e) => {
-                                    tracing::error!("Failed to import video: {e}");
-                                    app.dialog()
-                                        .message(format!("Failed to import video: {e}"))
-                                        .title("Import Error")
-                                        .kind(tauri_plugin_dialog::MessageDialogKind::Error)
-                                        .blocking_show();
+                            } else if crate::import::is_supported_image_import_path(&path) {
+                                match crate::import::start_image_import(app.clone(), path).await {
+                                    Ok(path) => {
+                                        let _ = ShowCapWindow::ScreenshotEditor { path }
+                                            .show(&app)
+                                            .await;
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Failed to import image: {e}");
+                                        app.dialog()
+                                            .message(format!("Failed to import image: {e}"))
+                                            .title("Import Error")
+                                            .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+                                            .blocking_show();
+                                    }
                                 }
+                            } else {
+                                tracing::error!("Unsupported media import path: {:?}", path);
+                                app.dialog()
+                                    .message("Unsupported media file.")
+                                    .title("Import Error")
+                                    .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+                                    .blocking_show();
                             }
                         }
                     });
