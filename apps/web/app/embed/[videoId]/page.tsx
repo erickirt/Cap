@@ -173,9 +173,10 @@ export default async function EmbedVideoPage(
 						organizationId: sharedVideos.organizationId,
 					},
 					orgSettings: organizations.settings,
-					hasActiveUpload: sql`${videoUploads.videoId} IS NOT NULL`.mapWith(
-						Boolean,
-					),
+					hasActiveUpload:
+						sql`${videoUploads.videoId} IS NOT NULL AND ${videos.isScreenshot} = false`.mapWith(
+							Boolean,
+						),
 				})
 				.from(videos)
 				.leftJoin(sharedVideos, eq(videos.id, sharedVideos.videoId))
@@ -254,6 +255,7 @@ async function EmbedContent({
 	}
 
 	if (
+		video.isScreenshot !== true &&
 		!rules.settings.disableTranscript &&
 		video.transcriptionStatus !== "COMPLETE" &&
 		video.transcriptionStatus !== "PROCESSING" &&

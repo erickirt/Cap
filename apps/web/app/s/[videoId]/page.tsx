@@ -426,9 +426,10 @@ export default async function ShareVideoPage(props: PageProps<"/s/[videoId]">) {
 					organizationName: organizations.name,
 					organizationIconUrl: organizations.iconUrl,
 					shareableLinkIconUrl: organizations.shareableLinkIconUrl,
-					hasActiveUpload: sql`${videoUploads.videoId} IS NOT NULL`.mapWith(
-						Boolean,
-					),
+					hasActiveUpload:
+						sql`${videoUploads.videoId} IS NOT NULL AND ${videos.isScreenshot} = false`.mapWith(
+							Boolean,
+						),
 					activeUploadRawFileKey: videoUploads.rawFileKey,
 					owner: users,
 				})
@@ -489,6 +490,7 @@ async function AuthorizedContent({
 
 	if (
 		user?.id === video.owner.id &&
+		!video.isScreenshot &&
 		video.source?.type === "desktopSegments" &&
 		!video.hasActiveUpload &&
 		serverEnv().MEDIA_SERVER_URL
@@ -556,7 +558,9 @@ async function AuthorizedContent({
 	});
 	const env = serverEnv();
 	const transcriptionGenerationAvailable =
-		Boolean(env.DEEPGRAM_API_KEY) && !rules.settings.disableTranscript;
+		!video.isScreenshot &&
+		Boolean(env.DEEPGRAM_API_KEY) &&
+		!rules.settings.disableTranscript;
 	const aiProviderAvailable = Boolean(env.GROQ_API_KEY || env.OPENAI_API_KEY);
 
 	let aiGenerationEnabled = false;
@@ -605,6 +609,12 @@ async function AuthorizedContent({
 		chapters: metadata.chapters || null,
 		aiGenerationStatus,
 	};
+
+	const screenshotImageUrl = video.isScreenshot
+		? await Effect.flatMap(Videos, (videos) =>
+				videos.getThumbnailURL(videoId),
+			).pipe(Effect.map(Option.getOrNull), runPromise)
+		: null;
 
 	const customDomainPromise = (async () => {
 		if (!user) {
@@ -833,11 +843,12 @@ async function AuthorizedContent({
 			inheritedSpaceSettings: rules.inheritedSettings,
 		};
 	}).pipe(runPromise);
-	const isEditProcessing = isEditSourceKey({
-		ownerId: video.owner.id,
-		videoId,
-		rawFileKey: video.activeUploadRawFileKey,
-	});
+	const isEditProcessing =
+		isEditSourceKey({
+			ownerId: video.owner.id,
+			videoId,
+			rawFileKey: video.activeUploadRawFileKey,
+		}) && !video.isScreenshot;
 
 	const defaultPlaybackSpeed = resolveDefaultPlaybackSpeed(
 		video.videoSettings?.defaultPlaybackSpeed,
@@ -858,7 +869,7 @@ async function AuthorizedContent({
 			: false;
 
 	let videoHasEdits = false;
-	if (canDownloadVideo) {
+	if (canDownloadVideo && !video.isScreenshot) {
 		const [videoEditRow] = await db()
 			.select({ editSpec: videoEdits.editSpec })
 			.from(videoEdits)
@@ -897,6 +908,7 @@ async function AuthorizedContent({
 
 			<Share
 				data={videoWithOrganizationInfo}
+				screenshotImageUrl={screenshotImageUrl}
 				videoSettings={videoWithOrganizationInfo.settings}
 				comments={commentsPromise}
 				views={viewsPromise}
