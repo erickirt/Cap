@@ -14,6 +14,56 @@ import { UploadTarget } from "./Storage.ts";
 import { UserId } from "./User.ts";
 import { UploadPhase, VideoId } from "./Video.ts";
 
+const isExpoAuthPath = (pathname: string) => pathname === "/--/auth";
+
+export const isMobileAuthRedirectUri = (redirectUri: string) => {
+	try {
+		const redirectUrl = new URL(redirectUri);
+		if (redirectUrl.protocol === "cap:") {
+			return (
+				redirectUrl.hostname === "auth" &&
+				redirectUrl.pathname === "" &&
+				redirectUrl.search === "" &&
+				redirectUrl.hash === ""
+			);
+		}
+
+		if (
+			redirectUrl.protocol !== "exp+cap:" ||
+			redirectUrl.hostname !== "expo-development-client" ||
+			redirectUrl.hash !== ""
+		) {
+			return false;
+		}
+
+		if (isExpoAuthPath(redirectUrl.pathname)) return redirectUrl.search === "";
+
+		const embeddedUrl = redirectUrl.searchParams.get("url");
+		if (
+			!embeddedUrl ||
+			Array.from(redirectUrl.searchParams.keys()).length !== 1
+		)
+			return false;
+
+		const parsedEmbeddedUrl = new URL(embeddedUrl);
+		return (
+			isExpoAuthPath(parsedEmbeddedUrl.pathname) &&
+			parsedEmbeddedUrl.search === "" &&
+			parsedEmbeddedUrl.hash === ""
+		);
+	} catch {
+		return false;
+	}
+};
+
+const MobileAuthRedirectUri = Schema.String.pipe(
+	Schema.filter(
+		(redirectUri) =>
+			isMobileAuthRedirectUri(redirectUri) ||
+			"Invalid mobile auth redirect URI",
+	),
+);
+
 export const MobileApiKeyResponse = Schema.Struct({
 	type: Schema.Literal("api_key"),
 	apiKey: Schema.String,
@@ -30,7 +80,7 @@ export const MobileAuthConfigResponse = Schema.Struct({
 });
 
 export const MobileSessionRequestParams = Schema.Struct({
-	redirectUri: Schema.optional(Schema.String),
+	redirectUri: Schema.optional(MobileAuthRedirectUri),
 	provider: Schema.optional(Schema.Literal("google", "workos")),
 	organizationId: Schema.optional(Schema.String),
 });

@@ -62,6 +62,35 @@ describe("mobile API contract schemas", () => {
 		).toBe("org_123");
 	});
 
+	it("allows only mobile auth callback redirects for session requests", () => {
+		const decodeRedirect = (redirectUri: string) =>
+			Schema.decodeUnknownSync(Mobile.MobileSessionRequestParams)({
+				redirectUri,
+				provider: "google",
+			});
+
+		expect(decodeRedirect("cap://auth").redirectUri).toBe("cap://auth");
+		expect(
+			decodeRedirect("exp+cap://expo-development-client/--/auth").redirectUri,
+		).toBe("exp+cap://expo-development-client/--/auth");
+		expect(
+			decodeRedirect(
+				"exp+cap://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081%2F--%2Fauth",
+			).redirectUri,
+		).toBe(
+			"exp+cap://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081%2F--%2Fauth",
+		);
+
+		expect(() => decodeRedirect("cap://auth/")).toThrow();
+		expect(() => decodeRedirect("cap://auth?next=cap://settings")).toThrow();
+		expect(() => decodeRedirect("cap://settings")).toThrow();
+		expect(() => decodeRedirect("cap://auth.evil")).toThrow();
+		expect(() => decodeRedirect("https://cap.so/auth")).toThrow();
+		expect(() =>
+			decodeRedirect("exp+cap://expo-development-client/--/settings"),
+		).toThrow();
+	});
+
 	it("decodes Cap sharing visibility updates", () => {
 		const decoded = Schema.decodeUnknownSync(Mobile.MobileCapSharingInput)({
 			public: false,

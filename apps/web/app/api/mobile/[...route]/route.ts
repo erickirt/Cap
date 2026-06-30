@@ -76,7 +76,6 @@ type MobileUploadCreateInput = (typeof Mobile.MobileUploadCreateInput)["Type"];
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const emailCodePattern = /^\d{6}$/;
 const emailCodeTtlMs = 10 * 60 * 1000;
-const mobileRedirectProtocols = new Set(["cap:", "exp+cap:"]);
 
 const toIsoString = (value: Date) => value.toISOString();
 
@@ -122,7 +121,7 @@ const sendMobileEmailCode = async (email: string, code: string) => {
 const getMobileRedirectUrl = (redirectUri: string) => {
 	try {
 		const redirectUrl = new URL(redirectUri);
-		if (!mobileRedirectProtocols.has(redirectUrl.protocol)) return null;
+		if (!Mobile.isMobileAuthRedirectUri(redirectUri)) return null;
 		return redirectUrl;
 	} catch {
 		return null;
