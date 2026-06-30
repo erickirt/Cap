@@ -130,6 +130,65 @@ const triggerBrowserDownload = (url: string, fileName: string) => {
 
 const recoveredToastId = (id: string) => `recovered-${id}`;
 
+const getStartRecordingErrorMessage = (
+	error: unknown,
+	recordingMode: RecordingMode,
+) => {
+	if (typeof DOMException !== "undefined" && error instanceof DOMException) {
+		if (error.name === "NotAllowedError" || error.name === "AbortError") {
+			return recordingMode === "camera"
+				? "Camera access was cancelled or blocked. Allow camera access in your browser and try again."
+				: "Screen sharing was cancelled or blocked. Allow screen sharing in your browser and try again.";
+		}
+
+		if (error.name === "NotReadableError") {
+			return recordingMode === "camera"
+				? "Your browser couldn't start the selected camera. Close other apps or tabs using it, then try again."
+				: "Your browser couldn't start screen capture. Try a different screen or window, close other screen-sharing apps, or restart the browser.";
+		}
+
+		if (error.name === "InvalidStateError") {
+			return "Your browser blocked the capture request because this tab wasn't active. Bring Cap to the foreground and click Start recording again.";
+		}
+
+		if (error.name === "NotFoundError") {
+			return "No recording source was available. Try another recording mode or reconnect the device.";
+		}
+
+		if (
+			error.name === "OverconstrainedError" ||
+			error.name === "NotSupportedError" ||
+			error.name === "InvalidAccessError"
+		) {
+			return "Your browser rejected the capture settings. Try another recording mode, or turn off system audio and try again.";
+		}
+
+		if (error.name === "SecurityError") {
+			return "Your browser blocked media capture for this site. Check site permissions or managed browser policies.";
+		}
+	}
+
+	if (error instanceof TypeError) {
+		if (/fetch|network|load failed|failed to fetch/i.test(error.message)) {
+			return "Cap couldn't create the upload session. Check Chrome extensions, privacy settings, or network access, then try again.";
+		}
+
+		return "Your browser rejected the capture settings. Try another recording mode, or turn off system audio and try again.";
+	}
+
+	if (error instanceof Error) {
+		if (error.message === "No supported recording pipeline available") {
+			return "This browser can capture media but can't encode a recording. Try updating Chrome or use the desktop app.";
+		}
+
+		if (/multipart|upload|request to/i.test(error.message)) {
+			return "Cap couldn't create the upload session. Check Chrome extensions, privacy settings, or network access, then try again.";
+		}
+	}
+
+	return "Could not start recording. Try again, or use another browser or the desktop app if this is urgent.";
+};
+
 export const useWebRecorder = ({
 	organisationId,
 	selectedMicId,
@@ -1126,7 +1185,7 @@ export const useWebRecorder = ({
 			}
 
 			console.error("Failed to start recording", err);
-			toast.error("Could not start recording.");
+			toast.error(getStartRecordingErrorMessage(err, recordingMode));
 			await resetState();
 		} finally {
 			setIsSettingUp(false);
