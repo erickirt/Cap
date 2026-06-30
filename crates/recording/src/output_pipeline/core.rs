@@ -38,6 +38,15 @@ pub const VIDEO_START_GATE_TIMEOUT: Duration = Duration::from_millis(500);
 
 pub const AV_START_ALIGNMENT_LIMIT_NS: u64 = 500_000_000;
 
+pub(crate) fn frame_timing_log_threshold_ms(video_config: &VideoInfo) -> u128 {
+    let fps = if video_config.frame_rate.0 > 0 && video_config.frame_rate.1 > 0 {
+        video_config.frame_rate.0 as f64 / video_config.frame_rate.1 as f64
+    } else {
+        30.0
+    };
+    ((1000.0 / fps) * 0.75).round().max(5.0) as u128
+}
+
 #[derive(Clone)]
 pub struct VideoStartGate {
     inner: Arc<VideoStartGateInner>,

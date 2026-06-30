@@ -603,10 +603,11 @@ fn try_drain_readback(
 }
 
 fn init_headless_blur() -> Option<WsBlurResources> {
-    let instance = wgpu::Instance::default();
+    let instance = cap_rendering::create_wgpu_instance_sync();
+    let force_software_adapter = cap_rendering::force_software_wgpu_adapter();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::LowPower,
-        force_fallback_adapter: false,
+        force_fallback_adapter: force_software_adapter,
         compatible_surface: None,
     }))
     .ok()?;

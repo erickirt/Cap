@@ -502,6 +502,66 @@ struct AttachedState {
     done_tx: mpsc::SyncSender<()>,
 }
 
+#[cfg(target_os = "macos")]
+fn list_input_device_names() -> Vec<String> {
+    use coreaudio::audio_unit::{Scope, macos_helpers};
+
+    let mut names = IndexMap::new();
+    let default_id = macos_helpers::get_default_device_id(true);
+
+    if let Some(name) = default_id
+        .and_then(|id| macos_helpers::get_device_name(id).ok())
+        .filter(|name| !name.is_empty())
+    {
+        names.insert(name, ());
+    }
+
+    match macos_helpers::get_audio_device_ids_for_scope(Scope::Input) {
+        Ok(device_ids) => {
+            for device_id in device_ids {
+                if macos_helpers::get_audio_device_supports_scope(device_id, Scope::Input)
+                    .unwrap_or(false)
+                    && let Ok(name) = macos_helpers::get_device_name(device_id)
+                    && !name.is_empty()
+                {
+                    names.entry(name).or_insert(());
+                }
+            }
+        }
+        Err(error) => {
+            error!("Could not access audio input devices: {}", error);
+        }
+    }
+
+    names.into_keys().collect()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn list_input_device_names() -> Vec<String> {
+    let host = cpal::default_host();
+    let mut names = IndexMap::new();
+
+    if let Some(name) = host
+        .default_input_device()
+        .and_then(|device| device.name().ok())
+    {
+        names.insert(name, ());
+    }
+
+    match host.input_devices() {
+        Ok(devices) => {
+            for name in devices.filter_map(|device| device.name().ok()) {
+                names.entry(name).or_insert(());
+            }
+        }
+        Err(error) => {
+            error!("Could not access audio input devices: {}", error);
+        }
+    }
+
+    names.into_keys().collect()
+}
+
 impl MicrophoneFeed {
     pub fn new(error_sender: flume::Sender<StreamError>) -> Self {
         Self {
@@ -525,6 +585,10 @@ impl MicrophoneFeed {
 
     pub fn list() -> MicrophonesMap {
         Self::list_with_settings(None)
+    }
+
+    pub fn list_names() -> Vec<String> {
+        list_input_device_names()
     }
 
     pub fn list_with_settings(settings: Option<&MicrophoneDeviceSettings>) -> MicrophonesMap {
@@ -726,8 +790,8 @@ impl MicrophoneFeed {
                 let _ = ready_tx.send(Ok(buffer_size_frames));
 
                 match done_rx.recv() {
-                    Ok(_) => info!("Microphone actor shut down, ending stream"),
-                    Err(_) => info!("Microphone actor unreachable, ending stream"),
+                    Ok(_) => debug!("Microphone actor shut down, ending stream"),
+                    Err(_) => debug!("Microphone shutdown signal channel closed, ending stream"),
                 }
             }
         });
@@ -1304,14 +1368,14 @@ impl Message<MicrophoneSamples> for MicrophoneFeed {
                     }
                 }
                 Err(TrySendError::Disconnected(_)) => {
-                    warn!("Audio sender {} disconnected, will be removed", i);
+                    debug!("Audio sender {} closed, will be removed", i);
                     to_remove.push(i);
                 }
             }
         }
 
         if !to_remove.is_empty() {
-            debug!("Removing {} disconnected audio senders", to_remove.len());
+            debug!("Removing {} closed audio senders", to_remove.len());
             for i in to_remove.into_iter().rev() {
                 self.senders.swap_remove(i);
             }

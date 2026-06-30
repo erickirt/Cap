@@ -205,30 +205,26 @@ impl ScreenCaptureTarget {
                 #[allow(clippy::needless_return)]
                 {
                     let display = self.display()?;
-                    let display_bounds = display.raw_handle().physical_bounds()?;
-                    let display_logical_size = display.logical_size()?;
+                    let bounds = logical_area_to_physical_bounds(
+                        *bounds,
+                        display.logical_size()?,
+                        display.physical_size()?,
+                    )?;
 
-                    let scale = display_bounds.size().width() / display_logical_size.width();
-
-                    return Some(CursorCropBounds::new_windows(PhysicalBounds::new(
-                        PhysicalPosition::new(
-                            bounds.position().x() * scale,
-                            bounds.position().y() * scale,
-                        ),
-                        PhysicalSize::new(
-                            bounds.size().width() * scale,
-                            bounds.size().height() * scale,
-                        ),
-                    )));
+                    return Some(CursorCropBounds::new_windows(bounds));
                 }
 
                 #[cfg(target_os = "linux")]
                 #[allow(clippy::needless_return)]
                 {
-                    return Some(CursorCropBounds::new_linux(PhysicalBounds::new(
-                        PhysicalPosition::new(bounds.position().x(), bounds.position().y()),
-                        PhysicalSize::new(bounds.size().width(), bounds.size().height()),
-                    )));
+                    let display = self.display()?;
+                    let bounds = logical_area_to_physical_bounds(
+                        *bounds,
+                        display.logical_size()?,
+                        display.physical_size()?,
+                    )?;
+
+                    return Some(CursorCropBounds::new_linux(bounds));
                 }
             }
             Self::CameraOnly => None,
@@ -241,13 +237,29 @@ impl ScreenCaptureTarget {
             Self::Window { id } => Window::from_id(id).and_then(|w| w.physical_size()),
             Self::Area { bounds, .. } => {
                 let display = self.display()?;
-                let scale = display.physical_size()?.width() / display.logical_size()?.width();
-                let size = bounds.size();
 
-                Some(PhysicalSize::new(
-                    size.width() * scale,
-                    size.height() * scale,
-                ))
+                #[cfg(target_os = "macos")]
+                {
+                    let scale = display.physical_size()?.width() / display.logical_size()?.width();
+                    let size = bounds.size();
+
+                    Some(PhysicalSize::new(
+                        size.width() * scale,
+                        size.height() * scale,
+                    ))
+                }
+
+                #[cfg(any(windows, target_os = "linux"))]
+                {
+                    Some(
+                        logical_area_to_physical_bounds(
+                            *bounds,
+                            display.logical_size()?,
+                            display.physical_size()?,
+                        )?
+                        .size(),
+                    )
+                }
             }
             Self::CameraOnly => None,
         }
@@ -374,6 +386,60 @@ pub type CropBounds = PhysicalBounds;
 
 #[cfg(target_os = "linux")]
 pub type CropBounds = PhysicalBounds;
+
+#[cfg(any(windows, target_os = "linux", test))]
+pub(crate) fn logical_area_to_physical_bounds(
+    bounds: LogicalBounds,
+    logical_display_size: LogicalSize,
+    physical_display_size: PhysicalSize,
+) -> Option<PhysicalBounds> {
+    let (x, width) = logical_axis_to_physical(
+        bounds.position().x(),
+        bounds.size().width(),
+        logical_display_size.width(),
+        physical_display_size.width(),
+    )?;
+    let (y, height) = logical_axis_to_physical(
+        bounds.position().y(),
+        bounds.size().height(),
+        logical_display_size.height(),
+        physical_display_size.height(),
+    )?;
+
+    Some(PhysicalBounds::new(
+        PhysicalPosition::new(x, y),
+        PhysicalSize::new(width, height),
+    ))
+}
+
+#[cfg(any(windows, target_os = "linux", test))]
+fn logical_axis_to_physical(
+    position: f64,
+    size: f64,
+    logical_extent: f64,
+    physical_extent: f64,
+) -> Option<(f64, f64)> {
+    if !position.is_finite()
+        || !size.is_finite()
+        || !logical_extent.is_finite()
+        || !physical_extent.is_finite()
+        || logical_extent <= 0.0
+        || physical_extent <= 0.0
+    {
+        return None;
+    }
+
+    let start = position.clamp(0.0, logical_extent);
+    let end = (position + size).clamp(0.0, logical_extent);
+    let scale = physical_extent / logical_extent;
+    let physical_start = start.min(end) * scale;
+    let physical_end = start.max(end) * scale;
+    let min_size = 2.0_f64.min(physical_extent);
+    let size = (physical_end - physical_start).clamp(min_size, physical_extent);
+    let position = physical_start.min(physical_extent - size).max(0.0);
+
+    Some((position, size))
+}
 
 impl Config {
     pub fn fps(&self) -> u32 {
@@ -511,17 +577,19 @@ where
 pub fn list_displays() -> Vec<(CaptureDisplay, Display)> {
     scap_targets::Display::list()
         .into_iter()
-        .filter_map(|display| {
+        .map(|display| {
             let refresh_rate = validated_refresh_rate(display.raw_handle().refresh_rate());
 
-            Some((
+            (
                 CaptureDisplay {
                     id: display.id(),
-                    name: display.name()?,
+                    name: display
+                        .name()
+                        .unwrap_or_else(|| format!("Display {}", display.id())),
                     refresh_rate,
                 },
                 display,
-            ))
+            )
         })
         .collect()
 }
@@ -577,4 +645,66 @@ pub fn list_windows() -> Vec<(CaptureWindow, Window)> {
             ))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logical_area_to_physical_bounds_scales_each_axis() {
+        let bounds = LogicalBounds::new(
+            LogicalPosition::new(120.0, 80.0),
+            LogicalSize::new(640.0, 360.0),
+        );
+        let physical = logical_area_to_physical_bounds(
+            bounds,
+            LogicalSize::new(1920.0, 1080.0),
+            PhysicalSize::new(3840.0, 2160.0),
+        )
+        .unwrap();
+
+        assert_eq!(physical.position().x(), 240.0);
+        assert_eq!(physical.position().y(), 160.0);
+        assert_eq!(physical.size().width(), 1280.0);
+        assert_eq!(physical.size().height(), 720.0);
+    }
+
+    #[test]
+    fn logical_area_to_physical_bounds_clamps_to_display() {
+        let bounds = LogicalBounds::new(
+            LogicalPosition::new(-10.0, 100.0),
+            LogicalSize::new(2_000.0, 1_000.0),
+        );
+        let physical = logical_area_to_physical_bounds(
+            bounds,
+            LogicalSize::new(1920.0, 1080.0),
+            PhysicalSize::new(3840.0, 2160.0),
+        )
+        .unwrap();
+
+        assert_eq!(physical.position().x(), 0.0);
+        assert_eq!(physical.position().y(), 200.0);
+        assert_eq!(physical.size().width(), 3840.0);
+        assert_eq!(physical.size().height(), 1960.0);
+    }
+
+    #[test]
+    fn logical_area_to_physical_bounds_keeps_edge_crop_inside_display() {
+        let bounds = LogicalBounds::new(
+            LogicalPosition::new(1930.0, -20.0),
+            LogicalSize::new(100.0, 0.0),
+        );
+        let physical = logical_area_to_physical_bounds(
+            bounds,
+            LogicalSize::new(1920.0, 1080.0),
+            PhysicalSize::new(3840.0, 2160.0),
+        )
+        .unwrap();
+
+        assert_eq!(physical.position().x(), 3838.0);
+        assert_eq!(physical.position().y(), 0.0);
+        assert_eq!(physical.size().width(), 2.0);
+        assert_eq!(physical.size().height(), 2.0);
+    }
 }

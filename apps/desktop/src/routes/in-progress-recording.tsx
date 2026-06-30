@@ -412,9 +412,9 @@ function InProgressRecordingInner() {
 	const stopRecording = createMutation(() => ({
 		mutationFn: async () => {
 			setStopRequested(true);
+			await commands.stopRecording();
 			setState({ variant: "stopped" });
 			void getCurrentWindow().hide();
-			await commands.stopRecording();
 		},
 		onError: () => {
 			setStopRequested(false);

@@ -719,7 +719,7 @@ function Inner() {
 									class="flex-none flex items-center justify-center cursor-col-resize select-none group z-10"
 									style={{ width: "12px" }}
 									onMouseDown={handleSplitResizeStart}
-									aria-label="Resize transcript panel"
+									aria-label="Resize captions panel"
 									role="separator"
 									aria-orientation="vertical"
 								>

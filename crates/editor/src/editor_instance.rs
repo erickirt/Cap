@@ -321,7 +321,11 @@ impl EditorInstance {
         if let Some(task) = state.preview_task.take() {
             task.abort();
             if let Err(e) = task.await {
-                tracing::warn!("preview task abort await failed: {e}");
+                if e.is_cancelled() {
+                    tracing::debug!("preview task cancelled during editor disposal");
+                } else {
+                    tracing::warn!("preview task abort await failed: {e}");
+                }
             }
         }
 

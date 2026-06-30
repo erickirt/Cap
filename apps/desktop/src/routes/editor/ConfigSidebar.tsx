@@ -3640,7 +3640,7 @@ function CaptionSegmentConfig(props: {
 	return (
 		<div class="space-y-4">
 			<Field
-				name={`Transcript ${props.segmentIndex + 1}`}
+				name={`Caption ${props.segmentIndex + 1}`}
 				icon={<IconCapMessageBubble />}
 			>
 				<textarea

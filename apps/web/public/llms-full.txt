@@ -157,7 +157,7 @@ A REST API and webhooks are also available — see https://cap.so/docs/api/rest-
 - Linux: x86_64 .deb for Debian/Ubuntu (X11/Wayland capture).
 - Web: shareable links and embeds play in any modern browser; no install for viewers.
 
-Current desktop app version: 0.5.2.
+Current desktop app version: 0.5.3.
 
 ## Pricing
 

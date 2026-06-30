@@ -10,6 +10,7 @@ use futures::StreamExt;
 use parakeet_rs::{ParakeetTDT, TimestampMode, Transcriber};
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -19,7 +20,7 @@ use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 use tempfile::tempdir;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tracing::instrument;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
@@ -53,6 +54,7 @@ impl Default for CaptionData {
 
 lazy_static::lazy_static! {
     static ref WHISPER_CONTEXT: Arc<Mutex<Option<Arc<WhisperContext>>>> = Arc::new(Mutex::new(None));
+    static ref MODEL_DOWNLOADS: Mutex<HashMap<String, ActiveModelDownload>> = Mutex::new(HashMap::new());
 }
 
 #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
@@ -1866,6 +1868,137 @@ pub struct DownloadProgress {
     pub message: String,
 }
 
+#[derive(Debug, Serialize, Type, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelDownloadState {
+    Downloading,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Serialize, Type, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelDownloadStatus {
+    pub state: ModelDownloadState,
+    pub progress: f64,
+    pub message: String,
+}
+
+#[derive(Clone)]
+struct ActiveModelDownload {
+    status: ModelDownloadStatus,
+    notify: Arc<Notify>,
+}
+
+fn model_download_key(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+fn model_download_status(
+    state: ModelDownloadState,
+    progress: f64,
+    message: String,
+) -> ModelDownloadStatus {
+    ModelDownloadStatus {
+        state,
+        progress: progress.clamp(0.0, 100.0),
+        message,
+    }
+}
+
+async fn begin_model_download(key: &str, message: String) -> bool {
+    let mut downloads = MODEL_DOWNLOADS.lock().await;
+    if downloads
+        .get(key)
+        .is_some_and(|entry| entry.status.state == ModelDownloadState::Downloading)
+    {
+        return false;
+    }
+
+    downloads.insert(
+        key.to_string(),
+        ActiveModelDownload {
+            status: model_download_status(ModelDownloadState::Downloading, 0.0, message),
+            notify: Arc::new(Notify::new()),
+        },
+    );
+    true
+}
+
+async fn wait_for_model_download(key: &str) -> Result<(), String> {
+    loop {
+        let entry = {
+            let downloads = MODEL_DOWNLOADS.lock().await;
+            downloads.get(key).cloned()
+        };
+
+        let Some(entry) = entry else {
+            return Ok(());
+        };
+
+        match entry.status.state {
+            ModelDownloadState::Downloading => {
+                tokio::select! {
+                    _ = entry.notify.notified() => {}
+                    _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+                }
+            }
+            ModelDownloadState::Completed => return Ok(()),
+            ModelDownloadState::Failed => return Err(entry.status.message),
+        }
+    }
+}
+
+async fn set_model_download_status(app: &AppHandle, key: &str, status: ModelDownloadStatus) {
+    let notify = {
+        let mut downloads = MODEL_DOWNLOADS.lock().await;
+        downloads.get_mut(key).map(|entry| {
+            entry.status = status.clone();
+            entry.notify.clone()
+        })
+    };
+
+    let _ = DownloadProgress {
+        progress: status.progress,
+        message: status.message.clone(),
+    }
+    .emit(app);
+
+    if status.state != ModelDownloadState::Downloading
+        && let Some(notify) = notify
+    {
+        notify.notify_waiters();
+    }
+}
+
+async fn set_model_download_progress(app: &AppHandle, key: &str, progress: f64, message: String) {
+    set_model_download_status(
+        app,
+        key,
+        model_download_status(ModelDownloadState::Downloading, progress, message),
+    )
+    .await;
+}
+
+async fn clear_model_download_status(path: &Path) {
+    let key = model_download_key(path);
+    let mut downloads = MODEL_DOWNLOADS.lock().await;
+    let _ = downloads.remove(&key);
+}
+
+#[tauri::command]
+#[specta::specta]
+#[instrument(skip(app))]
+pub async fn get_model_download_status(
+    app: AppHandle,
+    target_path: String,
+) -> Result<Option<ModelDownloadStatus>, String> {
+    let validated_path = validate_model_path(&app, &target_path)?;
+    let key = model_download_key(&validated_path);
+    let downloads = MODEL_DOWNLOADS.lock().await;
+    Ok(downloads.get(&key).map(|entry| entry.status.clone()))
+}
+
 #[tauri::command]
 #[specta::specta]
 #[instrument(skip(app))]
@@ -1875,8 +2008,47 @@ pub async fn download_whisper_model(
     output_path: String,
 ) -> Result<(), String> {
     let validated_path = validate_model_path(&app, &output_path)?;
+    let key = model_download_key(&validated_path);
 
-    let model_parts: &[&str] = match model_name.as_str() {
+    if !begin_model_download(&key, "Preparing model download".to_string()).await {
+        return wait_for_model_download(&key).await;
+    }
+
+    let download_app = app.clone();
+    let download_key = key.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = download_whisper_model_to_path(
+            &download_app,
+            &model_name,
+            &validated_path,
+            &download_key,
+        )
+        .await;
+        let final_status = match &result {
+            Ok(_) => model_download_status(
+                ModelDownloadState::Completed,
+                100.0,
+                "Download complete".to_string(),
+            ),
+            Err(error) => model_download_status(
+                ModelDownloadState::Failed,
+                0.0,
+                format!("Download failed: {error}"),
+            ),
+        };
+        set_model_download_status(&download_app, &download_key, final_status).await;
+    });
+
+    wait_for_model_download(&key).await
+}
+
+async fn download_whisper_model_to_path(
+    app: &AppHandle,
+    model_name: &str,
+    validated_path: &Path,
+    download_key: &str,
+) -> Result<(), String> {
+    let model_parts: &[&str] = match model_name {
         "tiny" => &[
             "https://github.com/CapSoftware/transcription-models/releases/download/whisper-v1/ggml-tiny.bin",
         ],
@@ -1908,8 +2080,9 @@ pub async fn download_whisper_model(
         .map_err(|e| format!("Failed to create file: {e}"))?;
 
     let mut downloaded: u64 = 0;
+    let part_count = model_parts.len() as f64;
 
-    for url in model_parts {
+    for (idx, url) in model_parts.iter().enumerate() {
         let response = http_client
             .get(*url)
             .timeout(MODEL_DOWNLOAD_REQUEST_TIMEOUT)
@@ -1924,6 +2097,8 @@ pub async fn download_whisper_model(
             ));
         }
 
+        let part_size = response.content_length().unwrap_or(0);
+        let mut downloaded_part: u64 = 0;
         let mut stream = response.bytes_stream();
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| format!("Error while downloading: {e}"))?;
@@ -1933,19 +2108,23 @@ pub async fn download_whisper_model(
                 .map_err(|e| format!("Error while writing to file: {e}"))?;
 
             downloaded = downloaded.saturating_add(chunk.len() as u64);
+            downloaded_part = downloaded_part.saturating_add(chunk.len() as u64);
 
             let progress = if total_size > 0 {
                 (downloaded as f64 / total_size as f64) * 100.0
+            } else if part_size > 0 {
+                ((idx as f64 + downloaded_part as f64 / part_size as f64) / part_count) * 100.0
             } else {
-                0.0
+                (idx as f64 / part_count) * 100.0
             };
 
-            DownloadProgress {
+            set_model_download_progress(
+                app,
+                download_key,
                 progress,
-                message: format!("Downloading model: {progress:.1}%"),
-            }
-            .emit(&app)
-            .ok();
+                format!("Downloading model: {progress:.0}%"),
+            )
+            .await;
         }
     }
 
@@ -1995,6 +2174,8 @@ pub async fn delete_whisper_model(app: AppHandle, model_path: String) -> Result<
     if !validated_path.exists() {
         return Err(format!("Model file not found: {model_path}"));
     }
+
+    clear_model_download_status(&validated_path).await;
 
     tokio::fs::remove_file(&validated_path)
         .await
@@ -2064,6 +2245,26 @@ const PARAKEET_MODEL_CLEANUP_FILES: &[&str] = &[
     "vocab.txt",
 ];
 
+const PARAKEET_KNOWN_PART_SIZES: &[(&str, u64)] = &[
+    ("encoder-model.int8.onnx", 652_183_999),
+    ("decoder_joint-model.int8.onnx", 18_202_004),
+    ("encoder-model.onnx", 41_770_866),
+    ("encoder-model.onnx.data.part0", 1_300_000_000),
+    ("encoder-model.onnx.data.part1", 1_135_420_160),
+    ("decoder_joint-model.onnx", 72_520_893),
+    ("vocab.txt", 93_939),
+];
+
+fn parakeet_known_part_size(url: &str) -> Option<u64> {
+    PARAKEET_KNOWN_PART_SIZES.iter().find_map(|(name, size)| {
+        if url.ends_with(name) {
+            Some(*size)
+        } else {
+            None
+        }
+    })
+}
+
 fn parakeet_model_files_for_dir(
     output_dir: &std::path::Path,
 ) -> &'static [(&'static str, &'static [&'static str])] {
@@ -2107,7 +2308,12 @@ async fn parakeet_model_file_sizes(
                 ));
             }
 
-            file_size = file_size.saturating_add(resp.content_length().unwrap_or(0));
+            let part_size = resp
+                .content_length()
+                .filter(|size| *size > 0)
+                .or_else(|| parakeet_known_part_size(*url))
+                .unwrap_or(0);
+            file_size = file_size.saturating_add(part_size);
         }
         sizes.push((*filename, file_size));
     }
@@ -2157,19 +2363,53 @@ fn finalize_parakeet_model_download(
 #[instrument(skip(app))]
 pub async fn download_parakeet_model(app: AppHandle, output_dir: String) -> Result<(), String> {
     let validated_dir = validate_model_path(&app, &output_dir)?;
+    let key = model_download_key(&validated_dir);
 
-    std::fs::create_dir_all(&validated_dir)
+    if !begin_model_download(&key, "Preparing model download".to_string()).await {
+        return wait_for_model_download(&key).await;
+    }
+
+    let download_app = app.clone();
+    let download_key = key.clone();
+    tauri::async_runtime::spawn(async move {
+        let result =
+            download_parakeet_model_to_dir(&download_app, &validated_dir, &download_key).await;
+        let final_status = match &result {
+            Ok(_) => model_download_status(
+                ModelDownloadState::Completed,
+                100.0,
+                "Download complete".to_string(),
+            ),
+            Err(error) => model_download_status(
+                ModelDownloadState::Failed,
+                0.0,
+                format!("Download failed: {error}"),
+            ),
+        };
+        set_model_download_status(&download_app, &download_key, final_status).await;
+    });
+
+    wait_for_model_download(&key).await
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+async fn download_parakeet_model_to_dir(
+    app: &AppHandle,
+    validated_dir: &Path,
+    download_key: &str,
+) -> Result<(), String> {
+    std::fs::create_dir_all(validated_dir)
         .map_err(|e| format!("Failed to create model directory: {e}"))?;
 
     let http_client = app.state::<http_client::HttpClient>();
-    let model_files = parakeet_model_files_for_dir(&validated_dir);
+    let model_files = parakeet_model_files_for_dir(validated_dir);
     let expected_file_sizes = parakeet_model_file_sizes(&http_client, model_files).await?;
 
-    let staging_dir = parakeet_staging_dir(&validated_dir);
+    let staging_dir = parakeet_staging_dir(validated_dir);
     if parakeet_model_files_match(&staging_dir, &expected_file_sizes) {
         tracing::info!("Finalizing previously completed Parakeet model download");
-        finalize_parakeet_model_download(&validated_dir, &staging_dir, model_files)?;
-        invalidate_parakeet_cache_for_dir(&validated_dir).await;
+        finalize_parakeet_model_download(validated_dir, &staging_dir, model_files)?;
+        invalidate_parakeet_cache_for_dir(validated_dir).await;
         return Ok(());
     }
 
@@ -2226,12 +2466,13 @@ pub async fn download_parakeet_model(app: AppHandle, output_dir: String) -> Resu
                         ((idx as f64 + 0.5) / model_files.len() as f64) * 100.0
                     };
 
-                    DownloadProgress {
+                    set_model_download_progress(
+                        app,
+                        download_key,
                         progress,
-                        message: format!("Downloading {filename}: {progress:.1}%"),
-                    }
-                    .emit(&app)
-                    .ok();
+                        format!("Downloading {filename}: {progress:.0}%"),
+                    )
+                    .await;
                 }
             }
 
@@ -2256,9 +2497,9 @@ pub async fn download_parakeet_model(app: AppHandle, output_dir: String) -> Resu
         return Err("Downloaded model files did not match expected sizes".to_string());
     }
 
-    finalize_parakeet_model_download(&validated_dir, &staging_dir, model_files)?;
+    finalize_parakeet_model_download(validated_dir, &staging_dir, model_files)?;
 
-    invalidate_parakeet_cache_for_dir(&validated_dir).await;
+    invalidate_parakeet_cache_for_dir(validated_dir).await;
 
     Ok(())
 }
@@ -2317,6 +2558,7 @@ pub async fn delete_parakeet_model(app: AppHandle, model_dir: String) -> Result<
     }
 
     invalidate_parakeet_cache_for_dir(&validated_dir).await;
+    clear_model_download_status(&validated_dir).await;
 
     tokio::fs::remove_dir_all(&validated_dir)
         .await

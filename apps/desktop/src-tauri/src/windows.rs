@@ -48,6 +48,20 @@ const DEFAULT_TRAFFIC_LIGHTS_INSET: LogicalPosition<f64> = LogicalPosition::new(
 const DEFAULT_FALLBACK_DISPLAY_WIDTH: f64 = 1920.0;
 const DEFAULT_FALLBACK_DISPLAY_HEIGHT: f64 = 1080.0;
 
+#[cfg(windows)]
+const WINDOWS_WEBVIEW2_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --disable-vulkan --use-angle=d3d11";
+
+#[cfg(windows)]
+fn windows_webview2_browser_args() -> String {
+    let mut args = WINDOWS_WEBVIEW2_BROWSER_ARGS.to_string();
+    if cap_rendering::force_software_wgpu_adapter()
+        || std::env::args_os().any(|arg| arg.to_str() == Some("--disable-gpu"))
+    {
+        args.push_str(" --disable-gpu");
+    }
+    args
+}
+
 #[cfg(target_os = "macos")]
 fn is_system_dark_mode() -> bool {
     use cocoa::base::{id, nil};
@@ -1618,9 +1632,18 @@ impl ShowCapWindow {
 
                 #[cfg(windows)]
                 {
-                    let position = display.raw_handle().physical_position().unwrap();
-                    let logical_size = display.logical_size().unwrap();
-                    let physical_size = display.physical_size().unwrap();
+                    let Some(position) = display.raw_handle().physical_position() else {
+                        warn!(display_id = %display_id, "Missing display position for target select overlay");
+                        return Err(tauri::Error::WindowNotFound);
+                    };
+                    let Some(logical_size) = display.logical_size() else {
+                        warn!(display_id = %display_id, "Missing display logical size for target select overlay");
+                        return Err(tauri::Error::WindowNotFound);
+                    };
+                    let Some(physical_size) = display.physical_size() else {
+                        warn!(display_id = %display_id, "Missing display physical size for target select overlay");
+                        return Err(tauri::Error::WindowNotFound);
+                    };
                     use tauri::{LogicalSize, PhysicalPosition, PhysicalSize};
                     let _ = window.set_size(LogicalSize::new(
                         logical_size.width(),
@@ -1629,12 +1652,19 @@ impl ShowCapWindow {
                     let _ = window.set_position(PhysicalPosition::new(position.x(), position.y()));
                     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
 
-                    let actual_physical_size = window.inner_size().unwrap();
-                    if physical_size.width() != actual_physical_size.width as f64 {
-                        let _ = window.set_size(LogicalSize::new(
-                            logical_size.width(),
-                            logical_size.height(),
-                        ));
+                    match window.inner_size() {
+                        Ok(actual_physical_size)
+                            if physical_size.width() != actual_physical_size.width as f64 =>
+                        {
+                            let _ = window.set_size(LogicalSize::new(
+                                logical_size.width(),
+                                logical_size.height(),
+                            ));
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            warn!(%err, "Failed to read target select overlay inner size");
+                        }
                     }
                 }
 
@@ -2247,12 +2277,18 @@ impl ShowCapWindow {
                 let position = display.raw_handle().logical_position();
 
                 #[cfg(windows)]
-                let position = display.raw_handle().physical_position().unwrap();
+                let Some(position) = display.raw_handle().physical_position() else {
+                    warn!(screen_id = %screen_id, "Missing display position for window capture occluder");
+                    return Err(tauri::Error::WindowNotFound);
+                };
 
                 #[cfg(target_os = "linux")]
                 let position = display.raw_handle().physical_position().unwrap();
 
-                let bounds = display.physical_size().unwrap();
+                let Some(bounds) = display.physical_size() else {
+                    warn!(screen_id = %screen_id, "Missing display size for window capture occluder");
+                    return Err(tauri::Error::WindowNotFound);
+                };
 
                 let mut window_builder = self
                     .window_builder(app, "/window-capture-occluder")
@@ -2271,7 +2307,9 @@ impl ShowCapWindow {
                 let window = window_builder.build()?;
                 lock_window_text_scale(&window);
 
-                window.set_ignore_cursor_events(true).unwrap();
+                if let Err(err) = window.set_ignore_cursor_events(true) {
+                    warn!(%err, "Failed to ignore cursor events for window capture occluder");
+                }
 
                 #[cfg(target_os = "macos")]
                 {
@@ -2678,7 +2716,10 @@ impl ShowCapWindow {
 
         #[cfg(windows)]
         {
-            builder = builder.decorations(false).zoom_hotkeys_enabled(false);
+            builder = builder
+                .decorations(false)
+                .zoom_hotkeys_enabled(false)
+                .additional_browser_args(&windows_webview2_browser_args());
         }
 
         // Linux has no native macOS-style traffic lights, so we drop the window

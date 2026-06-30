@@ -30,9 +30,14 @@ impl DisplayImpl {
     }
 
     pub fn list() -> Vec<Self> {
-        CGDisplay::active_displays()
+        let active_displays: Vec<_> = CGDisplay::active_displays().into_iter().flatten().collect();
+
+        if active_displays.is_empty() {
+            return vec![Self(CGDisplay::main())];
+        }
+
+        active_displays
             .into_iter()
-            .flatten()
             .map(|v| Self(CGDisplay::new(v)))
             .collect()
     }

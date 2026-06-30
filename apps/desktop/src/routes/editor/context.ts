@@ -21,7 +21,10 @@ import {
 import { createStore, produce, reconcile, unwrap } from "solid-js/store";
 
 import { generalSettingsStore } from "~/store";
-import type { EditorCaptionSettings } from "~/store/captions";
+import {
+	type EditorCaptionSettings,
+	normalizeCaptionSettings,
+} from "~/store/captions";
 import { defaultKeyboardSettings } from "~/store/keyboard";
 
 import { createPresets } from "~/utils/createPresets";
@@ -240,11 +243,18 @@ export function normalizeProject(
 				),
 			}
 		: undefined;
+	const captions = config.captions
+		? {
+				...config.captions,
+				settings: normalizeCaptionSettings(config.captions.settings),
+			}
+		: null;
 
 	return {
 		...config,
 		keyboard,
 		timeline,
+		captions,
 		background: withCornerDefaults(config.background),
 		camera: withCornerDefaults(config.camera),
 	};

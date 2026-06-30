@@ -21,6 +21,7 @@ pub struct H264PacketEncoder {
     input_height: u32,
     packet: Packet,
     first_pts: Option<i64>,
+    last_frame_pts: Option<i64>,
     last_written_dts: Option<i64>,
     encoder_time_base: Rational,
     frame_rate: Rational,
@@ -63,6 +64,7 @@ impl H264PacketEncoder {
             input_height: opened.input_height,
             packet: Packet::empty(),
             first_pts: None,
+            last_frame_pts: None,
             last_written_dts: None,
             encoder_time_base,
             frame_rate,
@@ -200,11 +202,25 @@ impl H264PacketEncoder {
             let tb = self.encoder.time_base();
             let rate = tb.denominator() as f64 / tb.numerator() as f64;
             let pts = (timestamp.as_secs_f64() * rate).round() as i64;
-            let first_pts = self.first_pts.get_or_insert(pts);
-            frame.set_pts(Some(pts - *first_pts));
+            let first_pts = *self.first_pts.get_or_insert(pts);
+            let pts = normalize_input_pts(
+                pts - first_pts,
+                self.last_frame_pts,
+                tb,
+                self.encoder.frame_rate(),
+            );
+            self.last_frame_pts = Some(pts);
+            frame.set_pts(Some(pts));
         } else if let Some(pts) = frame.pts() {
-            let first_pts = self.first_pts.get_or_insert(pts);
-            frame.set_pts(Some(pts - *first_pts));
+            let first_pts = *self.first_pts.get_or_insert(pts);
+            let pts = normalize_input_pts(
+                pts - first_pts,
+                self.last_frame_pts,
+                self.encoder.time_base(),
+                self.encoder.frame_rate(),
+            );
+            self.last_frame_pts = Some(pts);
+            frame.set_pts(Some(pts));
         } else {
             tracing::error!("Frame has no pts");
         }
@@ -215,6 +231,12 @@ impl H264PacketEncoder {
         F: FnMut(EncodedPacket) -> Result<(), EncodePacketError>,
     {
         while self.encoder.receive_packet(&mut self.packet).is_ok() {
+            match (self.packet.pts(), self.packet.dts()) {
+                (Some(pts), None) => self.packet.set_dts(Some(pts)),
+                (None, Some(dts)) => self.packet.set_pts(Some(dts)),
+                _ => {}
+            }
+
             if let (Some(dts), Some(last_dts)) = (self.packet.dts(), self.last_written_dts)
                 && dts <= last_dts
             {
@@ -252,6 +274,41 @@ impl H264PacketEncoder {
 
         Ok(())
     }
+}
+
+fn normalize_input_pts(
+    pts: i64,
+    last_pts: Option<i64>,
+    time_base: Rational,
+    frame_rate: Rational,
+) -> i64 {
+    let Some(last_pts) = last_pts else {
+        return pts;
+    };
+
+    if pts > last_pts {
+        return pts;
+    }
+
+    last_pts + nominal_packet_duration(time_base, frame_rate).unwrap_or(1)
+}
+
+fn nominal_packet_duration(time_base: Rational, frame_rate: Rational) -> Option<i64> {
+    let time_base_num = time_base.numerator();
+    let time_base_den = time_base.denominator();
+    let frame_rate_num = frame_rate.numerator();
+    let frame_rate_den = frame_rate.denominator();
+
+    if time_base_num <= 0 || time_base_den <= 0 || frame_rate_num <= 0 || frame_rate_den <= 0 {
+        return None;
+    }
+
+    let ticks = (frame_rate_den as f64 * time_base_den as f64)
+        / (frame_rate_num as f64 * time_base_num as f64);
+    ticks
+        .is_finite()
+        .then(|| ticks.round() as i64)
+        .filter(|ticks| *ticks > 0)
 }
 
 #[cfg(test)]

@@ -683,9 +683,19 @@ async fn sync_camera_preview_sender(
 }
 
 impl App {
-    pub fn set_pending_recording(&mut self, mode: RecordingMode, target: ScreenCaptureTarget) {
+    pub fn set_pending_recording(
+        &mut self,
+        mode: RecordingMode,
+        target: ScreenCaptureTarget,
+    ) -> Result<(), String> {
+        if !matches!(self.recording_state, RecordingState::None) {
+            return Err("Recording already in progress".to_string());
+        }
+
         self.recording_state = RecordingState::Pending { mode, target };
         CurrentRecordingChanged.emit(&self.handle).ok();
+
+        Ok(())
     }
 
     pub fn set_current_recording(&mut self, actor: InProgressRecording) {
@@ -693,7 +703,39 @@ impl App {
         CurrentRecordingChanged.emit(&self.handle).ok();
     }
 
+    pub fn clear_pending_recording(&mut self) -> bool {
+        if !matches!(self.recording_state, RecordingState::Pending { .. }) {
+            return false;
+        }
+
+        self.recording_state = RecordingState::None;
+        self.was_camera_only_recording = false;
+        self.close_occluder_windows();
+        crate::windows::apply_content_protection(&self.handle, false);
+        if let Some(camera) = CapWindowId::Camera.get(&self.handle) {
+            let _ = camera.set_content_protected(false);
+        }
+        CurrentRecordingChanged.emit(&self.handle).ok();
+
+        true
+    }
+
     pub fn clear_current_recording(&mut self) -> Option<InProgressRecording> {
+        let previous = std::mem::replace(&mut self.recording_state, RecordingState::None);
+        match previous {
+            RecordingState::Active(recording) => {
+                self.close_occluder_windows();
+                crate::windows::apply_content_protection(&self.handle, false);
+                Some(recording)
+            }
+            state => {
+                self.recording_state = state;
+                None
+            }
+        }
+    }
+
+    pub fn clear_recording_state(&mut self) -> Option<InProgressRecording> {
         let previous = std::mem::replace(&mut self.recording_state, RecordingState::None);
         self.close_occluder_windows();
         crate::windows::apply_content_protection(&self.handle, false);
@@ -1185,7 +1227,7 @@ async fn set_camera_input(
                                 "Failed to initialize camera after {attempts} attempts: {e}"
                             ));
                         }
-                        warn!(
+                        debug!(
                             "Failed to set camera input (attempt {}): {}. Retrying...",
                             attempts, e
                         );
@@ -1465,7 +1507,7 @@ async fn get_devices_snapshot() -> DevicesUpdated {
         Vec::new()
     };
     let microphones = if permissions.microphone.permitted() {
-        MicrophoneFeed::list().keys().cloned().collect()
+        MicrophoneFeed::list_names()
     } else {
         Vec::new()
     };
@@ -1498,7 +1540,7 @@ fn spawn_devices_snapshot_emitter(app_handle: AppHandle) {
                 permissions.camera.permitted(),
                 permissions.microphone.permitted(),
                 || cap_camera::list_cameras().collect::<Vec<_>>(),
-                || MicrophoneFeed::list().keys().cloned().collect::<Vec<_>>(),
+                MicrophoneFeed::list_names,
             ) else {
                 break;
             };
@@ -1948,18 +1990,15 @@ pub async fn request_app_exit(app: AppHandle) {
     finalize_app_exit(&app, 0);
 }
 
-fn find_mic_by_label_or_fuzzy(
-    devices: &microphone::MicrophonesMap,
-    selected_label: &str,
-) -> Option<String> {
-    if devices.contains_key(selected_label) {
+fn find_mic_by_label_or_fuzzy(devices: &[String], selected_label: &str) -> Option<String> {
+    if devices.iter().any(|name| name == selected_label) {
         return Some(selected_label.to_string());
     }
 
     let selected_lower = selected_label.to_lowercase();
 
     devices
-        .keys()
+        .iter()
         .find(|name| {
             let name_lower = name.to_lowercase();
             name_lower.contains(&selected_lower) || selected_lower.contains(&name_lower)
@@ -1996,7 +2035,7 @@ fn spawn_microphone_watcher(app_handle: AppHandle) {
             if should_check && let Some(selected_label) = label {
                 let Some(devices) = run_while_active(
                     || app_is_exiting(&app_handle),
-                    microphone::MicrophoneFeed::list,
+                    microphone::MicrophoneFeed::list_names,
                 ) else {
                     break;
                 };
@@ -3148,7 +3187,7 @@ async fn list_audio_devices() -> Result<Vec<String>, ()> {
         return Ok(vec![]);
     }
 
-    Ok(MicrophoneFeed::list().keys().cloned().collect())
+    Ok(MicrophoneFeed::list_names())
 }
 
 #[derive(Serialize, Type, Debug, Clone)]
@@ -4256,11 +4295,26 @@ type FilteredRegistry = tracing_subscriber::layer::Layered<
 pub type DynLoggingLayer = Box<dyn tracing_subscriber::Layer<FilteredRegistry> + Send + Sync>;
 type LoggingHandle = tracing_subscriber::reload::Handle<Option<DynLoggingLayer>, FilteredRegistry>;
 
+#[cfg(target_os = "windows")]
+fn configure_windows_graphics_recovery(previous_session_terminated_unexpectedly: bool) {
+    if previous_session_terminated_unexpectedly {
+        cap_rendering::set_force_software_wgpu_adapter(true);
+        warn!(
+            "Previous Cap session terminated unexpectedly; using Windows software graphics recovery mode for this launch"
+        );
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn configure_windows_graphics_recovery(_previous_session_terminated_unexpectedly: bool) {}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
     // Arm the unexpected-termination sentinel before anything else can crash, and
     // report any previous session that died without a clean shutdown.
-    crash_sentinel::init(&logs_dir, env!("CARGO_PKG_VERSION"));
+    let previous_session_terminated_unexpectedly =
+        crash_sentinel::init(&logs_dir, env!("CARGO_PKG_VERSION"));
+    configure_windows_graphics_recovery(previous_session_terminated_unexpectedly);
 
     ffmpeg::init()
         .map_err(|e| {
@@ -4406,6 +4460,7 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
             captions::transcribe_audio,
             captions::save_captions,
             captions::load_captions,
+            captions::get_model_download_status,
             captions::download_whisper_model,
             captions::check_model_exists,
             captions::delete_whisper_model,
@@ -4482,11 +4537,17 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
         .typ::<cap_automation::ExportDestination>();
 
     #[cfg(debug_assertions)]
-    if let Err(err) = specta_builder.export(
-        specta_typescript::Typescript::default(),
-        "../src/utils/tauri.ts",
-    ) {
-        warn!(error = %err, "Failed to export TypeScript bindings");
+    {
+        let bindings_path = std::path::Path::new("../src/utils/tauri.ts");
+        if bindings_path.parent().is_some_and(|parent| parent.exists()) {
+            if let Err(err) =
+                specta_builder.export(specta_typescript::Typescript::default(), bindings_path)
+            {
+                warn!(error = %err, "Failed to export TypeScript bindings");
+            }
+        } else {
+            debug!("Skipping TypeScript bindings export outside source checkout");
+        }
     }
 
     let (camera_preview_state_tx, camera_preview_state_rx) =
@@ -4529,7 +4590,16 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             trace!("Single instance invoked with args {args:?}");
 
-            // This is also handled as a deeplink on some platforms (eg macOS), see deeplink_actions
+            let action_urls = args
+                .iter()
+                .filter(|arg| arg.starts_with("cap-desktop://"))
+                .filter_map(|arg| tauri::Url::parse(arg).ok())
+                .collect::<Vec<_>>();
+            if !action_urls.is_empty() {
+                deeplink_actions::handle(app, action_urls);
+                return;
+            }
+
             let Some(cap_file) = args
                 .iter()
                 .find(|arg| arg.ends_with(".cap"))
@@ -4757,6 +4827,7 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
                 app.manage(CameraWindowOperationLock::default());
                 app.manage(AppExitState::default());
                 app.manage(MainWindowReadyState::default());
+                app.manage(deeplink_actions::DeepLinkActionExecutor::new(&app));
                 #[cfg(target_os = "macos")]
                 install_macos_native_terminate_handler(&app);
                 spawn_process_memory_sampler(app.clone());
@@ -5574,22 +5645,7 @@ fn restore_camera_window(app: &AppHandle) {
 }
 
 fn close_target_select_overlays(app: &AppHandle) {
-    let focus_manager = app.try_state::<target_select_overlay::WindowFocusManager>();
-    let mut saw_overlay = false;
-
-    for (label, window) in app.webview_windows() {
-        if let Ok(CapWindowId::TargetSelectOverlay { display_id }) = CapWindowId::from_str(&label) {
-            saw_overlay = true;
-            hide_overlay(&window);
-            if let Some(focus_manager) = focus_manager.as_ref() {
-                focus_manager.destroy(&display_id, app.global_shortcut());
-            }
-        }
-    }
-
-    if !saw_overlay && let Some(focus_manager) = focus_manager {
-        focus_manager.shutdown(app);
-    }
+    target_select_overlay::close_target_select_overlay_windows(app);
 }
 
 #[cfg(target_os = "windows")]

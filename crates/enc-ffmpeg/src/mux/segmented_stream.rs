@@ -84,6 +84,7 @@ pub struct SegmentedVideoEncoder {
     segment_start_time: Option<Duration>,
     last_frame_timestamp: Option<Duration>,
     frames_in_segment: u32,
+    encoded_frame_count: u64,
 
     completed_segments: Vec<VideoSegmentInfo>,
 
@@ -268,7 +269,7 @@ impl SegmentedVideoEncoder {
             segment_duration_secs = config.segment_duration.as_secs(),
             width = codec_info.width,
             height = codec_info.height,
-            "Initialized segmented video encoder with FFmpeg DASH muxer (init.mp4 + m4s segments). CRITICAL: init.mp4 is required for segment playback/recovery."
+            "Initialized segmented video encoder with FFmpeg DASH muxer (init.mp4 + m4s segments)"
         );
 
         let instance = Self {
@@ -280,6 +281,7 @@ impl SegmentedVideoEncoder {
             segment_start_time: None,
             last_frame_timestamp: None,
             frames_in_segment: 0,
+            encoded_frame_count: 0,
             completed_segments: Vec::new(),
             pending_segment_indices: Vec::new(),
             frames_since_pending_flush: 0,
@@ -339,8 +341,10 @@ impl SegmentedVideoEncoder {
 
         self.last_frame_timestamp = Some(timestamp);
 
+        let encoder_timestamp = self.next_encoder_timestamp();
         self.encoder
-            .queue_frame(frame, timestamp, &mut self.output)?;
+            .queue_frame(frame, encoder_timestamp, &mut self.output)?;
+        self.encoded_frame_count += 1;
         self.frames_in_segment += 1;
 
         if is_first_frame {
@@ -361,6 +365,12 @@ impl SegmentedVideoEncoder {
         }
 
         Ok(())
+    }
+
+    fn next_encoder_timestamp(&self) -> Duration {
+        let frame_rate_num = self.codec_info.frame_rate_num.max(1) as f64;
+        let frame_rate_den = self.codec_info.frame_rate_den.max(1) as f64;
+        Duration::from_secs_f64(self.encoded_frame_count as f64 * frame_rate_den / frame_rate_num)
     }
 
     fn notify_segment(&self, event: SegmentCompletedEvent) {
@@ -579,6 +589,7 @@ impl SegmentedVideoEncoder {
             tracing::warn!("Video write_trailer warning: {e}");
         }
 
+        self.try_notify_init_segment();
         self.finalize_pending_tmp_files();
         self.flush_pending_segments();
 
@@ -603,6 +614,7 @@ impl SegmentedVideoEncoder {
             tracing::warn!("Video write_trailer warning: {e}");
         }
 
+        self.try_notify_init_segment();
         self.finalize_pending_tmp_files();
         self.flush_pending_segments();
 
@@ -735,7 +747,7 @@ impl SegmentedVideoEncoder {
 
                 if file_size < 100 {
                     tracing::debug!(
-                        "Skipping tiny orphaned segment {} ({} bytes)",
+                        "Skipping tiny unlisted segment {} ({} bytes)",
                         segment_path.display(),
                         file_size
                     );
@@ -755,7 +767,7 @@ impl SegmentedVideoEncoder {
                 };
 
                 tracing::info!(
-                    "Recovered orphaned segment {} with {} bytes, estimated duration {:?}",
+                    "Finalized unlisted segment {} with {} bytes, estimated duration {:?}",
                     segment_path.display(),
                     file_size,
                     duration
@@ -852,7 +864,7 @@ impl SegmentedVideoEncoder {
 
         if !init_path.exists() {
             return Err(format!(
-                "CRITICAL: init.mp4 is missing at {}. M4S segments will be unplayable without it!",
+                "init.mp4 is missing at {}. M4S segments will be unplayable without it.",
                 init_path.display()
             ));
         }
@@ -862,7 +874,7 @@ impl SegmentedVideoEncoder {
                 let size = metadata.len();
                 if size < 100 {
                     return Err(format!(
-                        "CRITICAL: init.mp4 at {} is too small ({} bytes). It may be corrupted!",
+                        "init.mp4 at {} is too small ({} bytes). It may be corrupted.",
                         init_path.display(),
                         size
                     ));
@@ -870,7 +882,7 @@ impl SegmentedVideoEncoder {
                 Ok(())
             }
             Err(e) => Err(format!(
-                "CRITICAL: Cannot read init.mp4 metadata at {}: {}",
+                "Cannot read init.mp4 metadata at {}: {}",
                 init_path.display(),
                 e
             )),
@@ -1084,5 +1096,72 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn jittery_capture_timestamps_still_produce_decodable_segments() {
+        ffmpeg::init().ok();
+
+        let temp = tempfile::tempdir().unwrap();
+        let base_path = temp.path().to_path_buf();
+
+        let mut encoder = SegmentedVideoEncoder::init(
+            base_path.clone(),
+            test_video_info(),
+            SegmentedVideoEncoderConfig {
+                segment_duration: Duration::from_millis(250),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        for i in 0_u64..120 {
+            let frame = create_test_frame(320, 240);
+            let base_ms = i * 33;
+            let timestamp_ms = if i > 0 && i % 17 == 0 {
+                base_ms.saturating_sub(90)
+            } else if i > 0 && i % 29 == 0 {
+                base_ms.saturating_sub(33)
+            } else {
+                base_ms
+            };
+            encoder
+                .queue_frame(frame, Duration::from_millis(timestamp_ms))
+                .unwrap();
+        }
+
+        encoder.finish().unwrap();
+
+        let manifest_path = base_path.join("manifest.json");
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        assert!(manifest["is_complete"].as_bool().unwrap());
+
+        let segment_paths: Vec<PathBuf> = manifest["segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|segment| segment["is_complete"].as_bool().unwrap_or(false))
+            .filter_map(|segment| {
+                let duration = segment["duration"].as_f64()?;
+                assert!(
+                    duration > 0.0,
+                    "completed segment duration must be positive"
+                );
+                let path = base_path.join(segment["path"].as_str()?);
+                path.exists().then_some(path)
+            })
+            .collect();
+        assert!(!segment_paths.is_empty());
+
+        let output_path = temp.path().join("jittery-output.mp4");
+        crate::remux::concatenate_m4s_segments_with_init(
+            &base_path.join(INIT_SEGMENT_NAME),
+            &segment_paths,
+            &output_path,
+        )
+        .unwrap();
+
+        assert!(crate::remux::probe_video_can_decode(&output_path).unwrap_or(false));
     }
 }

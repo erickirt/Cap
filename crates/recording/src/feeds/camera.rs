@@ -22,7 +22,7 @@ use std::{
     time::Duration,
 };
 use tokio::{sync::oneshot, task::LocalSet};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 use crate::ffmpeg::FFmpegVideoFrame;
 use crate::output_pipeline::NativeCameraFrame;
@@ -490,24 +490,25 @@ fn spawn_camera_setup(
                     }
                 };
 
-                info!(
+                debug!(
                     "Camera capture thread: waiting for done signal for {:?}",
                     &id
                 );
 
                 drop(done_tx_thread);
-                let recv_result = done_rx_thread.recv();
-
-                warn!(
-                    "Camera capture thread: done signal received for {:?}, result={:?}",
-                    &id, recv_result
-                );
+                match done_rx_thread.recv() {
+                    Ok(()) => debug!("Camera capture thread: stop signal received for {:?}", &id),
+                    Err(_) => debug!(
+                        "Camera capture thread: stop signal channel closed for {:?}",
+                        &id
+                    ),
+                }
 
                 let _ = handle.stop_capturing();
 
                 std::thread::sleep(Duration::from_millis(50));
 
-                warn!("Camera capture thread: stopped capture of {:?}", &id);
+                debug!("Camera capture thread: capture closed for {:?}", &id);
             });
         }
 
@@ -521,7 +522,7 @@ fn release_camera_thread(handle: std::thread::JoinHandle<()>) {
     if handle.is_finished() {
         let _ = handle.join();
     } else {
-        warn!("Camera setup thread is still running after cancellation");
+        debug!("Camera setup thread is still running after cancellation");
         if let Err(err) = std::thread::Builder::new()
             .name("camera-setup-reaper".to_string())
             .spawn(move || {
@@ -1300,7 +1301,7 @@ fn send_frame_to_camera_senders<T: Clone>(
     let removed_disconnected = senders.len() != len_before_retain;
     if removed_disconnected {
         debug!(
-            "Removed {} disconnected {} senders before fanout",
+            "Removed {} closed {} senders before fanout",
             len_before_retain - senders.len(),
             sender_label
         );
@@ -1356,8 +1357,8 @@ fn send_frame_to_camera_senders<T: Clone>(
                 }
             }
             Err(flume::TrySendError::Disconnected(_)) => {
-                warn!(
-                    "{} sender {} disconnected at frame {}, will be removed",
+                debug!(
+                    "{} sender {} closed at frame {}, will be removed",
                     sender_label, i, frame_num
                 );
                 to_remove.push(i);
@@ -1370,7 +1371,7 @@ fn send_frame_to_camera_senders<T: Clone>(
     }
 
     debug!(
-        "Removing {} disconnected {} senders",
+        "Removing {} closed {} senders",
         to_remove.len(),
         sender_label
     );
