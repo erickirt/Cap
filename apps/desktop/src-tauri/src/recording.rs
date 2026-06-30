@@ -3388,6 +3388,7 @@ async fn handle_recording_finish(
                 Some(SharingMeta {
                     link: video_upload_info.link,
                     id: video_upload_info.id,
+                    content_hash: None,
                 }),
             )
         }

@@ -63,6 +63,8 @@ pub struct AudioGapSummary {
 pub struct SharingMeta {
     pub id: String,
     pub link: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
