@@ -1122,7 +1122,7 @@ function TrackRow(props: {
 				/>
 				<Show when={props.onDelete}>
 					<button
-						class="absolute inset-0 z-20 pointer-events-none flex items-center justify-center rounded-xl border border-red-400/70 bg-red-500/90 text-white opacity-0 transition-opacity group-hover/icon:pointer-events-auto group-hover/icon:opacity-100"
+						class="absolute left-1/2 top-1/2 z-20 pointer-events-none flex size-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-md border border-red-400/70 bg-red-500 text-white opacity-0 shadow-sm transition-opacity group-hover/icon:pointer-events-auto group-hover/icon:opacity-100"
 						onClick={(e) => {
 							e.stopPropagation();
 							props.onDelete?.();
@@ -1130,7 +1130,7 @@ function TrackRow(props: {
 						onMouseDown={(e) => e.stopPropagation()}
 						title="Delete track"
 					>
-						<IconCapTrash class="size-4" />
+						<IconCapTrash class="size-3.5" />
 					</button>
 				</Show>
 			</div>
