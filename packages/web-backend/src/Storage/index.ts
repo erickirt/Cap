@@ -244,6 +244,7 @@ const makeS3Access = (s3: S3BucketAccess) => ({
 				Contents: result.Contents?.map((object) => ({
 					Key: object.Key,
 					Size: object.Size,
+					LastModified: object.LastModified,
 				})),
 				KeyCount: result.KeyCount,
 				IsTruncated: result.IsTruncated,
@@ -501,6 +502,7 @@ const makeGoogleDriveAccess = ({
 						.map((object) => ({
 							Key: object.objectKey,
 							Size: object.contentLength ?? undefined,
+							LastModified: object.updatedAt,
 						})),
 					KeyCount: objects.filter(
 						(object) =>
