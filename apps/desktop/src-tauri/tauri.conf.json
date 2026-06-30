@@ -102,7 +102,14 @@
 					"libva-drm2",
 					"libpipewire-0.3-0",
 					"libasound2t64 | libasound2"
-				]
+				],
+				"files": {
+					"icons/linux/so.cap.desktop-tray-default-symbolic.svg": "/usr/share/icons/hicolor/scalable/status/so.cap.desktop-tray-default-symbolic.svg",
+					"icons/linux/so.cap.desktop-tray-instant-symbolic.svg": "/usr/share/icons/hicolor/scalable/status/so.cap.desktop-tray-instant-symbolic.svg",
+					"icons/linux/so.cap.desktop-tray-screenshot-symbolic.svg": "/usr/share/icons/hicolor/scalable/status/so.cap.desktop-tray-screenshot-symbolic.svg",
+					"icons/linux/so.cap.desktop-tray-studio-symbolic.svg": "/usr/share/icons/hicolor/scalable/status/so.cap.desktop-tray-studio-symbolic.svg",
+					"icons/linux/so.cap.desktop-tray-stop-symbolic.svg": "/usr/share/icons/hicolor/scalable/status/so.cap.desktop-tray-stop-symbolic.svg"
+				}
 			}
 		},
 		"fileAssociations": [
