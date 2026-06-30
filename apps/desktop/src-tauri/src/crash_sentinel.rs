@@ -38,8 +38,9 @@ static SESSION: Mutex<Option<ActiveSession>> = Mutex::new(None);
 /// Arm the sentinel for this session and, if a previous session's sentinel survived,
 /// report that unexpected termination to Sentry. Call once at startup, after Sentry
 /// is initialised.
-pub fn init(logs_dir: &Path, app_version: &str) {
+pub fn init(logs_dir: &Path, app_version: &str) -> bool {
     let path = logs_dir.join(SENTINEL_FILE);
+    let mut previous_session_terminated_unexpectedly = false;
 
     if let Ok(contents) = std::fs::read_to_string(&path) {
         match serde_json::from_str::<SessionRecord>(&contents) {
@@ -47,8 +48,11 @@ pub fn init(logs_dir: &Path, app_version: &str) {
             // single-instance double launch (this init runs before the
             // single-instance plugin loads), not a crash. Leave it untouched and
             // don't arm a competing sentinel for this about-to-exit instance.
-            Ok(prev) if process_is_running(prev.pid) => return,
-            Ok(prev) => report_unexpected_termination(&prev),
+            Ok(prev) if process_is_running(prev.pid) => return false,
+            Ok(prev) => {
+                report_unexpected_termination(&prev);
+                previous_session_terminated_unexpectedly = true;
+            }
             Err(error) => {
                 tracing::warn!(%error, "Found unreadable crash sentinel from previous session")
             }
@@ -85,6 +89,8 @@ pub fn init(logs_dir: &Path, app_version: &str) {
         #[cfg(target_os = "macos")]
         record,
     });
+
+    previous_session_terminated_unexpectedly
 }
 
 /// Record the result of the macOS Liquid Glass material attempt so that, if this

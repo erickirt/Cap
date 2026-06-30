@@ -1,6 +1,6 @@
 use crate::sources::screen_capture::ScreenCaptureTarget;
 #[cfg(target_os = "linux")]
-use crate::sources::screen_capture::{X11InputConfig, frame_from_x11_packet, open_x11_input};
+use crate::sources::screen_capture::{X11Grabber, X11InputConfig, x11_capture_rect};
 #[cfg(target_os = "macos")]
 use anyhow::Context;
 #[cfg(target_os = "linux")]
@@ -1230,22 +1230,9 @@ fn capture_screenshot_x11_blocking(target: &ScreenCaptureTarget) -> anyhow::Resu
         fps: 1,
         show_cursor: false,
     };
-    let mut input = open_x11_input(&config)?;
-    let stream = input
-        .streams()
-        .best(ffmpeg::media::Type::Video)
-        .ok_or_else(|| anyhow!("x11grab did not expose a video stream"))?;
-    let stream_index = stream.index();
-
-    for (stream, packet) in input.packets() {
-        if stream.index() != stream_index {
-            continue;
-        }
-        let frame = frame_from_x11_packet(&packet, config.width, config.height)?;
-        return convert_ffmpeg_frame_to_image(&frame);
-    }
-
-    Err(anyhow!("x11grab ended before producing a screenshot frame"))
+    let mut grabber = X11Grabber::new(&config)?;
+    let frame = grabber.grab()?;
+    convert_ffmpeg_frame_to_image(&frame)
 }
 
 #[cfg(target_os = "linux")]
@@ -1264,28 +1251,46 @@ fn linux_capture_geometry(
             let size = display
                 .physical_size()
                 .ok_or_else(|| anyhow!("Display size unavailable"))?;
-            Ok((
-                display_name,
-                position.x() as i32,
-                position.y() as i32,
-                size.width().max(1.0) as u32,
-                size.height().max(1.0) as u32,
-            ))
+            let (x, y, width, height) = x11_capture_rect(
+                position.x(),
+                position.y(),
+                size.width(),
+                size.height(),
+                None,
+            )?;
+            Ok((display_name, x, y, width, height))
         }
         ScreenCaptureTarget::Window { id } => {
             let window =
                 scap_targets::Window::from_id(id).ok_or_else(|| anyhow!("Window not found"))?;
+            let display = window
+                .display()
+                .ok_or_else(|| anyhow!("Window display unavailable"))?;
+            let display_position = display
+                .raw_handle()
+                .physical_position()
+                .ok_or_else(|| anyhow!("Display position unavailable"))?;
+            let display_size = display
+                .physical_size()
+                .ok_or_else(|| anyhow!("Display size unavailable"))?;
             let bounds = window
                 .raw_handle()
                 .physical_bounds()
                 .ok_or_else(|| anyhow!("Window bounds unavailable"))?;
-            Ok((
-                display_name,
-                bounds.position().x() as i32,
-                bounds.position().y() as i32,
-                bounds.size().width().max(1.0) as u32,
-                bounds.size().height().max(1.0) as u32,
-            ))
+            let crop = (
+                bounds.position().x() - display_position.x(),
+                bounds.position().y() - display_position.y(),
+                bounds.size().width(),
+                bounds.size().height(),
+            );
+            let (x, y, width, height) = x11_capture_rect(
+                display_position.x(),
+                display_position.y(),
+                display_size.width(),
+                display_size.height(),
+                Some(crop),
+            )?;
+            Ok((display_name, x, y, width, height))
         }
         ScreenCaptureTarget::Area { screen, bounds } => {
             let display = scap_targets::Display::from_id(screen)
@@ -1294,13 +1299,23 @@ fn linux_capture_geometry(
                 .raw_handle()
                 .physical_position()
                 .ok_or_else(|| anyhow!("Display position unavailable"))?;
-            Ok((
-                display_name,
-                position.x() as i32 + bounds.position().x().max(0.0) as i32,
-                position.y() as i32 + bounds.position().y().max(0.0) as i32,
-                bounds.size().width().max(1.0) as u32,
-                bounds.size().height().max(1.0) as u32,
-            ))
+            let size = display
+                .physical_size()
+                .ok_or_else(|| anyhow!("Display size unavailable"))?;
+            let crop = (
+                bounds.position().x(),
+                bounds.position().y(),
+                bounds.size().width(),
+                bounds.size().height(),
+            );
+            let (x, y, width, height) = x11_capture_rect(
+                position.x(),
+                position.y(),
+                size.width(),
+                size.height(),
+                Some(crop),
+            )?;
+            Ok((display_name, x, y, width, height))
         }
         ScreenCaptureTarget::CameraOnly => {
             Err(anyhow!("Camera-only not supported for screenshots"))

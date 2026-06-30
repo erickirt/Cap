@@ -19,6 +19,12 @@
 					"$APPDATA/**",
 					"**/*.jpg",
 					"**/*.webp",
+					"**/*.mp3",
+					"**/*.wav",
+					"**/*.m4a",
+					"**/*.ogg",
+					"**/*.flac",
+					"**/*.aac",
 					"$RESOURCE/**",
 					"**/*.riv",
 					"$HOME/**"
@@ -57,7 +63,8 @@
 			"assets/backgrounds/dark/*": "assets/backgrounds/dark/",
 			"assets/backgrounds/orange/*": "assets/backgrounds/orange/",
 			"assets/backgrounds/purple/*": "assets/backgrounds/purple/",
-			"../src/assets/rive/*.riv": "assets/rive/"
+			"../src/assets/rive/*.riv": "assets/rive/",
+			"../src/assets/music/*.mp3": "assets/music/"
 		},
 		"macOS": {
 			"dmg": {
@@ -83,6 +90,19 @@
 				"upgradeCode": "79f4309d-ca23-54df-b6f9-826a1d783676",
 				"bannerPath": "assets/wix-banner.bmp",
 				"dialogImagePath": "assets/wix-dialog.bmp"
+			}
+		},
+		"linux": {
+			"deb": {
+				"depends": [
+					"libwebkit2gtk-4.1-0",
+					"libgtk-3-0",
+					"libayatana-appindicator3-1",
+					"libva2",
+					"libva-drm2",
+					"libpipewire-0.3-0",
+					"libasound2t64 | libasound2"
+				]
 			}
 		},
 		"fileAssociations": [

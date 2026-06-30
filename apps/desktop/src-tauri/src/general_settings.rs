@@ -221,7 +221,7 @@ pub struct GeneralSettingsStore {
 }
 
 fn default_enable_native_camera_preview() -> bool {
-    cfg!(target_os = "macos")
+    false
 }
 
 fn no(_: &bool) -> bool {
@@ -420,18 +420,13 @@ pub fn init(app: &AppHandle) {
     crate::posthog::set_telemetry_enabled(store.enable_telemetry);
     register_bundled_muxer_binary(app);
 
-    // One-time rollout of the native (GPU-surface) camera preview as the macOS
-    // default. The setting is always serialized, so existing users carry an
-    // explicit `false` from the old opt-in default; a raw marker key (outside
-    // the typed struct, so re-serialization never drops it) makes sure a user
-    // who explicitly turns it back off afterwards stays off.
     #[cfg(target_os = "macos")]
     {
-        const NATIVE_PREVIEW_MIGRATION_KEY: &str = "native_camera_preview_default_v1";
+        const NATIVE_PREVIEW_MIGRATION_KEY: &str = "native_camera_preview_default_rollback_v1";
         if let Ok(raw_store) = app.store("store")
             && raw_store.get(NATIVE_PREVIEW_MIGRATION_KEY).is_none()
         {
-            store.enable_native_camera_preview = true;
+            store.enable_native_camera_preview = false;
             raw_store.set(NATIVE_PREVIEW_MIGRATION_KEY, json!(true));
         }
     }

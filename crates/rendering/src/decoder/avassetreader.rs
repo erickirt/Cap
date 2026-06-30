@@ -819,7 +819,20 @@ impl AVAssetReaderDecoder {
                     );
                 }
 
-                if !at_eof {
+                if near_end {
+                    tracing::debug!(
+                        decoder_idx = decoder_idx,
+                        requested_frame = requested_frame,
+                        requested_time = requested_time,
+                        was_reset = was_reset,
+                        cache_size = cache.len(),
+                        consecutive_empty = this.decoders[decoder_idx]
+                            .health
+                            .consecutive_empty_iterations,
+                        near_end = near_end,
+                        "Decoder reached video tail while using EOF tolerance"
+                    );
+                } else if !at_eof {
                     tracing::warn!(
                         decoder_idx = decoder_idx,
                         requested_frame = requested_frame,

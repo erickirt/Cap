@@ -1,13 +1,22 @@
 import { mergeRefs } from "@solid-primitives/refs";
 import { cx } from "cva";
-import { type ComponentProps, createMemo, createSignal } from "solid-js";
+import {
+	type ComponentProps,
+	createMemo,
+	createSignal,
+	Show,
+	splitProps,
+} from "solid-js";
 import { useEditorContext } from "../context";
 import {
 	SegmentContextProvider,
 	TrackContextProvider,
 	useSegmentContext,
+	useTimelineContext,
 	useTrackContext,
 } from "./context";
+
+export const CAP_TRACK_FILL_CLASS = "cap-track-fill";
 
 export function TrackRoot(props: ComponentProps<"div">) {
 	const [ref, setRef] = createSignal<HTMLDivElement>();
@@ -55,43 +64,72 @@ export function useSegmentWidth(segment: () => { start: number; end: number }) {
 export function SegmentRoot(
 	props: ComponentProps<"div"> & {
 		innerClass: string;
+		segColor?: string;
 		segment: { start: number; end: number };
+		forceVisible?: boolean;
 		onMouseDown?: (
 			e: MouseEvent & { currentTarget: HTMLDivElement; target: Element },
 		) => void;
 	},
 ) {
+	const [local, rest] = splitProps(props, [
+		"innerClass",
+		"segColor",
+		"segment",
+		"forceVisible",
+		"onMouseDown",
+		"class",
+		"style",
+		"ref",
+		"children",
+	]);
 	const { editorState } = useEditorContext();
-	const translateX = useSegmentTranslateX(() => props.segment);
-	const width = useSegmentWidth(() => props.segment);
+	const { isSegmentVisible } = useTimelineContext();
+	const translateX = useSegmentTranslateX(() => local.segment);
+	const width = useSegmentWidth(() => local.segment);
+	const visible = createMemo(
+		() =>
+			local.forceVisible ||
+			isSegmentVisible(local.segment.start, local.segment.end),
+	);
 
 	return (
-		<SegmentContextProvider width={width}>
-			<div
-				{...props}
-				class={cx(
-					"absolute overflow-visible border rounded-xl inset-y-0",
-					editorState.timeline.interactMode === "split" &&
-						"timeline-scissors-cursor",
-					props.class,
-				)}
-				style={{
-					"--segment-x": `${translateX()}px`,
-					transform: "translateX(var(--segment-x))",
-					width: `${width()}px`,
-				}}
-				ref={props.ref}
-			>
+		<Show when={visible()}>
+			<SegmentContextProvider width={width}>
 				<div
+					{...rest}
 					class={cx(
-						"relative h-full flex flex-row rounded-xl overflow-hidden group",
-						props.innerClass,
+						"absolute overflow-visible border rounded-xl inset-y-0",
+						editorState.timeline.interactMode === "split" &&
+							"timeline-scissors-cursor",
+						local.class,
 					)}
+					style={{
+						"--segment-x": `${translateX()}px`,
+						transform: "translateX(var(--segment-x))",
+						width: `${width()}px`,
+						...(typeof local.style === "object" ? local.style : {}),
+					}}
+					onMouseDown={local.onMouseDown}
+					ref={local.ref}
 				>
-					{props.children}
+					<div
+						class={cx(
+							CAP_TRACK_FILL_CLASS,
+							"relative h-full flex flex-row rounded-xl overflow-hidden group",
+							local.innerClass,
+						)}
+						style={
+							local.segColor
+								? ({ "--seg-color": local.segColor } as Record<string, string>)
+								: undefined
+						}
+					>
+						{local.children}
+					</div>
 				</div>
-			</div>
-		</SegmentContextProvider>
+			</SegmentContextProvider>
+		</Show>
 	);
 }
 

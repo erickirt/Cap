@@ -4,6 +4,7 @@ import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 import { createResource, createSignal, Match, Show, Switch } from "solid-js";
+import { getUpdaterCheckOptions } from "~/utils/updater";
 
 export default function () {
 	const navigate = useNavigate();
@@ -11,7 +12,7 @@ export default function () {
 
 	const [update] = createResource(async () => {
 		try {
-			const update = await check();
+			const update = await check(getUpdaterCheckOptions());
 			if (!update) return;
 			return update;
 		} catch (e) {

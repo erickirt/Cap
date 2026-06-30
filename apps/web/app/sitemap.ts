@@ -51,15 +51,15 @@ export default async function sitemap() {
 	const appDirectory = path.join(process.cwd(), "app");
 	const pagePaths = await getPagePaths(appDirectory);
 
-	// Add blog post routes
+	// Add blog post routes. Prefer updatedAt (set when a post is refreshed) over
+	// publishedAt so the sitemap reports a realistic last-modified date.
 	const blogPosts = getBlogPosts();
 	const blogRoutes = blogPosts.map((post) => {
-		const publishedAt =
-			"publishedAt" in post.metadata
-				? post.metadata.publishedAt
-				: new Date().toISOString();
-		const publishDate = new Date(publishedAt);
-		publishDate.setHours(9, 0, 0, 0); // Set time to 9:00 AM
+		const meta = post.metadata as { publishedAt?: string; updatedAt?: string };
+		const stamp =
+			meta.updatedAt ?? meta.publishedAt ?? new Date().toISOString();
+		const publishDate = new Date(stamp);
+		publishDate.setHours(9, 0, 0, 0); // normalize to 9:00 AM
 		return {
 			path: `/blog/${post.slug}`,
 			lastModified: publishDate.toISOString(),
@@ -73,23 +73,34 @@ export default async function sitemap() {
 		lastModified: new Date().toISOString(), // You might want to add a publishedAt to doc metadata
 	}));
 
-	// Add SEO pages
-	const seoRoutes = Object.keys(seoPages).map((slug) => ({
-		path: `/${slug}`,
-		lastModified: new Date().toISOString(),
+	// SEO content pages are physical App Router pages under app/(site)/(seo) and
+	// app/(site)/solutions, so getPagePaths() already discovers each one with a
+	// real file mtime — those physical pages are the source of truth. The seoPages
+	// registry is kept only as a fallback: emit a slug from it ONLY when the
+	// filesystem walk didn't already produce that path. This is what stops the
+	// same SEO URL being emitted twice (once from disk, once from the registry).
+	const discoveredPaths = new Set(pagePaths.map((route) => route.path));
+	const seoRoutes = Object.keys(seoPages)
+		.map((slug) => `/${slug}`)
+		.filter((routePath) => !discoveredPaths.has(routePath))
+		.map((routePath) => ({ path: routePath, lastModified: undefined }));
+
+	// Combine, dedupe by path (first occurrence wins, so filesystem mtimes are
+	// preserved), and ensure '/' is first.
+	const combined = [...pagePaths, ...blogRoutes, ...docsRoutes, ...seoRoutes];
+	const uniqueByPath = new Map<
+		string,
+		{ path: string; lastModified?: string }
+	>();
+	for (const route of combined) {
+		if (!uniqueByPath.has(route.path)) uniqueByPath.set(route.path, route);
+	}
+	const dedupedRoutes = [...uniqueByPath.values()];
+	const homeRoute = dedupedRoutes.find((route) => route.path === "/");
+	const otherRoutes = dedupedRoutes.filter((route) => route.path !== "/");
+
+	return [...(homeRoute ? [homeRoute] : []), ...otherRoutes].map((route) => ({
+		url: `https://cap.so${route.path}`,
+		...(route.lastModified ? { lastModified: route.lastModified } : {}),
 	}));
-
-	// Combine routes and ensure '/' is first
-	const allRoutes = [...pagePaths, ...blogRoutes, ...docsRoutes, ...seoRoutes];
-	const homeRoute = allRoutes.find((route) => route.path === "/");
-	const otherRoutes = allRoutes.filter((route) => route.path !== "/");
-
-	const routes = [...(homeRoute ? [homeRoute] : []), ...otherRoutes].map(
-		(route) => ({
-			url: `https://cap.so${route.path}`,
-			lastModified: route.lastModified,
-		}),
-	);
-
-	return routes;
 }

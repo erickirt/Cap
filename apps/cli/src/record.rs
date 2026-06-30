@@ -22,6 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::io::AsyncBufReadExt;
+use tracing::debug;
 use uuid::Uuid;
 
 use crate::{
@@ -219,7 +220,9 @@ async fn foreground_inner(params: RecordParams, format: OutputFormat) -> Result<
             path: &path_display,
         },
     ) {
-        let _ = actor.stop().await;
+        if let Ok(completed) = actor.stop().await {
+            let _ = finalize_completed(completed).await;
+        }
         return Err(error);
     }
 
@@ -228,7 +231,19 @@ async fn foreground_inner(params: RecordParams, format: OutputFormat) -> Result<
     }
 
     let completed = finalize(actor, params.duration, interactive, None).await?;
+    crate::automation::run_recording_finished(
+        completed.project_path(),
+        automation_mode(params.mode),
+    )
+    .await;
     emit_stopped(format, &completed)
+}
+
+fn automation_mode(mode: RecordMode) -> cap_automation::AutomationRecordingMode {
+    match mode {
+        RecordMode::Studio => cap_automation::AutomationRecordingMode::Studio,
+        RecordMode::Instant => cap_automation::AutomationRecordingMode::Instant,
+    }
 }
 
 async fn run_detached(params: RecordParams, format: OutputFormat) -> Result<(), String> {
@@ -348,6 +363,9 @@ async fn wait_for_session_ready(
                             .error
                             .unwrap_or_else(|| "recording worker failed to start".to_string()));
                     }
+                    SessionStatus::Recording if session::process_alive(session.pid) => {
+                        return Ok(session);
+                    }
                     SessionStatus::Recording => {}
                 }
             }
@@ -432,6 +450,11 @@ async fn session_worker(params: RecordParams, recording_id: &str) -> Result<(), 
 
     let stop_path = session::stop_file(recording_id)?;
     let completed = finalize(actor, params.duration, false, Some(&stop_path)).await?;
+    crate::automation::run_recording_finished(
+        completed.project_path(),
+        automation_mode(params.mode),
+    )
+    .await;
     let recording_meta_exists = completed
         .project_path()
         .join("recording-meta.json")
@@ -474,16 +497,11 @@ impl RecordStopArgs {
                     recording_meta_exists: session.recording_meta_exists.unwrap_or(true),
                 },
             )?;
-            session::cleanup(&id);
+            cleanup_session(&id, &session.path);
             return Ok(());
         }
 
         session::request_stop(&id)?;
-        // The stop file is the authoritative cross-platform stop signal; only also SIGTERM a live pid
-        // so a recycled pid belonging to an unrelated process is never signalled.
-        if session::process_alive(session.pid) {
-            session::terminate(session.pid);
-        }
 
         let deadline = Instant::now() + Duration::from_secs_f64(self.timeout.max(0.0));
         loop {
@@ -497,11 +515,11 @@ impl RecordStopArgs {
                             recording_meta_exists: current.recording_meta_exists.unwrap_or(true),
                         },
                     )?;
-                    session::cleanup(&id);
+                    cleanup_session(&id, &current.path);
                     return Ok(());
                 }
                 SessionStatus::Error => {
-                    session::cleanup(&id);
+                    cleanup_session(&id, &current.path);
                     return Err(current
                         .error
                         .unwrap_or_else(|| "recording failed".to_string()));
@@ -510,24 +528,32 @@ impl RecordStopArgs {
             }
 
             if !session::process_alive(current.pid) {
-                // The worker died without flipping its status. Trust the on-disk recording-meta.json
-                // as the source of truth for whether the .cap finalized.
                 let recording_meta_exists = current.path.join("recording-meta.json").exists();
-                session::cleanup(&id);
-                return if recording_meta_exists {
-                    emit_record_event(
-                        format,
-                        &RecordEvent::Stopped {
-                            path: &current.path.display().to_string(),
-                            recording_meta_exists: true,
-                        },
-                    )
-                } else {
-                    Err("recording process exited without finalizing the recording".to_string())
-                };
+                if !recording_meta_exists {
+                    return fail_dead_session(
+                        current,
+                        "recording process exited without finalizing the recording".to_string(),
+                    );
+                }
+
+                if let Err(error) = crate::project::validate_project(&current.path) {
+                    return fail_dead_session(current, error);
+                }
+
+                cleanup_session(&id, &current.path);
+                return emit_record_event(
+                    format,
+                    &RecordEvent::Stopped {
+                        path: &current.path.display().to_string(),
+                        recording_meta_exists: true,
+                    },
+                );
             }
 
             if Instant::now() >= deadline {
+                if session::process_alive(current.pid) {
+                    session::terminate(current.pid);
+                }
                 return Err(format!(
                     "timed out after {}s waiting for recording '{id}' to stop",
                     self.timeout
@@ -537,6 +563,22 @@ impl RecordStopArgs {
             tokio::time::sleep(Duration::from_millis(150)).await;
         }
     }
+}
+
+fn cleanup_session(id: &str, project_path: &Path) {
+    if let Err(error) = session::archive_log(id, project_path) {
+        debug!("{error}");
+    }
+    session::cleanup(id);
+}
+
+fn fail_dead_session(session: Session, error: String) -> Result<(), String> {
+    let _ = session::write_session(&Session {
+        status: SessionStatus::Error,
+        error: Some(error.clone()),
+        ..session
+    });
+    Err(error)
 }
 
 fn resolve_session(id: Option<&str>, path: Option<&Path>) -> Result<Session, String> {
@@ -585,19 +627,14 @@ struct SessionStatusRow {
     alive: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     started_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 pub fn status(format: OutputFormat) -> Result<(), String> {
     let rows: Vec<SessionStatusRow> = session::list_sessions()?
         .into_iter()
-        .map(|s| SessionStatusRow {
-            alive: s.status == SessionStatus::Recording && session::process_alive(s.pid),
-            recording_id: s.recording_id,
-            pid: s.pid,
-            path: s.path,
-            status: s.status,
-            started_at: s.started_at,
-        })
+        .map(session_status_row)
         .collect();
 
     match format {
@@ -609,8 +646,7 @@ pub fn status(format: OutputFormat) -> Result<(), String> {
             }
             for row in &rows {
                 let status = match row.status {
-                    SessionStatus::Recording if row.alive => "recording",
-                    SessionStatus::Recording => "recording (process gone)",
+                    SessionStatus::Recording => "recording",
                     SessionStatus::Stopped => "stopped",
                     SessionStatus::Error => "error",
                 };
@@ -623,6 +659,35 @@ pub fn status(format: OutputFormat) -> Result<(), String> {
             }
             Ok(())
         }
+    }
+}
+
+fn session_status_row(session: Session) -> SessionStatusRow {
+    let alive = session.status == SessionStatus::Recording && session::process_alive(session.pid);
+    session_status_row_with_alive(session, alive)
+}
+
+fn session_status_row_with_alive(session: Session, alive: bool) -> SessionStatusRow {
+    let process_gone = session.status == SessionStatus::Recording && !alive;
+    let status = if process_gone {
+        SessionStatus::Error
+    } else {
+        session.status
+    };
+    let error = if process_gone {
+        Some("recording process is not running".to_string())
+    } else {
+        session.error
+    };
+
+    SessionStatusRow {
+        recording_id: session.recording_id,
+        pid: session.pid,
+        path: session.path,
+        status,
+        alive,
+        started_at: session.started_at,
+        error,
     }
 }
 
@@ -668,6 +733,8 @@ async fn start_recording(
     target: ScreenCaptureTarget,
     path: PathBuf,
 ) -> Result<ActorHandle, String> {
+    #[cfg(target_os = "macos")]
+    let target_for_shareable_content = target.clone();
     let mut studio_builder = studio_recording::Actor::builder(path.clone(), target.clone())
         .with_system_audio(params.system_audio);
     let mut instant_builder =
@@ -749,11 +816,9 @@ async fn start_recording(
             builder
                 .build(
                     #[cfg(target_os = "macos")]
-                    Some(cap_recording::SendableShareableContent::from(
-                        cidre::sc::ShareableContent::current()
-                            .await
-                            .map_err(|e| format!("Failed to read shareable content: {e}"))?,
-                    )),
+                    Some(
+                        acquire_shareable_content_for_target(&target_for_shareable_content).await?,
+                    ),
                 )
                 .await
                 .map(ActorHandle::Studio)
@@ -771,11 +836,9 @@ async fn start_recording(
             builder
                 .build(
                     #[cfg(target_os = "macos")]
-                    Some(cap_recording::SendableShareableContent::from(
-                        cidre::sc::ShareableContent::current()
-                            .await
-                            .map_err(|e| format!("Failed to read shareable content: {e}"))?,
-                    )),
+                    Some(
+                        acquire_shareable_content_for_target(&target_for_shareable_content).await?,
+                    ),
                 )
                 .await
                 .map(ActorHandle::Instant)
@@ -784,15 +847,87 @@ async fn start_recording(
     }
 }
 
+#[cfg(target_os = "macos")]
+async fn acquire_shareable_content_for_target(
+    target: &ScreenCaptureTarget,
+) -> Result<cap_recording::SendableShareableContent, String> {
+    let mut available_display_ids = Vec::new();
+
+    for attempt in 0..3 {
+        let shareable_content = read_shareable_content().await?;
+        available_display_ids = shareable_content_display_ids(&shareable_content);
+
+        if !shareable_content_missing_target_display(target, &shareable_content) {
+            return Ok(shareable_content);
+        }
+
+        if attempt < 2 {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+    }
+
+    let requested_display = target
+        .display()
+        .map(|display| display.id().to_string())
+        .unwrap_or_else(|| "none".to_string());
+    Err(format!(
+        "ScreenCaptureKit shareable content missing target display {requested_display}. Available display ids: {available_display_ids:?}"
+    ))
+}
+
+#[cfg(target_os = "macos")]
+async fn read_shareable_content() -> Result<cap_recording::SendableShareableContent, String> {
+    let content = cidre::sc::ShareableContent::current()
+        .await
+        .map_err(|e| format!("Failed to read shareable content: {e}"))?;
+    if !content.displays().is_empty() {
+        return Ok(cap_recording::SendableShareableContent::from(content));
+    }
+
+    let process_content = cidre::sc::ShareableContent::current_process()
+        .await
+        .map_err(|e| format!("Failed to read current-process shareable content: {e}"))?;
+    if !process_content.displays().is_empty() {
+        return Ok(cap_recording::SendableShareableContent::from(
+            process_content,
+        ));
+    }
+
+    Ok(cap_recording::SendableShareableContent::from(content))
+}
+
+#[cfg(target_os = "macos")]
+fn shareable_content_missing_target_display(
+    target: &ScreenCaptureTarget,
+    shareable_content: &cap_recording::SendableShareableContent,
+) -> bool {
+    match target.display() {
+        Some(display) => display
+            .raw_handle()
+            .as_sc(shareable_content.retained())
+            .is_none(),
+        None => false,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn shareable_content_display_ids(
+    shareable_content: &cap_recording::SendableShareableContent,
+) -> Vec<String> {
+    shareable_content
+        .retained()
+        .displays()
+        .iter()
+        .map(|display| display.display_id().0.to_string())
+        .collect()
+}
+
 /// Wait for the stop trigger, then finalize the recording. A panic between start and stop would
 /// otherwise drop the actor without writing recording-meta.json (`ActorHandle` has no `Drop`),
 /// leaving an unrecoverable .cap; catch it and best-effort finalize so the recording is recoverable.
 ///
-/// Studio recordings are fragmented for crash recovery, so a graceful stop leaves the display track
-/// as a directory of fragments with status `NeedsRemux`. We then run the shared
-/// `RecoveryManager::remux_if_needed` — the same remux the desktop runs after stop — so the `.cap`
-/// is immediately exportable instead of `cap export`/`cap upload` failing to open a fragment
-/// directory as a video.
+/// Studio recordings are fragmented while recording, so a graceful stop finalizes those fragments
+/// before the `.cap` is returned.
 async fn finalize(
     actor: ActorHandle,
     duration: Option<f64>,
@@ -827,7 +962,7 @@ async fn finalize_completed(completed: CompletedRecording) -> Result<CompletedRe
             })
             .await
             .map_err(|e| format!("recording finalize task failed: {e}"))?
-            .map_err(|e| format!("Failed to remux recording: {e}"))?;
+            .map_err(|e| format!("Failed to finalize recording: {e}"))?;
         }
         CompletedRecording::Instant(recording) => {
             finalize_instant_output(recording.project_path.clone()).await?;
@@ -1087,5 +1222,28 @@ mod tests {
         assert_eq!(stopped["type"], "stopped");
         assert_eq!(stopped["recordingMetaExists"], true);
         assert!(stopped.get("recording_meta_exists").is_none());
+    }
+
+    #[test]
+    fn dead_recording_session_reports_error_status() {
+        let row = session_status_row_with_alive(
+            Session {
+                recording_id: "abc".to_string(),
+                pid: 123,
+                path: PathBuf::from("recording.cap"),
+                status: SessionStatus::Recording,
+                started_at: Some(1),
+                recording_meta_exists: None,
+                error: None,
+            },
+            false,
+        );
+
+        assert!(matches!(row.status, SessionStatus::Error));
+        assert!(!row.alive);
+        assert_eq!(
+            row.error.as_deref(),
+            Some("recording process is not running")
+        );
     }
 }

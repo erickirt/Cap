@@ -150,6 +150,14 @@ impl Drop for SubscriberCountGuard {
     }
 }
 
+fn is_normal_socket_disconnect(error: &impl std::fmt::Debug) -> bool {
+    let error = format!("{error:?}");
+    error.contains("BrokenPipe")
+        || error.contains("Broken pipe")
+        || error.contains("ConnectionReset")
+        || error.contains("Connection reset by peer")
+}
+
 pub async fn create_watch_frame_ws(
     frame_rx: watch::Receiver<Option<std::sync::Arc<WSFrame>>>,
     subscribers: Arc<AtomicUsize>,
@@ -196,7 +204,11 @@ pub async fn create_watch_frame_ws(
             if let Some(packed) = packed
                 && let Err(e) = socket.send(Message::Binary(packed)).await
             {
-                tracing::error!("Failed to send initial frame to socket: {:?}", e);
+                if is_normal_socket_disconnect(&e) {
+                    tracing::debug!("Initial frame send skipped because socket closed: {:?}", e);
+                } else {
+                    tracing::error!("Failed to send initial frame to socket: {:?}", e);
+                }
                 return;
             }
         }
@@ -211,7 +223,11 @@ pub async fn create_watch_frame_ws(
                         }
                         Some(Ok(_)) => {}
                         Some(Err(e)) => {
-                            tracing::error!("WebSocket error: {:?}", e);
+                            if is_normal_socket_disconnect(&e) {
+                                tracing::debug!("WebSocket closed by client: {:?}", e);
+                            } else {
+                                tracing::error!("WebSocket error: {:?}", e);
+                            }
                             break;
                         }
                     }
@@ -267,7 +283,11 @@ pub async fn create_watch_frame_ws(
                                 }
                             }
                             Err(e) => {
-                                tracing::error!("Failed to send frame to socket: {:?}", e);
+                                if is_normal_socket_disconnect(&e) {
+                                    tracing::debug!("Frame send stopped because socket closed: {:?}", e);
+                                } else {
+                                    tracing::error!("Failed to send frame to socket: {:?}", e);
+                                }
                                 break;
                             }
                         }
@@ -352,7 +372,11 @@ pub async fn create_frame_ws(frame_tx: broadcast::Sender<WSFrame>) -> (u16, Canc
                              tracing::info!("Received message from socket (ignoring)");
                         }
                         Some(Err(e)) => {
-                            tracing::error!("WebSocket error: {:?}", e);
+                            if is_normal_socket_disconnect(&e) {
+                                tracing::debug!("WebSocket closed by client: {:?}", e);
+                            } else {
+                                tracing::error!("WebSocket error: {:?}", e);
+                            }
                             break;
                         }
                     }
@@ -370,7 +394,11 @@ pub async fn create_frame_ws(frame_tx: broadcast::Sender<WSFrame>) -> (u16, Canc
                             );
 
                             if let Err(e) = socket.send(Message::Binary(packed)).await {
-                                tracing::error!("Failed to send frame to socket: {:?}", e);
+                                if is_normal_socket_disconnect(&e) {
+                                    tracing::debug!("Frame send stopped because socket closed: {:?}", e);
+                                } else {
+                                    tracing::error!("Failed to send frame to socket: {:?}", e);
+                                }
                                 break;
                             }
                         }

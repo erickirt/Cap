@@ -56,6 +56,27 @@ fn help_succeeds_and_lists_commands() {
 }
 
 #[test]
+fn no_args_prints_branded_intro() {
+    let output = run(&[]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert!(stderr(&output).is_empty(), "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.contains("██████████████████"), "stdout: {text}");
+    assert!(text.contains("/ ___|__ _ _ __"), "stdout: {text}");
+    assert!(text.contains("cap record start --screen <id> --detach"));
+    assert!(text.contains("cap --help"));
+}
+
+#[test]
+fn no_args_json_is_parseable() {
+    let output = run(&["--json"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let json = parse_json(&output);
+    assert_eq!(json["name"], "cap");
+    assert!(json["commands"].is_array());
+}
+
+#[test]
 fn subcommand_help_succeeds() {
     for command in [
         "export",
@@ -244,6 +265,44 @@ fn project_validate_detects_missing_media() {
     assert_eq!(json["valid"], false);
     let missing = json["missing"].as_array().unwrap();
     assert!(!missing.is_empty(), "expected missing media files");
+}
+
+#[test]
+fn project_validate_rejects_in_progress_zero_segment_studio_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("recording.cap");
+    std::fs::create_dir_all(&project).unwrap();
+    let meta = serde_json::json!({
+        "platform": "Linux",
+        "pretty_name": "Broken Linux Recording",
+        "sharing": null,
+        "segments": [],
+        "status": { "status": "InProgress" }
+    });
+    std::fs::write(
+        project.join("recording-meta.json"),
+        serde_json::to_vec_pretty(&meta).unwrap(),
+    )
+    .unwrap();
+
+    let output = run(&[
+        "project",
+        "validate",
+        project.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert!(!output.status.success());
+    let json = parse_json(&output);
+    assert_eq!(json["valid"], false);
+    assert!(json["error"].is_string());
+    let problems = json["problems"].as_array().unwrap();
+    assert!(
+        problems.iter().any(|problem| problem
+            .as_str()
+            .is_some_and(|value| value.contains("no segments"))),
+        "expected no-segments validation problem: {json}"
+    );
 }
 
 #[test]
@@ -538,6 +597,18 @@ fn doctor_check_ids_are_the_pinned_vocabulary() {
         .iter()
         .map(|c| c["id"].as_str().unwrap())
         .collect();
+    #[cfg(target_os = "macos")]
+    assert_eq!(
+        ids,
+        [
+            "ffmpeg",
+            "screenRecordingPermission",
+            "screenCaptureKit",
+            "cliInstall"
+        ]
+    );
+
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(ids, ["ffmpeg", "screenRecordingPermission", "cliInstall"]);
 }
 

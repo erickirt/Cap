@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { withTimeout } from "../../lib/media-common";
 import { probeVideo } from "../../lib/media-probe";
 import {
+	buildStreamingDownloadFfmpegArgs,
 	copyFileToMp4,
 	generatePreviewGif,
 	generateThumbnail,
@@ -700,6 +701,18 @@ describe("processVideo integration tests", () => {
 });
 
 describe("ffmpeg-backed media utilities integration tests", () => {
+	test("allows Loom DASH webm segments in generated HLS downloads", () => {
+		const args = buildStreamingDownloadFfmpegArgs(
+			"/tmp/input.m3u8",
+			"/tmp/output.mkv",
+		);
+
+		expect(args).toContain("-allowed_segment_extensions");
+		expect(args).toContain("-extension_picky");
+		expect(args[args.indexOf("-allowed_segment_extensions") + 1]).toBe("ALL");
+		expect(args[args.indexOf("-extension_picky") + 1]).toBe("0");
+	});
+
 	test("repairs a real mp4 container into a probeable file", async () => {
 		const repairedFile = await repairContainer(TEST_VIDEO_WITH_AUDIO);
 		tempFiles.push(repairedFile.path);

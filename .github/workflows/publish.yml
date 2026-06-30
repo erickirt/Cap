@@ -259,12 +259,32 @@ jobs:
         shell: bash
         run: ./scripts/build-desktop-binaries.sh ${{ matrix.settings.target }}
 
+      # The release profile uses fat LTO + full debuginfo, so the final link
+      # peaks well above the 16GB stock Linux runner and gets OOM-killed
+      # ("runner received a shutdown signal"). The runner already ships an
+      # active /swapfile (resizing it fails with "Text file busy"), so add a
+      # large swapfile on the roomy /mnt disk on top of the existing swap.
+      # Linux-only; macOS/Windows are unaffected.
+      - name: Increase swap space (Linux)
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          sudo swapoff /mnt/swapfile 2>/dev/null || true
+          sudo rm -f /mnt/swapfile
+          sudo fallocate -l 16G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          swapon --show
+          free -h
+
       - name: Build app
         working-directory: apps/desktop
-        run: pnpm build:tauri --target ${{ matrix.settings.target }} --config src-tauri/tauri.prod.conf.json
+        run: pnpm build:tauri --target ${{ matrix.settings.target }} --config src-tauri/tauri.prod.conf.json ${{ runner.os == 'Windows' && '--bundles nsis' || runner.os == 'Linux' && '--bundles deb --verbose' || '' }}
         env:
           # https://github.com/tauri-apps/tauri-action/issues/740
           CI: false
+          LD_LIBRARY_PATH: ${{ runner.os == 'Linux' && format('{0}/target/{1}/release:{0}/target/native-deps/lib', github.workspace, matrix.settings.target) || '' }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # codesigning
           APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE || '' }}
@@ -278,6 +298,106 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           RUST_TARGET_TRIPLE: ${{ matrix.settings.target }}
+
+      # Guards against the Linux packaging regressions:
+      #   1. Frontend missing: vinxi must produce apps/desktop/.output/public,
+      #      which Tauri EMBEDS into the binary (it is NOT shipped as a loose
+      #      /usr/lib/Cap/index.html file). A blank webview ships if turbo's cache
+      #      restores an empty .output/public (see @cap/desktop#build outputs in
+      #      turbo.json), so we assert the build output exists and is non-empty.
+      #   2. FFmpeg soname mismatch: every libav*/libsw* the main binary lists as
+      #      NEEDED must be bundled under /usr/lib/cap/ with the exact same soname.
+      #      The bundled libs come from native-deps (FFmpeg 7); if the binary
+      #      linked system FFmpeg 6 the loader fails at launch.
+      #   3. Undeclared runtime dependency: a system lib the binary NEEDs that is
+      #      neither bundled nor part of the declared GTK/webkit stack must appear
+      #      in the .deb Depends, or the loader aborts at launch. This is the
+      #      libpipewire-0.3.so.0 crash that shipped in 0.5.2.
+      - name: Verify Linux deb contents
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # (1) frontend was actually built. Tauri embeds .output/public into the
+          # binary at build time, so an empty/missing dir => blank webview.
+          FE="apps/desktop/.output/public/index.html"
+          if [[ ! -s "$FE" ]]; then
+            echo "::error::Frontend build output missing/empty ($FE) - webview would be blank."
+            ls -la apps/desktop/.output/public 2>/dev/null || echo "(no .output/public dir)"
+            exit 1
+          fi
+          echo "Frontend build output OK ($FE, $(wc -c < "$FE") bytes)"
+
+          UNSUPPORTED_ARTIFACT="$(find target/${{ matrix.settings.target }}/release/bundle -type f \( -name '*.AppImage' -o -name '*.rpm' \) -print -quit)"
+          if [[ -n "$UNSUPPORTED_ARTIFACT" ]]; then
+            echo "::error::Unexpected Linux non-deb artifact produced: $UNSUPPORTED_ARTIFACT"
+            exit 1
+          fi
+
+          DEB="$(find target/${{ matrix.settings.target }}/release/bundle/deb -name '*.deb' | head -n1)"
+          if [[ -z "$DEB" ]]; then echo "::error::No .deb produced"; exit 1; fi
+          if [[ ! -s "$DEB.sig" ]]; then echo "::error::No .deb updater signature produced next to $DEB"; exit 1; fi
+          echo "Inspecting $DEB"
+          WORK="$(mktemp -d)"
+          dpkg-deb -x "$DEB" "$WORK"
+
+          # Best-effort confirmation that the SPA actually got embedded into the
+          # binary (Tauri stores asset path keys as plaintext). Informational only.
+          if strings "$WORK/usr/bin/Cap" 2>/dev/null | grep -q "index.html"; then
+            echo "Binary appears to embed the frontend (index.html key present)"
+          else
+            echo "::warning::Could not confirm embedded frontend key in binary (asset format may differ)"
+          fi
+
+          # (2) every FFmpeg soname the binary NEEDs is bundled
+          BIN="$WORK/usr/bin/Cap"
+          NEEDED="$(objdump -p "$BIN" | awk '/NEEDED/{print $2}' | grep -E '^lib(av|sw|postproc)' || true)"
+          echo "Binary NEEDs FFmpeg sonames:"; echo "${NEEDED:-(none)}"
+          echo "Bundled FFmpeg libs:"; ls -1 "$WORK/usr/lib/cap" 2>/dev/null || true
+          MISSING=0
+          for so in $NEEDED; do
+            if [[ ! -f "$WORK/usr/lib/cap/$so" ]]; then
+              echo "::error::Binary NEEDs $so but it is not bundled under /usr/lib/cap/"
+              MISSING=1
+            fi
+          done
+          if [[ "$MISSING" -ne 0 ]]; then
+            echo "::error::FFmpeg soname mismatch between binary and bundled libs."
+            exit 1
+          fi
+          echo "FFmpeg soname bundle OK"
+
+          # (3) runtime libs that are NOT bundled and NOT pulled in by the
+          # declared GTK/webkit stack must be declared in the .deb Depends, or
+          # the dynamic loader aborts at launch (the libpipewire-0.3.so.0 crash
+          # in 0.5.2). Assert the curated set of such sonames the binary links.
+          DEPENDS="$(dpkg-deb -f "$DEB" Depends || true)"
+          echo "Declared Depends: ${DEPENDS:-(none)}"
+          NEEDED_ALL="$(objdump -p "$BIN" | awk '/NEEDED/{print $2}')"
+          # soname -> a Depends token that satisfies it. The alsa token is a
+          # substring so it matches both libasound2 and libasound2t64.
+          declare -A SONAME_DEP=(
+            [libpipewire-0.3.so.0]="libpipewire-0.3-0"
+            [libasound.so.2]="libasound2"
+          )
+          DEP_MISSING=0
+          for so in "${!SONAME_DEP[@]}"; do
+            if echo "$NEEDED_ALL" | grep -qx "$so"; then
+              tok="${SONAME_DEP[$so]}"
+              if ! echo "$DEPENDS" | grep -q "$tok"; then
+                echo "::error::Binary NEEDs $so but '$tok' is not declared in .deb Depends (add it to tauri.conf.json bundle.linux.deb.depends)."
+                DEP_MISSING=1
+              else
+                echo "Runtime dep OK: $so -> $tok"
+              fi
+            fi
+          done
+          if [[ "$DEP_MISSING" -ne 0 ]]; then
+            echo "::error::Undeclared runtime dependency in .deb Depends."
+            exit 1
+          fi
+          echo "Runtime dependency declarations OK"
 
       - name: Upload unsigned Windows installer
         if: ${{ runner.os == 'Windows' }}
@@ -342,6 +462,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - name: Upload assets
+        if: ${{ runner.os != 'Linux' }}
         uses: crabnebula-dev/cloud-release@v0
         with:
           working-directory: apps/desktop
@@ -349,6 +470,14 @@ jobs:
           api-key: ${{ secrets.CN_API_KEY }}
         env:
           TAURI_BUNDLE_PATH: ../..
+
+      - name: Upload Linux deb asset
+        if: ${{ runner.os == 'Linux' }}
+        uses: crabnebula-dev/cloud-release@v0
+        with:
+          working-directory: apps/desktop
+          command: release upload ${{ env.CN_APPLICATION }} "${{ needs.draft.outputs.version }}" --file "../../target/${{ matrix.settings.target }}/release/bundle/deb/Cap_${{ needs.draft.outputs.version }}_amd64.deb" --signature "../../target/${{ matrix.settings.target }}/release/bundle/deb/Cap_${{ needs.draft.outputs.version }}_amd64.deb.sig" --public-platform deb-x86_64 --update-platform linux-x86_64-deb
+          api-key: ${{ secrets.CN_API_KEY }}
 
       - uses: matbour/setup-sentry-cli@8ef22a4ff03bcd1ebbcaa3a36a81482ca8e3872e
 

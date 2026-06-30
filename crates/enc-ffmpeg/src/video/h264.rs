@@ -317,8 +317,10 @@ impl H264EncoderBuilder {
                         input_config.frame_rate.0 as f32 / input_config.frame_rate.1.max(1) as f32;
                     debug!(
                         encoder = %codec_name,
-                        width = input_config.width,
-                        height = input_config.height,
+                        input_width = input_config.width,
+                        input_height = input_config.height,
+                        output_width = output_width,
+                        output_height = output_height,
                         fps = fps,
                         "Selected standalone H264 encoder"
                     );

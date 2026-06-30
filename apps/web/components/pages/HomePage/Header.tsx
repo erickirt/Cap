@@ -2,16 +2,23 @@
 "use client";
 
 import { Button } from "@cap/ui";
-import { faPlay } from "@fortawesome/free-solid-svg-icons";
+import { faArrowRight, faPlay } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
 import { useDetectPlatform } from "hooks/useDetectPlatform";
+import { useIsChromium } from "hooks/useIsChromium";
 import Image from "next/image";
 import Link from "next/link";
 import { Fragment, useEffect, useState, useTransition } from "react";
 import { sendDownloadLink } from "@/actions/send-download-link";
+import { ChromeExtensionButton } from "@/components/ChromeExtensionButton";
+import { LoomMark } from "@/components/icons/LoomMark";
 import { LogoMarquee } from "@/components/ui/LogoMarquee";
+import {
+	CAP_CHROME_EXTENSION_URL,
+	CHROME_EXTENSION_BUTTON_CLASS,
+} from "@/lib/chrome-extension";
 import {
 	getDownloadButtonText,
 	getDownloadUrl,
@@ -48,7 +55,7 @@ const trackHomepageEvent = (
 	});
 };
 
-const HeroTitle = ({ text }: { text: string }) => {
+const HeroTitle = ({ text, animate }: { text: string; animate: boolean }) => {
 	let letterIndex = -1;
 	const wordCounts: Record<string, number> = {};
 	const charCounts: Record<string, number> = {};
@@ -63,25 +70,35 @@ const HeroTitle = ({ text }: { text: string }) => {
 						<span
 							className={clsx("inline-block whitespace-nowrap", TITLE_LEADING)}
 						>
-							{Array.from(word).map((char) => {
-								letterIndex += 1;
-								charCounts[char] = (charCounts[char] ?? 0) + 1;
-								return (
-									<motion.span
-										key={`${char}:${charCounts[char]}`}
-										className={clsx("inline-block", TITLE_LEADING)}
-										initial={{ opacity: 0, y: "0.4em", filter: "blur(6px)" }}
-										animate={{ opacity: 1, y: "0em", filter: "blur(0px)" }}
-										transition={{
-											duration: 0.34,
-											delay: letterIndex * 0.028,
-											ease: "easeOut",
-										}}
-									>
-										{char}
-									</motion.span>
-								);
-							})}
+							{animate
+								? Array.from(word).map((char) => {
+										letterIndex += 1;
+										charCounts[char] = (charCounts[char] ?? 0) + 1;
+										return (
+											<motion.span
+												key={`${char}:${charCounts[char]}`}
+												className={clsx("inline-block", TITLE_LEADING)}
+												initial={{
+													opacity: 0,
+													y: "0.4em",
+													filter: "blur(6px)",
+												}}
+												animate={{
+													opacity: 1,
+													y: "0em",
+													filter: "blur(0px)",
+												}}
+												transition={{
+													duration: 0.34,
+													delay: letterIndex * 0.028,
+													ease: "easeOut",
+												}}
+											>
+												{char}
+											</motion.span>
+										);
+									})
+								: word}
 						</span>
 					</Fragment>
 				);
@@ -94,37 +111,15 @@ interface HeaderProps {
 	serverHomepageCopyVariant?: string;
 }
 
-// Animation variants
-const fadeIn = {
-	hidden: { opacity: 0, y: 20 },
-	visible: (custom: number) => ({
-		opacity: 1,
-		y: 0,
-		transition: {
-			delay: custom * 0.1,
-			duration: 0.5,
-			ease: "easeOut",
-		},
-	}),
-};
-
-const fadeInFromRight = {
-	hidden: { opacity: 0, x: 50 },
-	visible: {
-		opacity: 1,
-		x: 0,
-		transition: {
-			delay: 0.5,
-			duration: 0.6,
-			ease: "easeOut",
-		},
-	},
-};
-
 const Header = ({ serverHomepageCopyVariant = "" }: HeaderProps) => {
 	const [videoToggled, setVideoToggled] = useState(false);
 	const { platform, isIntel } = useDetectPlatform();
-	const loading = platform === null;
+	const isChromium = useIsChromium();
+	// Render the button at its final size on first paint to avoid a layout shift
+	// once the platform resolves: the label is "Download for free" for every
+	// platform and the icon is always the same size, so defaulting the display to
+	// macOS (also the default download target) keeps width stable.
+	const displayPlatform = platform ?? "macos";
 	const [email, setEmail] = useState("");
 	const [emailStatus, setEmailStatus] = useState<
 		"idle" | "sending" | "sent" | "error"
@@ -175,6 +170,7 @@ const Header = ({ serverHomepageCopyVariant = "" }: HeaderProps) => {
 	const heroModes = homepageCopy.header.modes;
 	const [activeModeIndex, setActiveModeIndex] = useState(0);
 	const [modePickerInteracted, setModePickerInteracted] = useState(false);
+	const [hasCycled, setHasCycled] = useState(false);
 	const activeMode = heroModes[activeModeIndex];
 
 	useEffect(() => {
@@ -182,23 +178,52 @@ const Header = ({ serverHomepageCopyVariant = "" }: HeaderProps) => {
 
 		const interval = setInterval(() => {
 			setActiveModeIndex((prev) => (prev + 1) % heroModes.length);
+			setHasCycled(true);
 		}, MODE_CYCLE_INTERVAL);
 
 		return () => clearInterval(interval);
 	}, [modePickerInteracted, heroModes.length]);
+
+	const downloadButton = (
+		<Button
+			variant="dark"
+			href={primaryDownloadUrl}
+			onClick={() =>
+				trackHomepageEvent("download_cta_clicked", {
+					source_page: "home_header",
+					cta_location: "primary",
+					target_url: primaryDownloadUrl,
+					detected_platform: platform ?? "unknown",
+					is_intel: Boolean(isIntel),
+				})
+			}
+			size="lg"
+			className="flex justify-center items-center font-medium max-w-fit"
+		>
+			{getPlatformIcon(displayPlatform)}
+			{getDownloadButtonText(displayPlatform, false, isIntel)}
+		</Button>
+	);
+
+	const upgradeButton = (
+		<UpgradeToPro
+			text={homepageCopy.header.cta.primaryButton}
+			onClick={() =>
+				trackHomepageEvent("pricing_cta_clicked", {
+					source_page: "home_header",
+					cta_location: "secondary",
+					target_url: "/pricing",
+				})
+			}
+		/>
+	);
 
 	return (
 		<div className="mt-[90px] mb-[60px] sm:mb-[100px] md:mb-[160px] w-full max-w-[1920px] overflow-x-hidden md:overflow-visible mx-auto md:mt-[140px] xl:min-h-[700px]">
 			<div className="flex flex-col justify-center lg:justify-start xl:flex-row relative z-10 px-5 w-full mb-0">
 				<div className="w-full max-w-2xl xl:max-w-[530px] 2xl:mt-12 mx-auto xl:ml-[100px] 2xl:ml-[150px]">
 					<div className="flex flex-col text-center md:text-left w-full max-w-[650px]">
-						<motion.div
-							className="flex justify-center mb-5 md:justify-start"
-							initial="hidden"
-							animate="visible"
-							custom={0}
-							variants={fadeIn}
-						>
+						<div className="flex justify-center mb-5 md:justify-start">
 							<div className="inline-flex gap-1 p-1 rounded-full border border-gray-4 bg-gray-2">
 								{heroModes.map((mode, index) => {
 									const isActive = index === activeModeIndex;
@@ -210,6 +235,7 @@ const Header = ({ serverHomepageCopyVariant = "" }: HeaderProps) => {
 											onClick={() => {
 												setModePickerInteracted(true);
 												setActiveModeIndex(index);
+												setHasCycled(true);
 											}}
 											className="flex relative gap-1.5 items-center px-3 py-1.5 text-sm font-medium rounded-full cursor-pointer"
 										>
@@ -243,15 +269,9 @@ const Header = ({ serverHomepageCopyVariant = "" }: HeaderProps) => {
 									);
 								})}
 							</div>
-						</motion.div>
+						</div>
 
-						<motion.div
-							className="mb-2 h-6"
-							initial="hidden"
-							animate="visible"
-							custom={1}
-							variants={fadeIn}
-						>
+						<div className="mb-2 h-6">
 							<AnimatePresence mode="wait" initial={false}>
 								<motion.span
 									key={activeMode?.id ?? activeModeIndex}
@@ -269,15 +289,9 @@ const Header = ({ serverHomepageCopyVariant = "" }: HeaderProps) => {
 									with {activeMode?.label ?? "Instant"} Mode...
 								</motion.span>
 							</AnimatePresence>
-						</motion.div>
+						</div>
 
-						<motion.h1
-							className="relative z-10 mb-6 flex h-[4.5rem] flex-col justify-center text-[2.25rem] font-medium leading-[2.25rem] text-black md:h-[7rem] md:text-[3.75rem] md:leading-[3.5rem]"
-							initial="hidden"
-							animate="visible"
-							custom={1}
-							variants={fadeIn}
-						>
+						<h1 className="relative z-10 mb-6 flex h-[4.5rem] flex-col justify-center text-[2.25rem] font-medium leading-[2.25rem] text-black md:h-[7rem] md:text-[3.75rem] md:leading-[3.5rem]">
 							<AnimatePresence mode="wait" initial={false}>
 								<motion.span
 									key={activeMode?.id ?? activeModeIndex}
@@ -289,66 +303,58 @@ const Header = ({ serverHomepageCopyVariant = "" }: HeaderProps) => {
 										transition: { duration: 0.2, ease: "easeIn" },
 									}}
 								>
-									<HeroTitle text={activeMode?.title ?? headerContent.title} />
+									<HeroTitle
+										text={activeMode?.title ?? headerContent.title}
+										animate={hasCycled}
+									/>
 								</motion.span>
 							</AnimatePresence>
-						</motion.h1>
+						</h1>
 
-						<motion.p
-							className="mx-auto mb-4 max-w-3xl text-lg leading-7 text-zinc-500 md:mx-0"
-							initial="hidden"
-							animate="visible"
-							custom={2}
-							variants={fadeIn}
-						>
+						<p className="mx-auto mb-4 max-w-3xl text-lg leading-7 text-zinc-500 md:mx-0">
 							{headerContent.description}
-						</motion.p>
+						</p>
 					</div>
 
-					<motion.div
-						className="hidden md:flex flex-wrap gap-4 items-center mb-5"
-						initial="hidden"
-						animate="visible"
-						custom={4}
-						variants={fadeIn}
-					>
-						<Button
-							variant="dark"
-							href={primaryDownloadUrl}
-							onClick={() =>
-								trackHomepageEvent("download_cta_clicked", {
-									source_page: "home_header",
-									cta_location: "primary",
-									target_url: primaryDownloadUrl,
-									detected_platform: platform ?? "unknown",
-									is_intel: Boolean(isIntel),
-								})
-							}
-							size="lg"
-							className="flex justify-center items-center font-medium max-w-fit"
-						>
-							{!loading && getPlatformIcon(platform)}
-							{getDownloadButtonText(platform, loading, isIntel)}
-						</Button>
-						<UpgradeToPro
-							text={homepageCopy.header.cta.primaryButton}
-							onClick={() =>
-								trackHomepageEvent("pricing_cta_clicked", {
-									source_page: "home_header",
-									cta_location: "secondary",
-									target_url: "/pricing",
-								})
-							}
-						/>
-					</motion.div>
+					{isChromium ? (
+						<div className="hidden md:flex flex-col gap-4 mb-5">
+							<div className="flex flex-wrap gap-4 items-center">
+								{downloadButton}
+								<span className="text-sm font-medium text-gray-500">or</span>
+								<ChromeExtensionButton
+									variant="white"
+									onClick={() =>
+										trackHomepageEvent("download_cta_clicked", {
+											source_page: "home_header",
+											cta_location: "chrome_extension_secondary",
+											target: "chrome_extension",
+											target_url: CAP_CHROME_EXTENSION_URL,
+											detected_platform: platform ?? "unknown",
+											is_intel: Boolean(isIntel),
+										})
+									}
+									className={clsx(
+										CHROME_EXTENSION_BUTTON_CLASS,
+										"font-medium max-w-fit",
+									)}
+								/>
+							</div>
+							<div className="flex gap-2 items-center">
+								{upgradeButton}
+								<span className="max-w-[240px] text-sm leading-snug text-gray-10">
+									Cap Pro gives you unlimited cloud sharing, AI summaries &amp;
+									team features
+								</span>
+							</div>
+						</div>
+					) : (
+						<div className="hidden md:flex flex-wrap gap-4 items-center mb-5">
+							{downloadButton}
+							{upgradeButton}
+						</div>
+					)}
 
-					<motion.div
-						className="flex md:hidden flex-col gap-3 mb-5"
-						initial="hidden"
-						animate="visible"
-						custom={4}
-						variants={fadeIn}
-					>
+					<div className="flex md:hidden flex-col gap-3 mb-5">
 						{emailStatus === "sent" ? (
 							<div className="rounded-xl bg-green-50 border border-green-200 px-4 py-3">
 								<p className="text-sm font-medium text-green-800">
@@ -381,12 +387,7 @@ const Header = ({ serverHomepageCopyVariant = "" }: HeaderProps) => {
 								)}
 							</form>
 						)}
-						<div className="flex items-center gap-3 my-1">
-							<div className="h-px flex-1 bg-gray-300" />
-							<span className="text-sm font-medium text-gray-500">or</span>
-							<div className="h-px flex-1 bg-gray-300" />
-						</div>
-						<div className="flex justify-center">
+						<div className="flex flex-col gap-2 items-center mt-1">
 							<UpgradeToPro
 								text={homepageCopy.header.cta.primaryButton}
 								onClick={() =>
@@ -397,26 +398,32 @@ const Header = ({ serverHomepageCopyVariant = "" }: HeaderProps) => {
 									})
 								}
 							/>
+							<span className="text-xs text-center text-gray-10">
+								Cap Pro gives you unlimited cloud sharing, AI summaries &amp;
+								team features
+							</span>
 						</div>
-					</motion.div>
+					</div>
 
-					<motion.p
-						className="text-sm text-gray-10 text-center md:text-left"
-						initial="hidden"
-						animate="visible"
-						custom={5}
-						variants={fadeIn}
-					>
+					<div className="flex justify-center mb-3 md:justify-start">
+						<Link
+							href="/migrate-from-loom"
+							className="inline-flex gap-2 items-center text-sm font-medium transition-colors group text-gray-11 hover:text-gray-12"
+						>
+							<LoomMark size={15} />
+							Coming from Loom? Bring your library with you
+							<FontAwesomeIcon
+								icon={faArrowRight}
+								className="size-3 text-gray-9 transition-transform group-hover:translate-x-0.5"
+							/>
+						</Link>
+					</div>
+
+					<p className="text-sm text-gray-10 text-center md:text-left">
 						{homepageCopy.header.cta.freeVersionText}
-					</motion.p>
+					</p>
 
-					<motion.div
-						className="hidden md:block mt-6 mb-10"
-						initial="hidden"
-						animate="visible"
-						custom={6}
-						variants={fadeIn}
-					>
+					<div className="hidden md:block mt-6 mb-10">
 						<PlatformIcons source="home_header" />
 
 						<Link
@@ -434,28 +441,17 @@ const Header = ({ serverHomepageCopyVariant = "" }: HeaderProps) => {
 						>
 							{homepageCopy.header.cta.seeOtherOptionsText}
 						</Link>
-					</motion.div>
+					</div>
 
-					<motion.div
-						className="mt-14"
-						initial="hidden"
-						animate="visible"
-						custom={7}
-						variants={fadeIn}
-					>
+					<div className="mt-14">
 						<p className="mb-4 text-sm italic text-gray-10 text-center md:text-left">
 							Trusted by <strong>40,000+</strong> teams, builders and creators
 						</p>
 						<LogoMarquee />
-					</motion.div>
+					</div>
 				</div>
 
-				<motion.div
-					className="xl:absolute drop-shadow-2xl -top-[22%] lg:-right-[400px] 2xl:-right-[300px] w-full xl:max-w-[1000px] 2xl:max-w-[1200px]"
-					initial="hidden"
-					animate="visible"
-					variants={fadeInFromRight}
-				>
+				<div className="xl:absolute drop-shadow-2xl -top-[22%] lg:-right-[400px] 2xl:-right-[300px] w-full xl:max-w-[1000px] 2xl:max-w-[1200px]">
 					{/* Play Button*/}
 					<motion.div
 						whileTap={{ scale: 0.95 }}
@@ -473,11 +469,13 @@ const Header = ({ serverHomepageCopyVariant = "" }: HeaderProps) => {
 						src="/illustrations/app.webp"
 						width={1000}
 						height={1000}
-						quality={100}
+						quality={75}
+						priority
+						sizes="(min-width: 1536px) 1200px, (min-width: 1280px) 1000px, 100vw"
 						alt="App"
 						className="object-cover relative inset-0 rounded-xl opacity-70 size-full"
 					/>
-				</motion.div>
+				</div>
 			</div>
 			<AnimatePresence>
 				{videoToggled && <VideoModal setVideoToggled={setVideoToggled} />}

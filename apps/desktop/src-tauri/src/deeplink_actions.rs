@@ -8,14 +8,14 @@ use tracing::trace;
 
 use crate::{App, ArcLock, recording::StartRecordingInputs, windows::ShowCapWindow};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureMode {
     Screen(String),
     Window(String),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum DeepLinkAction {
     StartRecording {
@@ -32,6 +32,44 @@ pub enum DeepLinkAction {
     OpenSettings {
         page: Option<String>,
     },
+}
+
+pub struct DeepLinkActionExecutor {
+    tx: std::sync::mpsc::Sender<DeepLinkAction>,
+}
+
+impl DeepLinkActionExecutor {
+    pub fn new(app: &AppHandle) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel::<DeepLinkAction>();
+        let app_handle = app.clone();
+        let runtime = tokio::runtime::Handle::current();
+
+        trace!("Starting deep link action executor");
+        let thread_result = std::thread::Builder::new()
+            .name("deep-link-action-executor".to_string())
+            .spawn(move || {
+                trace!("Deep link action executor started");
+                for action in rx {
+                    trace!(?action, "Executing deep link action");
+                    if let Err(err) = runtime.block_on(action.execute(&app_handle)) {
+                        eprintln!("Failed to handle deep link action: {err}");
+                    }
+                }
+            });
+
+        if let Err(err) = thread_result {
+            eprintln!("Failed to start deep link action executor: {err}");
+        }
+
+        Self { tx }
+    }
+
+    fn dispatch(
+        &self,
+        action: DeepLinkAction,
+    ) -> Result<(), std::sync::mpsc::SendError<DeepLinkAction>> {
+        self.tx.send(action)
+    }
 }
 
 pub fn handle(app_handle: &AppHandle, urls: Vec<Url>) {
@@ -56,20 +94,26 @@ pub fn handle(app_handle: &AppHandle, urls: Vec<Url>) {
         })
         .collect();
 
+    trace!(action_count = actions.len(), "Parsed deep link actions");
+
     if actions.is_empty() {
         return;
     }
 
-    let app_handle = app_handle.clone();
-    tauri::async_runtime::spawn(async move {
-        for action in actions {
-            if let Err(e) = action.execute(&app_handle).await {
-                eprintln!("Failed to handle deep link action: {e}");
-            }
+    let Some(executor) = app_handle.try_state::<DeepLinkActionExecutor>() else {
+        eprintln!("Deep link action executor unavailable");
+        return;
+    };
+
+    for action in actions {
+        trace!(?action, "Queueing deep link action");
+        if let Err(err) = executor.dispatch(action) {
+            eprintln!("Failed to queue deep link action: {err}");
         }
-    });
+    }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum ActionParseFromUrlError {
     ParseFailed(String),
     Invalid,
@@ -89,9 +133,10 @@ impl TryFrom<&Url> for DeepLinkAction {
         }
 
         match url.domain() {
-            Some(v) if v != "action" => Err(ActionParseFromUrlError::NotAction),
-            _ => Err(ActionParseFromUrlError::Invalid),
-        }?;
+            Some("action") => {}
+            Some(_) => return Err(ActionParseFromUrlError::NotAction),
+            None => return Err(ActionParseFromUrlError::Invalid),
+        }
 
         let params = url
             .query_pairs()
@@ -154,5 +199,90 @@ impl DeepLinkAction {
                 crate::show_window(app.clone(), ShowCapWindow::Settings { page }).await
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_stop_recording_action_url() {
+        let url = Url::parse("cap-desktop://action?value=%22stop_recording%22").unwrap();
+
+        assert_eq!(
+            DeepLinkAction::try_from(&url),
+            Ok(DeepLinkAction::StopRecording)
+        );
+    }
+
+    #[test]
+    fn parses_start_recording_action_url() {
+        let url = Url::parse(
+            "cap-desktop://action?value=%7B%22start_recording%22%3A%7B%22capture_mode%22%3A%7B%22screen%22%3A%22Odyssey%20G93SC%22%7D%2C%22camera%22%3Anull%2C%22mic_label%22%3A%22Shure%20MV7%2B%22%2C%22capture_system_audio%22%3Atrue%2C%22mode%22%3A%22studio%22%7D%7D",
+        )
+        .unwrap();
+
+        let Ok(DeepLinkAction::StartRecording {
+            capture_mode,
+            camera,
+            mic_label,
+            capture_system_audio,
+            mode,
+        }) = DeepLinkAction::try_from(&url)
+        else {
+            panic!("expected start recording action");
+        };
+
+        assert_eq!(
+            capture_mode,
+            CaptureMode::Screen("Odyssey G93SC".to_string())
+        );
+        assert_eq!(camera, None);
+        assert_eq!(mic_label.as_deref(), Some("Shure MV7+"));
+        assert!(capture_system_audio);
+        assert_eq!(mode, RecordingMode::Studio);
+    }
+
+    #[test]
+    fn parses_start_recording_action_with_camera_device_id() {
+        let value = serde_json::json!({
+            "start_recording": {
+                "capture_mode": { "screen": "Odyssey G93SC" },
+                "camera": { "DeviceID": "camera-1" },
+                "mic_label": "Shure MV7+",
+                "capture_system_audio": true,
+                "mode": "studio"
+            }
+        })
+        .to_string();
+        let url = Url::parse_with_params("cap-desktop://action", &[("value", value)]).unwrap();
+
+        let Ok(DeepLinkAction::StartRecording {
+            camera,
+            mic_label,
+            capture_system_audio,
+            ..
+        }) = DeepLinkAction::try_from(&url)
+        else {
+            panic!("expected start recording action");
+        };
+
+        assert_eq!(
+            camera,
+            Some(DeviceOrModelID::DeviceID("camera-1".to_string()))
+        );
+        assert_eq!(mic_label.as_deref(), Some("Shure MV7+"));
+        assert!(capture_system_audio);
+    }
+
+    #[test]
+    fn rejects_non_action_host() {
+        let url = Url::parse("cap-desktop://login?value=%22stop_recording%22").unwrap();
+
+        assert_eq!(
+            DeepLinkAction::try_from(&url),
+            Err(ActionParseFromUrlError::NotAction)
+        );
     }
 }

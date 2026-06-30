@@ -22,10 +22,10 @@ import toast from "solid-toast";
 
 import "./styles.css";
 
-import Tooltip from "~/components/Tooltip";
 import { defaultCaptionSettings } from "~/store/captions";
 import { defaultKeyboardSettings } from "~/store/keyboard";
 import { commands } from "~/utils/tauri";
+import type { AudioTrackSegment } from "../audio";
 import {
 	applyCaptionResultToProject,
 	getCaptionGenerationErrorMessage,
@@ -37,6 +37,7 @@ import type { MaskSegment } from "../masks";
 import type { TextSegment } from "../text";
 import { getTrackRowsWithCount, getUsedTrackCount } from "../timelineTracks";
 import { formatTime } from "../utils";
+import { type AudioSegmentDragState, AudioTrack } from "./AudioTrack";
 import { type CaptionSegmentDragState, CaptionsTrack } from "./CaptionsTrack";
 import { ClipTrack } from "./ClipTrack";
 import { TimelineContextProvider, useTimelineContext } from "./context";
@@ -48,7 +49,9 @@ import { TrackIcon, TrackManager } from "./TrackManager";
 import { type ZoomSegmentDragState, ZoomTrack } from "./ZoomTrack";
 
 const TIMELINE_PADDING = 16;
-const TRACK_GUTTER = 64;
+const TRACK_GUTTER_GAP = 8;
+const TRACK_GUTTER = 112;
+const TRACK_ICON_WIDTH = TRACK_GUTTER - TRACK_GUTTER_GAP;
 const TIMELINE_HEADER_HEIGHT = 32;
 const PLAYHEAD_TOP_OFFSET = 24;
 
@@ -60,6 +63,7 @@ const trackIcons: Record<TimelineTrackType, () => JSX.Element> = {
 	mask: () => <IconLucideBoxSelect class="size-4" />,
 	zoom: () => <IconLucideSearch class="size-4" />,
 	scene: () => <IconLucideVideo class="size-4" />,
+	audio: () => <IconLucideMusic class="size-4" />,
 };
 
 type TrackDefinition = {
@@ -98,6 +102,12 @@ const trackDefinitions: TrackDefinition[] = [
 		type: "mask",
 		label: "Mask",
 		icon: trackIcons.mask,
+		locked: false,
+	},
+	{
+		type: "audio",
+		label: "Audio",
+		icon: trackIcons.audio,
 		locked: false,
 	},
 	{
@@ -158,6 +168,13 @@ export function Timeline(props: {
 
 	const secsPerPixel = () => transform().zoom / (timelineBounds.width ?? 1);
 
+	const openAudioPicker = (laneIndex: number) => {
+		batch(() => {
+			setEditorState("timeline", "selection", null);
+			setEditorState("timeline", "audioPicker", laneIndex);
+		});
+	};
+
 	const trackState = () => editorState.timeline.tracks;
 	const sceneAvailable = () => meta().hasCamera && !project.camera.hide;
 	const captionTrackVisible = () => trackState().caption;
@@ -176,10 +193,22 @@ export function Timeline(props: {
 								? trackState().mask > 0
 								: definition.type === "text"
 									? trackState().text > 0
-									: true,
+									: definition.type === "audio"
+										? trackState().audio > 0
+										: true,
 			available: definition.type === "scene" ? sceneAvailable() : true,
 			supportsMultiple:
-				definition.type === "mask" || definition.type === "text",
+				definition.type === "mask" ||
+				definition.type === "text" ||
+				definition.type === "audio",
+			count:
+				definition.type === "mask"
+					? trackState().mask
+					: definition.type === "text"
+						? trackState().text
+						: definition.type === "audio"
+							? trackState().audio
+							: 0,
 		})),
 	);
 	const sceneTrackVisible = () => trackState().scene && sceneAvailable();
@@ -195,6 +224,12 @@ export function Timeline(props: {
 			trackState().mask,
 		),
 	);
+	const audioTrackRows = createMemo(() =>
+		getTrackRowsWithCount(
+			project.timeline?.audioSegments ?? [],
+			trackState().audio,
+		),
+	);
 	const visibleTrackCount = createMemo(
 		() =>
 			2 +
@@ -202,6 +237,7 @@ export function Timeline(props: {
 			(keyboardTrackVisible() ? 1 : 0) +
 			textTrackRows().length +
 			maskTrackRows().length +
+			audioTrackRows().length +
 			(sceneTrackVisible() ? 1 : 0),
 	);
 	const trackHeight = createMemo(() =>
@@ -310,10 +346,18 @@ export function Timeline(props: {
 
 		if (type === "mask") {
 			setEditorState("timeline", "tracks", "mask", trackState().mask + 1);
+			return;
+		}
+
+		if (type === "audio") {
+			setEditorState("timeline", "tracks", "audio", trackState().audio + 1);
 		}
 	}
 
-	function handleDeleteTrackLane(type: "text" | "mask", laneIndex: number) {
+	function handleDeleteTrackLane(
+		type: "text" | "mask" | "audio",
+		laneIndex: number,
+	) {
 		const resumeHistory = projectHistory.pause();
 		const currentTrackCount = trackState()[type];
 		const nextTextSegments =
@@ -330,13 +374,20 @@ export function Timeline(props: {
 						laneIndex,
 					)
 				: null;
-		const nextTrackCount = Math.max(
+		const nextAudioSegments =
+			type === "audio"
+				? deleteTrackLane<AudioTrackSegment>(
+						project.timeline?.audioSegments ?? [],
+						laneIndex,
+					)
+				: null;
+		const usedTrackCount =
 			type === "text"
 				? getUsedTrackCount(nextTextSegments ?? [])
-				: getUsedTrackCount(nextMaskSegments ?? []),
-			currentTrackCount - 1,
-			0,
-		);
+				: type === "mask"
+					? getUsedTrackCount(nextMaskSegments ?? [])
+					: getUsedTrackCount(nextAudioSegments ?? []);
+		const nextTrackCount = Math.max(usedTrackCount, currentTrackCount - 1, 0);
 
 		batch(() => {
 			if (editorState.timeline.selection?.type === type) {
@@ -350,8 +401,10 @@ export function Timeline(props: {
 
 					if (type === "text" && nextTextSegments) {
 						timeline.textSegments = nextTextSegments;
-					} else if (nextMaskSegments) {
+					} else if (type === "mask" && nextMaskSegments) {
 						timeline.maskSegments = nextMaskSegments;
+					} else if (nextAudioSegments) {
+						timeline.audioSegments = nextAudioSegments;
 					}
 				}),
 			);
@@ -424,7 +477,7 @@ export function Timeline(props: {
 
 	async function handleOpenTrackMenu(
 		e: MouseEvent,
-		type: "text" | "mask",
+		type: "text" | "mask" | "audio",
 		laneIndex: number,
 	) {
 		e.preventDefault();
@@ -433,7 +486,7 @@ export function Timeline(props: {
 		const menu = await Menu.new({
 			items: [
 				await MenuItem.new({
-					text: `Delete ${type === "text" ? "text" : "mask"} track`,
+					text: `Delete ${type} track`,
 					action: () => handleDeleteTrackLane(type, laneIndex),
 				}),
 			],
@@ -517,6 +570,7 @@ export function Timeline(props: {
 	let sceneSegmentDragState = { type: "idle" } as SceneSegmentDragState;
 	let maskSegmentDragState = { type: "idle" } as MaskSegmentDragState;
 	let textSegmentDragState = { type: "idle" } as TextSegmentDragState;
+	let audioSegmentDragState = { type: "idle" } as AudioSegmentDragState;
 	let captionSegmentDragState = { type: "idle" } as CaptionSegmentDragState;
 	let keyboardSegmentDragState = { type: "idle" } as KeyboardSegmentDragState;
 
@@ -594,6 +648,7 @@ export function Timeline(props: {
 			sceneSegmentDragState.type !== "moving" &&
 			maskSegmentDragState.type !== "moving" &&
 			textSegmentDragState.type !== "moving" &&
+			audioSegmentDragState.type !== "moving" &&
 			captionSegmentDragState.type !== "moving" &&
 			keyboardSegmentDragState.type !== "moving"
 		) {
@@ -652,6 +707,8 @@ export function Timeline(props: {
 				projectActions.deleteMaskSegments(selection.indices);
 			} else if (selection.type === "text") {
 				projectActions.deleteTextSegments(selection.indices);
+			} else if (selection.type === "audio") {
+				projectActions.deleteAudioSegments(selection.indices);
 			} else if (selection.type === "clip") {
 				// Delete all selected clips in reverse order
 				[...selection.indices]
@@ -676,6 +733,7 @@ export function Timeline(props: {
 		} else if (e.code === "Escape" && hasNoModifiers) {
 			// Deselect all selected segments
 			setEditorState("timeline", "selection", null);
+			setEditorState("timeline", "audioPicker", null);
 		}
 	});
 
@@ -788,6 +846,7 @@ export function Timeline(props: {
 							handleUpdatePlayhead(e);
 							if (zoomSegmentDragState.type === "idle") {
 								setEditorState("timeline", "selection", null);
+								setEditorState("timeline", "audioPicker", null);
 							}
 						});
 						createEventListener(window, "mouseup", () => {
@@ -840,14 +899,15 @@ export function Timeline(props: {
 					<div class="absolute inset-0 flex items-end">
 						<TimelineMarkings />
 					</div>
-					<div class="absolute bottom-0 z-30">
-						<Tooltip content="Add track">
-							<TrackManager
-								options={trackOptions()}
-								onToggle={handleToggleTrack}
-								onAdd={handleAddTrack}
-							/>
-						</Tooltip>
+					<div
+						class="absolute bottom-0 left-0 z-30"
+						style={{ width: `${TRACK_ICON_WIDTH}px` }}
+					>
+						<TrackManager
+							options={trackOptions()}
+							onToggle={handleToggleTrack}
+							onAdd={handleAddTrack}
+						/>
 					</div>
 				</div>
 				<Show when={!editorState.playing && editorState.previewTime}>
@@ -908,7 +968,7 @@ export function Timeline(props: {
 						}}
 					>
 						<div class="flex flex-col gap-2 min-h-full">
-							<TrackRow icon={trackIcons.clip}>
+							<TrackRow icon={trackIcons.clip} label="Video" type="clip">
 								<ClipTrack
 									ref={setTimelineRef}
 									handleUpdatePlayhead={handleUpdatePlayhead}
@@ -917,6 +977,8 @@ export function Timeline(props: {
 							<Show when={captionTrackVisible()}>
 								<TrackRow
 									icon={trackIcons.caption}
+									label="Captions"
+									type="caption"
 									onDelete={() => handleDeleteSingleTrack("caption")}
 								>
 									<CaptionsTrack
@@ -932,6 +994,8 @@ export function Timeline(props: {
 							<Show when={keyboardTrackVisible()}>
 								<TrackRow
 									icon={trackIcons.keyboard}
+									label="Keyboard"
+									type="keyboard"
 									onDelete={() => handleDeleteSingleTrack("keyboard")}
 								>
 									<KeyboardTrack
@@ -946,6 +1010,8 @@ export function Timeline(props: {
 								{(laneIndex) => (
 									<TrackRow
 										icon={trackIcons.text}
+										label="Text"
+										type="text"
 										onDelete={() => handleDeleteTrackLane("text", laneIndex)}
 										onContextMenu={(e) =>
 											handleOpenTrackMenu(e, "text", laneIndex)
@@ -965,6 +1031,8 @@ export function Timeline(props: {
 								{(laneIndex) => (
 									<TrackRow
 										icon={trackIcons.mask}
+										label="Mask"
+										type="mask"
 										onDelete={() => handleDeleteTrackLane("mask", laneIndex)}
 										onContextMenu={(e) =>
 											handleOpenTrackMenu(e, "mask", laneIndex)
@@ -980,7 +1048,29 @@ export function Timeline(props: {
 									</TrackRow>
 								)}
 							</For>
-							<TrackRow icon={trackIcons.zoom}>
+							<For each={audioTrackRows()}>
+								{(laneIndex) => (
+									<TrackRow
+										icon={trackIcons.audio}
+										label="Audio"
+										type="audio"
+										onDelete={() => handleDeleteTrackLane("audio", laneIndex)}
+										onContextMenu={(e) =>
+											handleOpenTrackMenu(e, "audio", laneIndex)
+										}
+									>
+										<AudioTrack
+											laneIndex={laneIndex}
+											onDragStateChanged={(v) => {
+												audioSegmentDragState = v;
+											}}
+											handleUpdatePlayhead={handleUpdatePlayhead}
+											onRequestAdd={openAudioPicker}
+										/>
+									</TrackRow>
+								)}
+							</For>
+							<TrackRow icon={trackIcons.zoom} label="Zoom" type="zoom">
 								<ZoomTrack
 									onDragStateChanged={(v) => {
 										zoomSegmentDragState = v;
@@ -989,7 +1079,7 @@ export function Timeline(props: {
 								/>
 							</TrackRow>
 							<Show when={sceneTrackVisible()}>
-								<TrackRow icon={trackIcons.scene}>
+								<TrackRow icon={trackIcons.scene} label="Scene" type="scene">
 									<SceneTrack
 										onDragStateChanged={(v) => {
 											sceneSegmentDragState = v;
@@ -1008,27 +1098,31 @@ export function Timeline(props: {
 
 function TrackRow(props: {
 	icon: () => JSX.Element;
+	label?: string;
+	type: TimelineTrackType;
 	children: JSX.Element;
 	onDelete?: () => void;
 	onContextMenu?: (e: MouseEvent) => void;
 }) {
 	return (
-		<div
-			class="group/track flex items-stretch gap-2"
-			onContextMenu={props.onContextMenu}
-		>
-			<div class="relative">
+		<div class="flex items-stretch gap-2" onContextMenu={props.onContextMenu}>
+			<div
+				class="group/icon relative shrink-0"
+				style={{ width: `${TRACK_ICON_WIDTH}px` }}
+			>
 				<TrackIcon
 					icon={props.icon()}
+					label={props.label}
+					type={props.type}
 					class={
 						props.onDelete
-							? "transition-opacity group-hover/track:pointer-events-none group-hover/track:opacity-0"
+							? "transition-opacity group-hover/icon:pointer-events-none group-hover/icon:opacity-0"
 							: undefined
 					}
 				/>
 				<Show when={props.onDelete}>
 					<button
-						class="absolute inset-0 z-20 pointer-events-none flex items-center justify-center rounded-xl border border-red-400/70 bg-red-500/90 text-white opacity-0 transition-opacity group-hover/track:pointer-events-auto group-hover/track:opacity-100"
+						class="absolute left-1/2 top-1/2 z-20 pointer-events-none flex size-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-md border border-red-400/70 bg-red-500 text-white opacity-0 shadow-sm transition-opacity group-hover/icon:pointer-events-auto group-hover/icon:opacity-100"
 						onClick={(e) => {
 							e.stopPropagation();
 							props.onDelete?.();
@@ -1036,7 +1130,7 @@ function TrackRow(props: {
 						onMouseDown={(e) => e.stopPropagation()}
 						title="Delete track"
 					>
-						<IconCapTrash class="size-4" />
+						<IconCapTrash class="size-3.5" />
 					</button>
 				</Show>
 			</div>
