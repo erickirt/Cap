@@ -1682,6 +1682,11 @@ const handleRequest = async (
 		};
 	}
 
+	if (message.type === "open-recorder-panel") {
+		await openRecorderPanel(sender.tab);
+		return { ok: true };
+	}
+
 	if (
 		message.type === "pause-recording" ||
 		message.type === "resume-recording"
