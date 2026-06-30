@@ -18,7 +18,7 @@ use tauri::{
     AppHandle,
     image::Image,
     menu::{Menu, MenuItem},
-    tray::TrayIconBuilder,
+    tray::{TrayIcon, TrayIconBuilder},
 };
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
@@ -28,6 +28,45 @@ const PREVIOUS_ITEM_PREFIX: &str = "previous_item_";
 const MAX_PREVIOUS_ITEMS: usize = 6;
 const MAX_TITLE_LENGTH: usize = 30;
 const THUMBNAIL_SIZE: u32 = 32;
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum LinuxTrayIcon {
+    Default,
+    Instant,
+    Screenshot,
+    Studio,
+    Stop,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxTrayIcon {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Default => "so.cap.desktop-tray-default-symbolic",
+            Self::Instant => "so.cap.desktop-tray-instant-symbolic",
+            Self::Screenshot => "so.cap.desktop-tray-screenshot-symbolic",
+            Self::Studio => "so.cap.desktop-tray-studio-symbolic",
+            Self::Stop => "so.cap.desktop-tray-stop-symbolic",
+        }
+    }
+
+    fn svg(self) -> &'static str {
+        match self {
+            Self::Default => {
+                include_str!("../icons/linux/so.cap.desktop-tray-default-symbolic.svg")
+            }
+            Self::Instant => {
+                include_str!("../icons/linux/so.cap.desktop-tray-instant-symbolic.svg")
+            }
+            Self::Screenshot => {
+                include_str!("../icons/linux/so.cap.desktop-tray-screenshot-symbolic.svg")
+            }
+            Self::Studio => include_str!("../icons/linux/so.cap.desktop-tray-studio-symbolic.svg"),
+            Self::Stop => include_str!("../icons/linux/so.cap.desktop-tray-stop-symbolic.svg"),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum TrayItem {
@@ -630,6 +669,73 @@ pub fn get_mode_icon(mode: RecordingMode) -> &'static [u8] {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn linux_tray_icon_for_mode(mode: RecordingMode) -> LinuxTrayIcon {
+    match mode {
+        RecordingMode::Studio => LinuxTrayIcon::Studio,
+        RecordingMode::Instant => LinuxTrayIcon::Instant,
+        RecordingMode::Screenshot => LinuxTrayIcon::Screenshot,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn write_linux_tray_symbolic_icon(icon: LinuxTrayIcon) -> std::io::Result<PathBuf> {
+    let dir = dirs::runtime_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("cap-tray-icons");
+    std::fs::create_dir_all(&dir)?;
+
+    let path = dir.join(format!("{}.svg", icon.name()));
+    let svg = icon.svg().as_bytes();
+    if std::fs::read(&path).ok().as_deref() != Some(svg) {
+        std::fs::write(path, svg)?;
+    }
+
+    Ok(dir)
+}
+
+#[cfg(target_os = "linux")]
+fn set_linux_tray_icon(tray: &TrayIcon<tauri::Wry>, icon: LinuxTrayIcon) -> tauri::Result<()> {
+    let icon_dir = write_linux_tray_symbolic_icon(icon).map_err(tauri::Error::Io)?;
+    let icon_name = icon.name().to_string();
+
+    tray.with_inner_tray_icon(move |inner| unsafe {
+        let indicator = inner.app_indicator() as *mut libappindicator::AppIndicator;
+        if let Some(indicator) = indicator.as_mut() {
+            indicator.set_icon_theme_path(&icon_dir.to_string_lossy());
+            indicator.set_icon_full(&icon_name, "Cap tray icon");
+        }
+    })?;
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn set_tray_icon_for_mode(tray: &TrayIcon<tauri::Wry>, mode: RecordingMode) -> tauri::Result<()> {
+    set_linux_tray_icon(tray, linux_tray_icon_for_mode(mode))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_tray_icon_for_mode(tray: &TrayIcon<tauri::Wry>, mode: RecordingMode) -> tauri::Result<()> {
+    let icon = Image::from_bytes(get_mode_icon(mode))?;
+    tray.set_icon(Some(icon))?;
+    tray.set_icon_as_template(true)?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn set_tray_stop_icon(tray: &TrayIcon<tauri::Wry>) -> tauri::Result<()> {
+    set_linux_tray_icon(tray, LinuxTrayIcon::Stop)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_tray_stop_icon(tray: &TrayIcon<tauri::Wry>) -> tauri::Result<()> {
+    let icon = Image::from_bytes(include_bytes!("../icons/tray-stop-icon.png"))?;
+    tray.set_icon(Some(icon))?;
+    tray.set_icon_as_template(true)?;
+    Ok(())
+}
+
 pub fn update_tray_icon_for_mode(app: &AppHandle, mode: RecordingMode) {
     if cfg!(target_os = "windows") {
         return;
@@ -639,9 +745,8 @@ pub fn update_tray_icon_for_mode(app: &AppHandle, mode: RecordingMode) {
         return;
     };
 
-    if let Ok(icon) = Image::from_bytes(get_mode_icon(mode)) {
-        let _ = tray.set_icon(Some(icon));
-        let _ = tray.set_icon_as_template(true);
+    if let Err(error) = set_tray_icon_for_mode(&tray, mode) {
+        tracing::warn!("Failed to update tray icon: {error}");
     }
 }
 
@@ -854,6 +959,13 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
         })
         .build(&app);
 
+    #[cfg(target_os = "linux")]
+    if let Some(tray) = app.tray_by_id("tray")
+        && let Err(error) = set_tray_icon_for_mode(&tray, current_mode)
+    {
+        tracing::warn!("Failed to initialize Linux tray icon: {error}");
+    }
+
     {
         let app_clone = app.clone();
         let cache_clone = cache.clone();
@@ -911,9 +1023,8 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
                 return;
             };
 
-            if let Ok(icon) = Image::from_bytes(include_bytes!("../icons/tray-stop-icon.png")) {
-                let _ = tray.set_icon(Some(icon));
-                let _ = tray.set_icon_as_template(true);
+            if let Err(error) = set_tray_stop_icon(&tray) {
+                tracing::warn!("Failed to update tray icon for recording start: {error}");
             }
         }
     });
@@ -933,9 +1044,8 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
             };
 
             let current_mode = get_current_mode(&app_handle);
-            if let Ok(icon) = Image::from_bytes(get_mode_icon(current_mode)) {
-                let _ = tray.set_icon(Some(icon));
-                let _ = tray.set_icon_as_template(true);
+            if let Err(error) = set_tray_icon_for_mode(&tray, current_mode) {
+                tracing::warn!("Failed to update tray icon for recording stop: {error}");
             }
         }
     });
