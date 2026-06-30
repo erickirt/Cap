@@ -11,6 +11,8 @@ import { Effect, Exit } from "effect";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { ChromeRecorderButton } from "@/components/ChromeRecorderButton";
+import { CHROME_EXTENSION_BUTTON_CLASS } from "@/lib/chrome-extension";
 import { useEffectMutation, useRpcClient } from "@/lib/EffectRuntime";
 import { useVideosAnalyticsQuery } from "@/lib/Queries/Analytics";
 import { useDashboardContext } from "../Contexts";
@@ -264,6 +266,9 @@ export const Caps = ({
 				</Button>
 				<UploadCapButton size="sm" />
 				<WebRecorderDialog />
+				<ChromeRecorderButton
+					className={`${CHROME_EXTENSION_BUTTON_CLASS} font-medium`}
+				/>
 			</div>
 			{folders.length > 0 && (
 				<>
@@ -280,7 +285,9 @@ export const Caps = ({
 			{visibleVideos.length > 0 && (
 				<>
 					<div className="flex justify-between items-center mb-6 w-full">
-						<h1 className="text-2xl font-medium text-gray-12">Videos</h1>
+						<h1 className="text-2xl font-medium text-gray-12">
+							Videos and screenshots
+						</h1>
 					</div>
 
 					<div className="grid grid-cols-1 gap-4 sm:gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">

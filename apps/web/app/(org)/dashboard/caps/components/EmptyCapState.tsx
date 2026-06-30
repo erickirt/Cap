@@ -1,6 +1,8 @@
 import { Button } from "@cap/ui";
 import { faDownload } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { ChromeRecorderButton } from "@/components/ChromeRecorderButton";
+import { CHROME_EXTENSION_BUTTON_CLASS } from "@/lib/chrome-extension";
 import { useRive } from "@/lib/rive";
 import { useTheme } from "../../Contexts";
 import { UploadCapButton } from "./UploadCapButton";
@@ -42,6 +44,10 @@ export const EmptyCapState: React.FC<EmptyCapStateProps> = ({ userName }) => {
 					</Button>
 					<p className="text-sm text-gray-10">or</p>
 					<WebRecorderDialog />
+					<p className="text-sm text-gray-10">or</p>
+					<ChromeRecorderButton
+						className={`${CHROME_EXTENSION_BUTTON_CLASS} font-medium`}
+					/>
 					<p className="text-sm text-gray-10">or</p>
 					<UploadCapButton />
 				</div>
