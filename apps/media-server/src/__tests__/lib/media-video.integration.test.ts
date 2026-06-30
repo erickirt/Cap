@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { withTimeout } from "../../lib/media-common";
 import { probeVideo } from "../../lib/media-probe";
 import {
+	buildStreamingDownloadFfmpegArgs,
 	copyFileToMp4,
 	generatePreviewGif,
 	generateThumbnail,
@@ -21,6 +22,7 @@ import {
 	materializeStreamingInput,
 	muxMediaTracksToMp4,
 	normalizeVideoInputExtension,
+	pickMobileSafeH264Level,
 	processVideo,
 	repairContainer,
 	uploadToS3,
@@ -39,6 +41,25 @@ async function expectRejected(promise: Promise<unknown>): Promise<void> {
 		rejected = true;
 	}
 	expect(rejected).toBe(true);
+}
+
+function readH264Level(filePath: string): number {
+	const output = execFileSync("ffprobe", [
+		"-hide_banner",
+		"-v",
+		"error",
+		"-select_streams",
+		"v:0",
+		"-show_entries",
+		"stream=level",
+		"-of",
+		"default=noprint_wrappers=1:nokey=1",
+		filePath,
+	])
+		.toString()
+		.trim();
+
+	return Number.parseInt(output, 10);
 }
 
 afterAll(() => {
@@ -601,6 +622,50 @@ describe("processVideo integration tests", () => {
 		await tempFile.cleanup();
 	}, 120000);
 
+	test("re-encodes compatible h264 input when the level is unsafe for mobile", async () => {
+		const workDir = mkdtempSync(join(tmpdir(), "cap-high-level-h264-"));
+		try {
+			const highLevelPath = join(workDir, "high-level.mp4");
+			execFileSync("ffmpeg", [
+				"-hide_banner",
+				"-loglevel",
+				"error",
+				"-y",
+				"-i",
+				TEST_VIDEO_WITH_AUDIO,
+				"-c:v",
+				"libx264",
+				"-level:v",
+				"6.1",
+				"-c:a",
+				"copy",
+				highLevelPath,
+			]);
+
+			const metadata = await probeVideo(`file://${highLevelPath}`);
+			const expectedLevel = pickMobileSafeH264Level(metadata, {
+				maxWidth: metadata.width,
+				maxHeight: metadata.height,
+			});
+
+			expect(readH264Level(highLevelPath)).toBeGreaterThan(expectedLevel.value);
+
+			const tempFile = await processVideo(highLevelPath, metadata, {
+				maxWidth: metadata.width,
+				maxHeight: metadata.height,
+			});
+			tempFiles.push(tempFile.path);
+
+			expect(readH264Level(tempFile.path)).toBeLessThanOrEqual(
+				expectedLevel.value,
+			);
+
+			await tempFile.cleanup();
+		} finally {
+			rmSync(workDir, { recursive: true, force: true });
+		}
+	}, 120000);
+
 	test("transcodes raw webm input into a valid mp4 output", async () => {
 		const workDir = mkdtempSync(join(tmpdir(), "cap-webm-transcode-"));
 		try {
@@ -636,6 +701,18 @@ describe("processVideo integration tests", () => {
 });
 
 describe("ffmpeg-backed media utilities integration tests", () => {
+	test("allows Loom DASH webm segments in generated HLS downloads", () => {
+		const args = buildStreamingDownloadFfmpegArgs(
+			"/tmp/input.m3u8",
+			"/tmp/output.mkv",
+		);
+
+		expect(args).toContain("-allowed_segment_extensions");
+		expect(args).toContain("-extension_picky");
+		expect(args[args.indexOf("-allowed_segment_extensions") + 1]).toBe("ALL");
+		expect(args[args.indexOf("-extension_picky") + 1]).toBe("0");
+	});
+
 	test("repairs a real mp4 container into a probeable file", async () => {
 		const repairedFile = await repairContainer(TEST_VIDEO_WITH_AUDIO);
 		tempFiles.push(repairedFile.path);

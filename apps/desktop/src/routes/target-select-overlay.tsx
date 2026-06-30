@@ -4,7 +4,6 @@ import { createElementSize } from "@solid-primitives/resize-observer";
 import { makePersisted } from "@solid-primitives/storage";
 import { useSearchParams } from "@solidjs/router";
 import { createMutation, useQuery } from "@tanstack/solid-query";
-import { invoke } from "@tauri-apps/api/core";
 import {
 	LogicalPosition,
 	type PhysicalPosition,
@@ -65,6 +64,11 @@ import {
 	createOptionsQuery,
 	createOrganizationsQuery,
 } from "~/utils/queries";
+import {
+	type CanvasControls,
+	createImageDataWS,
+	type FrameData,
+} from "~/utils/socket";
 import {
 	type CameraInfo,
 	commands,
@@ -621,7 +625,14 @@ function Inner() {
 												}}
 												onRecordingStart={() => {
 													setOriginalCameraBounds(null);
-													setOptions("targetMode", null);
+													if (options.targetModeSource === "editor") {
+														setOptions({
+															targetMode: null,
+															targetModeSource: "editorRecording",
+														});
+													} else {
+														setOptions("targetMode", null);
+													}
 													commands.closeTargetSelectOverlays();
 												}}
 												onClose={() => {
@@ -1068,10 +1079,12 @@ function Inner() {
 									}
 									await new Promise((resolve) => setTimeout(resolve, 50));
 
-									const path = await invoke<string>("take_screenshot", {
-										target,
-									});
-									await commands.showWindow({ ScreenshotEditor: { path } });
+									const path = await commands.takeScreenshot(target);
+									const shouldOpenEditor =
+										await commands.automationShouldOpenScreenshotEditor(target);
+									if (shouldOpenEditor) {
+										await commands.showWindow({ ScreenshotEditor: { path } });
+									}
 									await commands.closeTargetSelectOverlays();
 								} catch (e) {
 									const message = e instanceof Error ? e.message : String(e);
@@ -1186,7 +1199,11 @@ function CameraPreviewInline() {
 		createStore<CameraWindowState>(getDefaultCameraWindowState()),
 		{ name: CAMERA_WINDOW_STATE_STORAGE_KEY },
 	);
-	const [frame, setFrame] = createSignal<ImageData | null>(null);
+	const [hasFrame, setHasFrame] = createSignal(false);
+	const [frameDimensions, setFrameDimensions] = createSignal<{
+		width: number;
+		height: number;
+	} | null>(null);
 	const [connectionFailed, setConnectionFailed] = createSignal(false);
 	const [chromeVisible, setChromeVisible] = createSignal(false);
 	const [viewportSize, setViewportSize] = createSignal({
@@ -1194,18 +1211,53 @@ function CameraPreviewInline() {
 		height: window.innerHeight,
 	});
 	let canvasRef: HTMLCanvasElement | undefined;
-	let ws: WebSocket | undefined;
+	let ws: Omit<WebSocket, "onmessage"> | undefined;
+	let canvasControls: CanvasControls | undefined;
 	let retryCount = 0;
 	let reconnectTimeoutId: ReturnType<typeof setTimeout> | undefined;
 	let stallCheckInterval: ReturnType<typeof setInterval> | undefined;
 	let isCleanedUp = false;
-	let reusableFrame: ImageData | null = null;
-	let reusableFrameWidth = 0;
-	let reusableFrameHeight = 0;
 	let lastFrameTime = 0;
 
 	const cameraWsPort = window.__CAP__?.cameraWsPort;
 	const hasCameraSelected = () => rawOptions.cameraID !== null;
+
+	const closeSocket = () => {
+		const socket = ws;
+		const controls = canvasControls;
+		ws = undefined;
+		canvasControls = undefined;
+		controls?.dispose();
+		if (
+			socket &&
+			socket.readyState !== WebSocket.CLOSING &&
+			socket.readyState !== WebSocket.CLOSED
+		) {
+			socket.close();
+		}
+	};
+
+	const initCanvasControls = () => {
+		if (!canvasControls || !canvasRef) return;
+		canvasControls.initDirectCanvas(canvasRef);
+	};
+
+	const updateFrameState = (frame: FrameData) => {
+		resetBackoff();
+		lastFrameTime = Date.now();
+
+		const dimensions = frameDimensions();
+		if (
+			!dimensions ||
+			dimensions.width !== frame.width ||
+			dimensions.height !== frame.height
+		) {
+			setFrameDimensions({ width: frame.width, height: frame.height });
+		}
+		if (canvasControls?.hasRenderedFrame()) {
+			setHasFrame(true);
+		}
+	};
 
 	createEventListener(window, "resize", () => {
 		setViewportSize({
@@ -1236,55 +1288,6 @@ function CameraPreviewInline() {
 			background_blur: normalizeBackgroundBlurMode(state.backgroundBlur),
 		});
 	});
-
-	const getReusableFrame = (width: number, height: number) => {
-		if (
-			!reusableFrame ||
-			reusableFrameWidth !== width ||
-			reusableFrameHeight !== height
-		) {
-			reusableFrame = new ImageData(width, height);
-			reusableFrameWidth = width;
-			reusableFrameHeight = height;
-		}
-
-		return reusableFrame;
-	};
-
-	let pendingRender = false;
-	let rafId: number | null = null;
-	let cachedCtx: CanvasRenderingContext2D | null = null;
-	let latestImageData: ImageData | null = null;
-
-	const scheduleRender = () => {
-		if (rafId !== null) return;
-		rafId = requestAnimationFrame(() => {
-			rafId = null;
-			if (!pendingRender || !latestImageData) return;
-			pendingRender = false;
-
-			const canvas = canvasRef;
-			if (!canvas) return;
-			if (
-				canvas.width !== latestImageData.width ||
-				canvas.height !== latestImageData.height
-			) {
-				canvas.width = latestImageData.width;
-				canvas.height = latestImageData.height;
-				cachedCtx = null;
-			}
-			if (!cachedCtx) {
-				cachedCtx = canvas.getContext("2d");
-			}
-			cachedCtx?.putImageData(latestImageData, 0, 0);
-		});
-	};
-
-	const drawFrame = (image: ImageData) => {
-		latestImageData = image;
-		pendingRender = true;
-		scheduleRender();
-	};
 
 	const scheduleReconnect = () => {
 		if (isCleanedUp || reconnectTimeoutId !== undefined || ws) return;
@@ -1318,106 +1321,36 @@ function CameraPreviewInline() {
 		}
 	};
 
-	const cleanupSocket = (socket: WebSocket) => {
-		socket.onopen = null;
-		socket.onclose = null;
-		socket.onerror = null;
-		socket.onmessage = null;
-	};
-
 	const createSocket = () => {
 		if (!cameraWsPort) return undefined;
 
-		const socket = new WebSocket(`ws://localhost:${cameraWsPort}`);
-		socket.binaryType = "arraybuffer";
+		const [socket, _isConnected, _isWorkerReady, controls] = createImageDataWS(
+			`ws://localhost:${cameraWsPort}`,
+			updateFrameState,
+			() => commands.refreshCameraFeed().catch(() => {}),
+			{ powerPreference: "low-power" },
+		);
+		canvasControls = controls;
+		initCanvasControls();
 
-		socket.onopen = () => {
+		socket.addEventListener("open", () => {
 			setConnectionFailed(false);
 			lastFrameTime = Date.now();
-		};
+			setHasFrame(false);
+			setFrameDimensions(null);
+		});
 
-		socket.onclose = () => {
-			cleanupSocket(socket);
+		socket.addEventListener("close", () => {
+			if (canvasControls === controls) {
+				canvasControls = undefined;
+			}
 			if (ws === socket) ws = undefined;
 			if (!isCleanedUp && hasCameraSelected()) scheduleReconnect();
-		};
+		});
 
-		socket.onerror = () => {
-			socket.close();
-		};
-
-		socket.onmessage = (event) => {
-			resetBackoff();
-			lastFrameTime = Date.now();
-			if (pendingRender) return;
-
-			const buffer = event.data as ArrayBuffer;
-			const clamped = new Uint8ClampedArray(buffer);
-			if (clamped.length < 24) return;
-
-			const MAX_FRAME_DIMENSION = 8192;
-			const MAX_STRIDE_BYTES = MAX_FRAME_DIMENSION * 4 * 2;
-			const MAX_FRAME_SIZE = MAX_FRAME_DIMENSION * MAX_FRAME_DIMENSION * 4;
-
-			const metadataOffset = clamped.length - 24;
-			const meta = new DataView(buffer, metadataOffset, 24);
-			const strideBytes = meta.getUint32(0, true);
-			const height = meta.getUint32(4, true);
-			const width = meta.getUint32(8, true);
-
-			if (!width || !height || strideBytes === 0) return;
-
-			if (
-				width > MAX_FRAME_DIMENSION ||
-				height > MAX_FRAME_DIMENSION ||
-				strideBytes > MAX_STRIDE_BYTES
-			)
-				return;
-
-			const source = clamped.subarray(0, metadataOffset);
-			const expectedRowBytes = width * 4;
-			const availableLength = strideBytes * height;
-
-			if (
-				expectedRowBytes > MAX_STRIDE_BYTES ||
-				availableLength > MAX_FRAME_SIZE
-			)
-				return;
-
-			if (strideBytes < expectedRowBytes || source.length < availableLength)
-				return;
-
-			const expectedLength = expectedRowBytes * height;
-
-			if (expectedLength > MAX_FRAME_SIZE) return;
-
-			const imageData = getReusableFrame(width, height);
-
-			if (strideBytes === expectedRowBytes) {
-				imageData.data.set(source.subarray(0, expectedLength));
-			} else {
-				for (let row = 0; row < height; row += 1) {
-					const srcStart = row * strideBytes;
-					const destStart = row * expectedRowBytes;
-					imageData.data.set(
-						source.subarray(srcStart, srcStart + expectedRowBytes),
-						destStart,
-					);
-				}
-			}
-
-			drawFrame(imageData);
-
-			const currentFrame = frame();
-			if (
-				!currentFrame ||
-				currentFrame !== imageData ||
-				currentFrame.width !== imageData.width ||
-				currentFrame.height !== imageData.height
-			) {
-				setFrame(imageData);
-			}
-		};
+		socket.addEventListener("error", () => {
+			controls.dispose();
+		});
 
 		return socket;
 	};
@@ -1456,31 +1389,15 @@ function CameraPreviewInline() {
 				}
 			}, WS_STALL_TIMEOUT_MS);
 		} else {
-			if (
-				ws &&
-				ws.readyState !== WebSocket.CLOSING &&
-				ws.readyState !== WebSocket.CLOSED
-			) {
-				cleanupSocket(ws);
-				ws.close();
-			}
-			ws = undefined;
-			setFrame(null);
-			reusableFrame = null;
-			reusableFrameWidth = 0;
-			reusableFrameHeight = 0;
+			setHasFrame(false);
+			setFrameDimensions(null);
+			closeSocket();
 			setConnectionFailed(false);
 		}
 	});
 
 	onCleanup(() => {
 		isCleanedUp = true;
-		if (rafId !== null) {
-			cancelAnimationFrame(rafId);
-			rafId = null;
-		}
-		cachedCtx = null;
-		latestImageData = null;
 		if (reconnectTimeoutId !== undefined) {
 			clearTimeout(reconnectTimeoutId);
 			reconnectTimeoutId = undefined;
@@ -1489,22 +1406,15 @@ function CameraPreviewInline() {
 			clearInterval(stallCheckInterval);
 			stallCheckInterval = undefined;
 		}
-		reusableFrame = null;
-		reusableFrameWidth = 0;
-		reusableFrameHeight = 0;
-		if (ws) {
-			cleanupSocket(ws);
-			ws.close();
-			ws = undefined;
-		}
+		closeSocket();
 	});
 
 	const previewDimensions = () => {
-		const f = frame();
+		const dimensions = frameDimensions();
 		const { width, height } = cameraPreviewDimensions(
 			state.size,
 			state.shape,
-			f ? f.width / f.height : undefined,
+			dimensions ? dimensions.width / dimensions.height : undefined,
 		);
 		const viewport = viewportSize();
 		const maxWidth = Math.max(160, viewport.width - 48);
@@ -1530,27 +1440,15 @@ function CameraPreviewInline() {
 		return {
 			height: "100%",
 			"object-fit": "cover" as const,
+			opacity: hasFrame() ? "1" : "0",
 			transform: state.mirrored ? "scaleX(-1)" : "scaleX(1)",
 			width: "100%",
 		};
 	};
 
-	createEffect(() => {
-		const image = frame();
-		const canvas = canvasRef;
-		if (!image || !canvas) return;
-		if (canvas.width !== image.width || canvas.height !== image.height) {
-			canvas.width = image.width;
-			canvas.height = image.height;
-			cachedCtx = null;
-		}
-	});
-
 	const handleRetryConnection = () => {
 		resetBackoff();
-		if (ws) {
-			ws.close();
-		}
+		closeSocket();
 		ws = createSocket();
 	};
 
@@ -1571,7 +1469,7 @@ function CameraPreviewInline() {
 			</div>
 			<div class="relative shadow-lg" style={previewFrameStyle()}>
 				<div
-					class="flex items-center justify-center w-full h-full overflow-hidden border border-gray-6 bg-black text-gray-11"
+					class="flex items-center justify-center w-full h-full overflow-hidden border border-gray-6 bg-black text-gray-11 relative"
 					style={{ "border-radius": "inherit" }}
 				>
 					<Show
@@ -1600,13 +1498,16 @@ function CameraPreviewInline() {
 								</div>
 							}
 						>
-							<Show
-								when={frame()}
-								fallback={
-									<div class="text-sm text-gray-11">Loading camera...</div>
-								}
-							>
-								<canvas ref={canvasRef} style={canvasStyle()} />
+							<canvas
+								ref={(canvas) => {
+									canvasRef = canvas;
+									initCanvasControls();
+								}}
+								class="absolute inset-0"
+								style={canvasStyle()}
+							/>
+							<Show when={!hasFrame()}>
+								<div class="text-sm text-gray-11">Loading camera...</div>
 							</Show>
 						</Show>
 					</Show>
@@ -1773,6 +1674,7 @@ function RecordingControls(props: {
 									props.onClose();
 								} else {
 									setOptions("targetMode", null);
+									commands.setEditorRecordingTarget(null);
 									commands.closeTargetSelectOverlays();
 								}
 							}}
@@ -1823,10 +1725,14 @@ function RecordingControls(props: {
 											}
 										}
 
-										const path = await invoke<string>("take_screenshot", {
-											target: props.target,
-										});
-										await commands.showWindow({ ScreenshotEditor: { path } });
+										const path = await commands.takeScreenshot(props.target);
+										const shouldOpenEditor =
+											await commands.automationShouldOpenScreenshotEditor(
+												props.target,
+											);
+										if (shouldOpenEditor) {
+											await commands.showWindow({ ScreenshotEditor: { path } });
+										}
 										await commands.closeTargetSelectOverlays();
 									} catch (e) {
 										const message = e instanceof Error ? e.message : String(e);

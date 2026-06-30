@@ -14,7 +14,12 @@ import { createEventListenerMap } from "@solid-primitives/event-listener";
 import { createWritableMemo } from "@solid-primitives/memo";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { appDataDir, resolveResource } from "@tauri-apps/api/path";
-import { BaseDirectory, writeFile } from "@tauri-apps/plugin-fs";
+import {
+	BaseDirectory,
+	exists,
+	readDir,
+	writeFile,
+} from "@tauri-apps/plugin-fs";
 import { type as ostype } from "@tauri-apps/plugin-os";
 import { cx } from "cva";
 import {
@@ -47,34 +52,51 @@ import {
 	getOrganizationBrandColorSwatches,
 	type OrganizationBrandColorSwatch,
 } from "~/utils/organization-branding";
-import type {
-	BackgroundBlurMode,
-	BackgroundSource,
-	CameraShape,
-	CameraXPosition,
-	CameraYPosition,
-	CaptionTrackSegment,
-	ClipOffsets,
-	CursorAnimationStyle,
-	CursorType,
-	KeyboardTrackSegment,
-	SceneSegment,
-	StereoMode,
-	TimelineSegment,
-	ZoomSegment,
+import {
+	type BackgroundBlurMode,
+	type BackgroundSource,
+	type CameraShape,
+	type CameraXPosition,
+	type CameraYPosition,
+	type CaptionTrackSegment,
+	type ClipOffsets,
+	type CursorAnimationStyle,
+	type CursorType,
+	commands,
+	type KeyboardTrackSegment,
+	type SceneMode,
+	type SceneSegment,
+	type SplitLayout,
+	type StereoMode,
+	type TimelineSegment,
+	type XY,
+	type ZoomSegment,
 } from "~/utils/tauri";
 import IconLucideBoxSelect from "~icons/lucide/box-select";
+import IconLucideColumns2 from "~icons/lucide/columns-2";
+import IconLucideEyeOff from "~icons/lucide/eye-off";
 import IconLucideGauge from "~icons/lucide/gauge";
 import IconLucideGrid from "~icons/lucide/grid";
+import IconLucideImageOff from "~icons/lucide/image-off";
 import IconLucideKeyboard from "~icons/lucide/keyboard";
 import IconLucideMonitor from "~icons/lucide/monitor";
 import IconLucideMoon from "~icons/lucide/moon";
+import IconLucideMusic from "~icons/lucide/music";
 import IconLucidePalette from "~icons/lucide/palette";
 import IconLucideRabbit from "~icons/lucide/rabbit";
 import IconLucideSparkles from "~icons/lucide/sparkles";
 import IconLucideTimer from "~icons/lucide/timer";
 import IconLucideType from "~icons/lucide/type";
+import IconLucideVideo from "~icons/lucide/video";
+import IconLucideVolume2 from "~icons/lucide/volume-2";
 import IconLucideWind from "~icons/lucide/wind";
+import { AudioLibraryPanel } from "./AudioLibrary";
+import {
+	AUDIO_TRACK_BG_CLASS,
+	type AudioTrackSegment,
+	MAX_VOLUME_DB,
+	MIN_VOLUME_DB,
+} from "./audio";
 import { BrandColorsDropdown } from "./BrandColorsDropdown";
 import { CaptionsTab } from "./CaptionsTab";
 import { syncCaptionWordsWithText } from "./captions";
@@ -83,7 +105,15 @@ import { type CornerRoundingType, useEditorContext } from "./context";
 import { GradientEditor } from "./GradientEditor";
 import { KeyboardTab } from "./KeyboardTab";
 import { evaluateMask, type MaskKind, type MaskSegment } from "./masks";
-import { DEFAULT_GRADIENT_FROM, DEFAULT_GRADIENT_TO } from "./projectConfig";
+import {
+	DEFAULT_BACKGROUND_PADDING,
+	DEFAULT_BACKGROUND_ROUNDING,
+	DEFAULT_CAMERA_SCALE_DURING_ZOOM,
+	DEFAULT_GRADIENT_FROM,
+	DEFAULT_GRADIENT_TO,
+	DEFAULT_SCENE_TRANSITION,
+	DEFAULT_SPLIT_LAYOUT,
+} from "./projectConfig";
 import ShadowSettings from "./ShadowSettings";
 import { TextInput } from "./TextInput";
 import type { TextSegment } from "./text";
@@ -101,12 +131,16 @@ import {
 } from "./ui";
 import { formatTime } from "./utils";
 
+type BackgroundSourceTab = BackgroundSource["type"] | "desktop" | "none";
+
 const BACKGROUND_SOURCES = {
+	desktop: "Desktop",
 	wallpaper: "Wallpaper",
 	image: "Image",
 	color: "Color",
 	gradient: "Gradient",
-} satisfies Record<BackgroundSource["type"], string>;
+	none: "None",
+} satisfies Record<BackgroundSourceTab, string>;
 
 const BACKGROUND_ICONS = {
 	wallpaper: imageBg,
@@ -115,12 +149,28 @@ const BACKGROUND_ICONS = {
 	gradient: gradientBg,
 } satisfies Record<BackgroundSource["type"], string>;
 
-const BACKGROUND_SOURCES_LIST = [
+const BACKGROUND_SOURCES_ROW_ONE = [
+	"desktop",
 	"wallpaper",
 	"image",
+] satisfies Array<BackgroundSourceTab>;
+
+const BACKGROUND_SOURCES_ROW_TWO = [
 	"color",
 	"gradient",
-] satisfies Array<BackgroundSource["type"]>;
+	"none",
+] satisfies Array<BackgroundSourceTab>;
+
+const BACKGROUND_IMAGE_ACCEPT =
+	"image/apng, image/avif, image/jpeg, image/png, image/webp";
+const BACKGROUND_IMAGE_EXTENSIONS = [
+	"jpg",
+	"jpeg",
+	"png",
+	"gif",
+	"webp",
+	"bmp",
+] as const;
 
 const BACKGROUND_COLORS = [
 	"#FF0000", // Red
@@ -204,7 +254,7 @@ const WALLPAPER_NAMES = [
 ] as const;
 
 const CURRENT_DESKTOP_BACKGROUND_ID = "current-desktop-background";
-const CURRENT_DESKTOP_BACKGROUND_FILENAME = "current-desktop-background.jpg";
+const CURRENT_DESKTOP_BACKGROUND_BASENAME = "current-desktop-background";
 const getCurrentDesktopBackgroundLabel = () => {
 	const os = ostype();
 	if (os === "macos") return "This Mac";
@@ -217,6 +267,16 @@ type WallpaperOption = {
 	url: string;
 	rawPath: string;
 	label?: string;
+};
+
+const isCurrentDesktopBackgroundPath = (path: string | null | undefined) => {
+	if (!path) return false;
+	const filename = path.split(/[\\/]/).pop();
+	if (!filename) return false;
+	return (
+		filename.startsWith(`${CURRENT_DESKTOP_BACKGROUND_BASENAME}.`) ||
+		filename.startsWith(`${CURRENT_DESKTOP_BACKGROUND_BASENAME}-`)
+	);
 };
 
 const STEREO_MODES = [
@@ -263,7 +323,7 @@ type CursorPresetValues = {
 	friction: number;
 };
 
-const DEFAULT_MOTION_BLUR = 1.0;
+const DEFAULT_MOTION_BLUR = 0.5;
 
 const CURSOR_TYPE_OPTIONS = [
 	{
@@ -423,7 +483,12 @@ export function ConfigSidebar() {
 
 	return (
 		<KTabs
-			value={editorState.timeline.selection ? undefined : state.selectedTab}
+			value={
+				editorState.timeline.selection ||
+				editorState.timeline.audioPicker !== null
+					? undefined
+					: state.selectedTab
+			}
 			class="flex flex-col min-h-0 shrink-0 flex-1 max-w-104 overflow-hidden rounded-xl z-10 bg-gray-1 dark:bg-gray-2 border border-gray-3"
 		>
 			<KTabs.List class="flex overflow-hidden sticky top-0 z-60 flex-row items-center h-16 text-lg border-b border-gray-3 shrink-0 bg-gray-1 dark:bg-gray-2">
@@ -468,6 +533,12 @@ export function ConfigSidebar() {
 								if (editorState.timeline.selection) {
 									setEditorState("timeline", "selection", null);
 								}
+								if (editorState.timeline.audioPicker !== null) {
+									setEditorState("timeline", "audioPicker", null);
+								}
+								if (editorState.timeline.audioReplace !== null) {
+									setEditorState("timeline", "audioReplace", null);
+								}
 								setState("selectedTab", item.id);
 								scrollRef.scrollTo({
 									top: 0,
@@ -489,7 +560,12 @@ export function ConfigSidebar() {
 				</For>
 
 				{/** Center the indicator with the icon */}
-				<Show when={!editorState.timeline.selection}>
+				<Show
+					when={
+						!editorState.timeline.selection &&
+						editorState.timeline.audioPicker === null
+					}
+				>
 					<KTabs.Indicator class="absolute top-0 left-0 w-full h-full transition-transform duration-200 ease-in-out pointer-events-none will-change-transform">
 						<div class="absolute top-1/2 left-1/2 rounded-lg transform -translate-x-1/2 -translate-y-1/2 bg-gray-3 will-change-transform size-9" />
 					</KTabs.Indicator>
@@ -502,7 +578,10 @@ export function ConfigSidebar() {
 				}}
 				class="custom-scroll overflow-x-hidden overflow-y-scroll text-[0.875rem] flex-1 min-h-0"
 				classList={{
-					hidden: !!editorState.timeline.selection,
+					hidden:
+						!!editorState.timeline.selection ||
+						editorState.timeline.audioPicker !== null ||
+						editorState.timeline.audioReplace !== null,
 				}}
 			>
 				<BackgroundConfig
@@ -892,12 +971,57 @@ export function ConfigSidebar() {
 				}}
 				class="custom-scroll p-4 top-16 left-0 right-0 bottom-0 text-[0.875rem] space-y-4 bg-gray-1 dark:bg-gray-2 z-50"
 				classList={{
-					hidden: !editorState.timeline.selection,
+					hidden:
+						!editorState.timeline.selection &&
+						editorState.timeline.audioPicker === null &&
+						editorState.timeline.audioReplace === null,
 					"animate-in slide-in-from-bottom-2 fade-in":
-						!!editorState.timeline.selection,
+						!!editorState.timeline.selection ||
+						editorState.timeline.audioPicker !== null ||
+						editorState.timeline.audioReplace !== null,
 				}}
 			>
-				<Show when={editorState.timeline.selection}>
+				<Show
+					when={
+						editorState.timeline.audioPicker !== null &&
+						!editorState.timeline.selection &&
+						editorState.timeline.audioReplace === null
+					}
+				>
+					<AudioLibraryPanel
+						mode={{
+							type: "add",
+							lane: editorState.timeline.audioPicker ?? 0,
+						}}
+						onClose={() => setEditorState("timeline", "audioPicker", null)}
+					/>
+				</Show>
+				<Show
+					when={(() => {
+						const index = editorState.timeline.audioReplace;
+						if (index === null) return null;
+						const segment = project.timeline?.audioSegments?.[index];
+						if (!segment) {
+							setEditorState("timeline", "audioReplace", null);
+							return null;
+						}
+						return { index };
+					})()}
+				>
+					{(value) => (
+						<AudioLibraryPanel
+							mode={{ type: "replace", index: value().index }}
+							onClose={() => setEditorState("timeline", "audioReplace", null)}
+						/>
+					)}
+				</Show>
+				<Show
+					when={
+						editorState.timeline.audioReplace === null
+							? editorState.timeline.selection
+							: null
+					}
+				>
 					{(selection) => (
 						<Suspense>
 							<Show
@@ -1106,6 +1230,77 @@ export function ConfigSidebar() {
 														segment={item.segment}
 														segmentIndex={item.index}
 														brandColorSwatches={brandColorSwatches()}
+													/>
+												</div>
+											)}
+										</For>
+									</div>
+								)}
+							</Show>
+							<Show
+								when={(() => {
+									const audioSelection = selection();
+									if (audioSelection.type !== "audio") return;
+
+									const segments = audioSelection.indices
+										.map((index) => ({
+											index,
+											segment: project.timeline?.audioSegments?.[index],
+										}))
+										.filter(
+											(
+												item,
+											): item is {
+												index: number;
+												segment: AudioTrackSegment;
+											} => item.segment !== undefined,
+										);
+
+									if (segments.length === 0) {
+										setEditorState("timeline", "selection", null);
+										return;
+									}
+									return { selection: audioSelection, segments };
+								})()}
+							>
+								{(value) => (
+									<div class="space-y-4">
+										<div class="flex flex-row justify-between items-center">
+											<div class="flex gap-2 items-center">
+												<EditorButton
+													onClick={() =>
+														setEditorState("timeline", "selection", null)
+													}
+													leftIcon={<IconLucideCheck />}
+												>
+													Done
+												</EditorButton>
+												<span class="text-sm text-gray-10">
+													{value().segments.length} audio{" "}
+													{value().segments.length === 1
+														? "segment"
+														: "segments"}{" "}
+													selected
+												</span>
+											</div>
+											<EditorButton
+												variant="danger"
+												onClick={() =>
+													projectActions.deleteAudioSegments(
+														value().segments.map((s) => s.index),
+													)
+												}
+												leftIcon={<IconCapTrash />}
+											>
+												Delete
+											</EditorButton>
+										</div>
+										<For each={value().segments}>
+											{(item) => (
+												<div class="p-4 rounded-lg border border-gray-200">
+													<AudioSegmentConfig
+														segment={item.segment}
+														segmentIndex={item.index}
 													/>
 												</div>
 											)}
@@ -1423,21 +1618,44 @@ function BackgroundConfig(props: {
 	scrollRef: HTMLDivElement;
 	brandColorSwatches: OrganizationBrandColorSwatch[];
 }) {
-	const { project, setProject, projectHistory } = useEditorContext();
+	const { project, setProject, editorInstance, projectHistory } =
+		useEditorContext();
+	const isNoneBackground = () =>
+		project.background.padding === 0 && project.background.rounding === 0;
 	const initialCurrentDesktopBackgroundPath = () => {
 		const source = project.background.source;
 		if (source.type !== "wallpaper" || !source.path) return null;
-		return source.path.endsWith(CURRENT_DESKTOP_BACKGROUND_FILENAME)
-			? source.path
-			: null;
+		return isCurrentDesktopBackgroundPath(source.path) ? source.path : null;
 	};
-	const [currentDesktopBackgroundPath] = createSignal<string | null>(
-		initialCurrentDesktopBackgroundPath(),
-	);
+	const [currentDesktopBackgroundPath, setCurrentDesktopBackgroundPath] =
+		createSignal<string | null>(initialCurrentDesktopBackgroundPath());
 
-	// Background tabs
 	const [backgroundTab, setBackgroundTab] =
 		createSignal<keyof typeof BACKGROUND_THEMES>("macOS");
+	const projectBackgroundSourceTab = createMemo<BackgroundSourceTab>(() => {
+		const source = project.background.source;
+		if (
+			source.type === "wallpaper" &&
+			isCurrentDesktopBackgroundPath(source.path)
+		) {
+			return "desktop";
+		}
+
+		return source.type;
+	});
+	const [backgroundSourceTab, setBackgroundSourceTab] =
+		createSignal<BackgroundSourceTab>(
+			isNoneBackground() ? "none" : projectBackgroundSourceTab(),
+		);
+
+	// "None" is a sticky selection: nudging the padding/rounding sliders must not
+	// swap the panel back to the underlying source tab (that reflow moves the very
+	// slider being dragged), so only re-sync when the user isn't sitting on "None".
+	createEffect(
+		on(projectBackgroundSourceTab, (tab) => {
+			if (backgroundSourceTab() !== "none") setBackgroundSourceTab(tab);
+		}),
+	);
 
 	const [wallpapers] = createResource(async () => {
 		// Only load visible wallpapers initially
@@ -1475,31 +1693,81 @@ function BackgroundConfig(props: {
 		};
 	});
 
-	const wallpaperOptions = createMemo(() => {
-		const current = currentDesktopBackground();
-		return current ? [current, ...(wallpapers() ?? [])] : (wallpapers() ?? []);
-	});
+	const findStoredCurrentDesktopBackgroundPath = async () => {
+		if (currentDesktopBackgroundPath()) return currentDesktopBackgroundPath();
+
+		const assetsDir = `${editorInstance.path}/assets`;
+
+		try {
+			const importedPrefix = `${CURRENT_DESKTOP_BACKGROUND_BASENAME}-`;
+			let newest: { path: string; timestamp: number } | null = null;
+			for (const entry of await readDir(assetsDir)) {
+				if (!entry.isFile || entry.name.includes(".pending.")) continue;
+				if (!entry.name.startsWith(importedPrefix)) continue;
+				const timestamp = Number(entry.name.match(/-(\d+)\./)?.[1] ?? 0);
+				if (!newest || timestamp > newest.timestamp) {
+					newest = { path: `${assetsDir}/${entry.name}`, timestamp };
+				}
+			}
+			if (newest) return newest.path;
+		} catch {}
+
+		for (const extension of BACKGROUND_IMAGE_EXTENSIONS) {
+			const path = `${assetsDir}/${CURRENT_DESKTOP_BACKGROUND_BASENAME}.${extension}`;
+			if (await exists(path)) return path;
+		}
+
+		return null;
+	};
+
+	const wallpaperOptions = createMemo(() => wallpapers() ?? []);
 
 	const selectedWallpaper = createMemo(() => {
 		if (project.background.source.type !== "wallpaper") return null;
 
 		const path = project.background.source.path;
 		if (!path) return null;
-
-		const current = currentDesktopBackground();
-		if (current && path === current.rawPath) return current;
+		if (isCurrentDesktopBackgroundPath(path)) return null;
 
 		return wallpapers()?.find((w) => path.includes(w.id)) ?? null;
 	});
 
-	// set padding if background is selected
-	const ensurePaddingForBackground = () => {
-		if (project.background.padding === 0)
-			setProject("background", "padding", 10);
+	// Leaving "None" seeds default padding AND rounding; real→real switches only
+	// ensure padding so an intentionally-square background keeps rounding 0. Keyed
+	// off `fromNone` because rounding is already 0 once the slider has left None.
+	const ensureBackgroundPresentation = (fromNone = false) => {
+		batch(() => {
+			if (project.background.padding === 0)
+				setProject("background", "padding", DEFAULT_BACKGROUND_PADDING);
+			if (fromNone && project.background.rounding === 0)
+				setProject("background", "rounding", DEFAULT_BACKGROUND_ROUNDING);
+		});
 	};
 
-	// Validate background source path on mount
+	const setBackgroundDimension = (
+		key: "padding" | "rounding",
+		value: number,
+	) => {
+		batch(() => {
+			// Revealing padding/rounding out of "None" shows a clean white canvas
+			// rather than resurrecting the hidden source. The tab stays on "None".
+			if (value > 0 && backgroundSourceTab() === "none" && isNoneBackground())
+				setProject("background", "source", {
+					type: "color",
+					value: [255, 255, 255],
+					alpha: 255,
+				});
+			setProject("background", key, value);
+		});
+	};
+
 	onMount(async () => {
+		const storedCurrentDesktopBackgroundPath =
+			await findStoredCurrentDesktopBackgroundPath();
+		if (storedCurrentDesktopBackgroundPath) {
+			setCurrentDesktopBackgroundPath(storedCurrentDesktopBackgroundPath);
+		}
+
 		if (
 			project.background.source.type === "wallpaper" ||
 			project.background.source.type === "image"
@@ -1508,25 +1776,20 @@ function BackgroundConfig(props: {
 
 			if (path) {
 				if (project.background.source.type === "wallpaper") {
-					// If the path is just the wallpaper ID (e.g. "sequoia-dark"), get the full path
 					if (
 						WALLPAPER_NAMES.includes(path as (typeof WALLPAPER_NAMES)[number])
 					) {
-						// Wait for wallpapers to load
 						const loadedWallpapers = wallpapers();
 						if (!loadedWallpapers) return;
 
-						// Find the wallpaper with matching ID
 						const wallpaper = loadedWallpapers.find((w) => w.id === path);
 						if (!wallpaper?.url) return;
 
-						// Directly trigger the radio group's onChange handler
 						const radioGroupOnChange = async (photoUrl: string) => {
 							try {
 								const wallpaper = wallpapers()?.find((w) => w.url === photoUrl);
 								if (!wallpaper) return;
 
-								// Get the raw path without any URL prefixes
 								const rawPath = decodeURIComponent(
 									photoUrl.replace("file://", ""),
 								);
@@ -1604,6 +1867,115 @@ function BackgroundConfig(props: {
 		});
 	};
 
+	const getValidBackgroundImageExtension = (file: File) => {
+		const extension = file.name.split(".").pop()?.toLowerCase();
+		return (
+			BACKGROUND_IMAGE_EXTENSIONS.find((value) => value === extension) ?? null
+		);
+	};
+
+	const [importingDesktopBackground, setImportingDesktopBackground] =
+		createSignal(false);
+
+	const importDesktopBackground = async () => {
+		if (importingDesktopBackground()) return;
+		setImportingDesktopBackground(true);
+		try {
+			const path = await commands.importCurrentDesktopBackground(
+				editorInstance.path,
+			);
+			const addingFromBlankBackground = isNoneBackground();
+			batch(() => {
+				setCurrentDesktopBackgroundPath(path);
+				setBackgroundSourceTab("desktop");
+				setWallpaperSource(path);
+				ensureBackgroundPresentation(addingFromBlankBackground);
+			});
+		} catch (_err) {
+			toast.error("Couldn't import your desktop wallpaper");
+		} finally {
+			setImportingDesktopBackground(false);
+		}
+	};
+
+	const renderBackgroundSourceIcon = (item: BackgroundSourceTab) => {
+		if (item === "none") {
+			return <IconLucideImageOff class="size-3.5" />;
+		}
+
+		if (item === "gradient") {
+			const source = project.background.source;
+			const angle = source.type === "gradient" ? source.angle : 90;
+			const fromColor =
+				source.type === "gradient" ? source.from : DEFAULT_GRADIENT_FROM;
+			const toColor =
+				source.type === "gradient" ? source.to : DEFAULT_GRADIENT_TO;
+			return (
+				<div
+					class="size-3.5 rounded-sm"
+					style={{
+						background: `linear-gradient(${angle}deg, rgb(${fromColor}), rgb(${toColor}))`,
+					}}
+				/>
+			);
+		}
+
+		if (item === "color") {
+			const source = project.background.source;
+			const backgroundColor =
+				source.type === "color" ? source.value : hexToRgb(BACKGROUND_COLORS[9]);
+			return (
+				<div
+					class="size-3.5 rounded-[5px]"
+					style={{ "background-color": `rgb(${backgroundColor})` }}
+				/>
+			);
+		}
+
+		let imageSrc: string =
+			item === "desktop" ? imageBg : BACKGROUND_ICONS[item];
+		const source = project.background.source;
+		if (item === "image" && source.type === "image" && source.path) {
+			const convertedPath = convertFileSrc(source.path);
+			if (convertedPath) imageSrc = convertedPath;
+		} else if (item === "desktop") {
+			const desktopBackground = currentDesktopBackground();
+			if (desktopBackground) imageSrc = desktopBackground.url;
+		} else if (
+			item === "wallpaper" &&
+			source.type === "wallpaper" &&
+			source.path
+		) {
+			const selected = selectedWallpaper();
+			if (selected?.url) imageSrc = selected.url;
+		}
+
+		return (
+			<img
+				loading="eager"
+				alt={BACKGROUND_SOURCES[item]}
+				class="size-3.5 rounded-sm"
+				src={imageSrc}
+			/>
+		);
+	};
+
+	const BackgroundSourceTrigger = (props: {
+		item: BackgroundSourceTab;
+		class?: string;
+	}) => (
+		<KTabs.Trigger
+			value={props.item}
+			class={cx(
+				"z-10 flex justify-center items-center gap-1.5 py-2.5 px-2 text-xs whitespace-nowrap text-gray-11 rounded-[10px] border transition-colors duration-200 outline-hidden data-selected:border-gray-3 data-selected:bg-gray-3 data-selected:text-gray-12 not-data-selected:hover:border-gray-7 peer",
+				props.class,
+			)}
+		>
+			{renderBackgroundSourceIcon(props.item)}
+			{BACKGROUND_SOURCES[props.item]}
+		</KTabs.Trigger>
+	);
+
 	const backgrounds: {
 		[K in BackgroundSource["type"]]: Extract<BackgroundSource, { type: K }>;
 	} = {
@@ -1660,10 +2032,27 @@ function BackgroundConfig(props: {
 		<KTabs.Content value={TAB_IDS.background} class="flex flex-col gap-6 p-4">
 			<Field icon={<IconCapImage class="size-4" />} name="Background Image">
 				<KTabs
-					value={project.background.source.type}
+					value={backgroundSourceTab()}
 					onChange={(v) => {
-						const tab = v as BackgroundSource["type"];
-						ensurePaddingForBackground();
+						const tab = v as BackgroundSourceTab;
+						const fromNone = backgroundSourceTab() === "none";
+						setBackgroundSourceTab(tab);
+						if (tab === "none") {
+							batch(() => {
+								setProject("background", "padding", 0);
+								setProject("background", "rounding", 0);
+							});
+							return;
+						}
+						if (tab === "desktop") {
+							const desktopBackground = currentDesktopBackground();
+							if (desktopBackground) {
+								ensureBackgroundPresentation(fromNone);
+								setWallpaperSource(desktopBackground.rawPath);
+							}
+							return;
+						}
+						ensureBackgroundPresentation(fromNone);
 						switch (tab) {
 							case "image": {
 								setProject("background", "source", {
@@ -1704,132 +2093,102 @@ function BackgroundConfig(props: {
 								break;
 							}
 							case "wallpaper": {
+								const path =
+									project.background.source.type === "wallpaper" &&
+									!isCurrentDesktopBackgroundPath(
+										project.background.source.path,
+									)
+										? project.background.source.path
+										: null;
 								setProject("background", "source", {
 									type: "wallpaper",
-									path:
-										project.background.source.type === "wallpaper"
-											? project.background.source.path
-											: null,
+									path,
 								});
 								break;
 							}
 						}
 					}}
 				>
-					<KTabs.List class="flex flex-row gap-2 items-center rounded-lg relative">
-						<For each={BACKGROUND_SOURCES_LIST}>
-							{(item) => {
-								const el = (props?: object) => (
-									<KTabs.Trigger
-										class="z-10 flex-1 py-2.5 px-2 text-xs text-gray-11  data-selected:border-gray-3 data-selected:bg-gray-3 not-data-selected:hover:border-gray-7 rounded-[10px] transition-colors duration-200 outline-hidden border data-selected:text-gray-12 peer"
-										value={item}
-										{...props}
-									>
-										<div class="flex gap-1.5 justify-center items-center">
-											{(() => {
-												const getGradientBackground = () => {
-													const angle =
-														project.background.source.type === "gradient"
-															? project.background.source.angle
-															: 90;
-													const fromColor =
-														project.background.source.type === "gradient"
-															? project.background.source.from
-															: DEFAULT_GRADIENT_FROM;
-													const toColor =
-														project.background.source.type === "gradient"
-															? project.background.source.to
-															: DEFAULT_GRADIENT_TO;
-
-													return (
-														<div
-															class="size-3.5 rounded-sm"
-															style={{
-																background: `linear-gradient(${angle}deg, rgb(${fromColor}), rgb(${toColor}))`,
-															}}
-														/>
-													);
-												};
-
-												const getColorBackground = () => {
-													const backgroundColor =
-														project.background.source.type === "color"
-															? project.background.source.value
-															: hexToRgb(BACKGROUND_COLORS[9]);
-
-													return (
-														<div
-															class="size-3.5 rounded-[5px]"
-															style={{
-																"background-color": `rgb(${backgroundColor})`,
-															}}
-														/>
-													);
-												};
-
-												const getImageBackground = () => {
-													// Always start with the default icon
-													let imageSrc: string = BACKGROUND_ICONS[item];
-
-													// Only override for "image" if a valid path exists
-													if (
-														item === "image" &&
-														project.background.source.type === "image" &&
-														project.background.source.path
-													) {
-														const convertedPath = convertFileSrc(
-															project.background.source.path,
-														);
-														// Only use converted path if it's valid
-														if (convertedPath) {
-															imageSrc = convertedPath;
-														}
-													}
-													// Only override for "wallpaper" if a valid wallpaper is found
-													else if (
-														item === "wallpaper" &&
-														project.background.source.type === "wallpaper" &&
-														project.background.source.path
-													) {
-														const selected = selectedWallpaper();
-														if (selected?.url) {
-															imageSrc = selected.url;
-														}
-													}
-
-													return (
-														<img
-															loading="eager"
-															alt={BACKGROUND_SOURCES[item]}
-															class="size-3.5 rounded-sm"
-															src={imageSrc}
-														/>
-													);
-												};
-
-												switch (item) {
-													case "gradient":
-														return getGradientBackground();
-													case "color":
-														return getColorBackground();
-													case "image":
-													case "wallpaper":
-														return getImageBackground();
-													default:
-														return null;
-												}
-											})()}
-											{BACKGROUND_SOURCES[item]}
-										</div>
-									</KTabs.Trigger>
-								);
-
-								return el({});
-							}}
-						</For>
+					<KTabs.List class="flex relative flex-col gap-2">
+						<div class="flex flex-row gap-2 items-center">
+							<For each={BACKGROUND_SOURCES_ROW_ONE}>
+								{(item) => (
+									<BackgroundSourceTrigger item={item} class="flex-1" />
+								)}
+							</For>
+						</div>
+						<div class="flex flex-row gap-2 items-center">
+							<For each={BACKGROUND_SOURCES_ROW_TWO}>
+								{(item) => (
+									<BackgroundSourceTrigger item={item} class="flex-1" />
+								)}
+							</For>
+						</div>
 					</KTabs.List>
 					{/** Dashed divider */}
 					<div class="my-5 w-full border-t border-dashed border-gray-5" />
+					<KTabs.Content value="desktop">
+						<Show
+							when={currentDesktopBackground()}
+							fallback={
+								<div class="flex flex-col gap-3 items-center justify-center p-6 w-full rounded-lg border border-dashed bg-gray-2 border-gray-5">
+									<IconLucideMonitor class="size-6 text-gray-11" />
+									<span class="text-[13px] text-center text-gray-12">
+										Use the wallpaper from your desktop
+									</span>
+									<EditorButton
+										onClick={importDesktopBackground}
+										disabled={importingDesktopBackground()}
+										leftIcon={<IconLucideMonitor />}
+									>
+										{importingDesktopBackground()
+											? "Importing..."
+											: "Import desktop background"}
+									</EditorButton>
+								</div>
+							}
+						>
+							{(photo) => (
+								<div class="flex flex-col gap-3">
+									<button
+										type="button"
+										onClick={() => {
+											setWallpaperSource(photo().rawPath);
+											ensureBackgroundPresentation();
+										}}
+										class={cx(
+											"overflow-hidden relative w-full h-48 rounded-lg border transition cursor-pointer group",
+											project.background.source.type === "wallpaper" &&
+												project.background.source.path === photo().rawPath
+												? "border-blue-9 ring-2 ring-blue-9"
+												: "border-gray-5 hover:border-gray-7",
+										)}
+									>
+										<img
+											src={photo().url}
+											loading="eager"
+											class="object-cover w-full h-full"
+											alt={photo().label ?? getCurrentDesktopBackgroundLabel()}
+										/>
+										<span class="flex absolute right-2 bottom-2 justify-center items-center w-7 h-7 rounded-full text-white/95 bg-black/55 backdrop-blur-sm">
+											<IconLucideMonitor class="size-4" />
+										</span>
+									</button>
+									<div class="flex justify-end">
+										<EditorButton
+											onClick={importDesktopBackground}
+											disabled={importingDesktopBackground()}
+											leftIcon={<IconLucideMonitor />}
+										>
+											{importingDesktopBackground()
+												? "Importing..."
+												: "Re-import"}
+										</EditorButton>
+									</div>
+								</div>
+							)}
+						</Show>
+					</KTabs.Content>
 					<KTabs.Content value="wallpaper">
 						{/** Background Tabs */}
 						<KTabs class="overflow-hidden relative" value={backgroundTab()}>
@@ -1887,37 +2246,13 @@ function BackgroundConfig(props: {
 
 									setWallpaperSource(wallpaper.rawPath);
 
-									ensurePaddingForBackground();
+									ensureBackgroundPresentation();
 								} catch (_err) {
 									toast.error("Failed to set wallpaper");
 								}
 							}}
 							class="grid grid-cols-7 gap-2 h-auto"
 						>
-							<Show when={currentDesktopBackground()}>
-								{(photo) => (
-									<KRadioGroup.Item
-										value={photo().url}
-										class="relative aspect-square group"
-										title={photo().label ?? getCurrentDesktopBackgroundLabel()}
-									>
-										<KRadioGroup.ItemInput class="peer" />
-										<KRadioGroup.ItemControl class="overflow-hidden relative w-full h-full rounded-lg transition cursor-pointer not-data-checked:ring-offset-1 not-data-checked:ring-offset-gray-200 not-data-checked:hover:ring-1 not-data-checked:hover:ring-gray-400 data-checked:ring-2 data-checked:ring-gray-500 data-checked:ring-offset-2 data-checked:ring-offset-gray-200">
-											<img
-												src={photo().url}
-												loading="eager"
-												class="object-cover w-full h-full"
-												alt={
-													photo().label ?? getCurrentDesktopBackgroundLabel()
-												}
-											/>
-											<span class="flex absolute right-1 bottom-1 justify-center items-center w-4 h-4 rounded-full text-white/95 bg-black/55 backdrop-blur-sm">
-												<IconLucideMonitor class="size-2.5" />
-											</span>
-										</KRadioGroup.ItemControl>
-									</KRadioGroup.Item>
-								)}
-							</Show>
 							<Show
 								when={!wallpapers.loading}
 								fallback={
@@ -2021,25 +2356,13 @@ function BackgroundConfig(props: {
 							type="file"
 							ref={fileInput}
 							class="hidden"
-							accept="image/apng, image/avif, image/jpeg, image/png, image/webp"
+							accept={BACKGROUND_IMAGE_ACCEPT}
 							onChange={async (e) => {
 								const file = e.currentTarget.files?.[0];
 								if (!file) return;
 
-								/*
-					this is a Tauri bug in WebKit so we need to validate the file type manually
-					https://github.com/tauri-apps/tauri/issues/9158
-					*/
-								const validExtensions = [
-									"jpg",
-									"jpeg",
-									"png",
-									"gif",
-									"webp",
-									"bmp",
-								];
-								const extension = file.name.split(".").pop()?.toLowerCase();
-								if (!extension || !validExtensions.includes(extension)) {
+								const extension = getValidBackgroundImageExtension(file);
+								if (!extension) {
 									toast.error("Invalid image file type");
 									return;
 								}
@@ -2171,7 +2494,7 @@ function BackgroundConfig(props: {
 			<Field name="Padding" icon={<IconCapPadding class="size-4" />}>
 				<Slider
 					value={[project.background.padding]}
-					onChange={(v) => setProject("background", "padding", v[0])}
+					onChange={(v) => setBackgroundDimension("padding", v[0])}
 					minValue={0}
 					maxValue={40}
 					step={0.1}
@@ -2182,7 +2505,7 @@ function BackgroundConfig(props: {
 				<div class="flex flex-col gap-3">
 					<Slider
 						value={[project.background.rounding]}
-						onChange={(v) => setProject("background", "rounding", v[0])}
+						onChange={(v) => setBackgroundDimension("rounding", v[0])}
 						minValue={0}
 						maxValue={100}
 						step={0.1}
@@ -2403,6 +2726,9 @@ function BackgroundConfig(props: {
 
 function CameraConfig(props: { scrollRef: HTMLDivElement }) {
 	const { project, setProject } = useEditorContext();
+	const cameraPositionValue = createMemo(
+		() => `${project.camera.position.x}:${project.camera.position.y}`,
+	);
 
 	return (
 		<KTabs.Content
@@ -2414,7 +2740,7 @@ function CameraConfig(props: { scrollRef: HTMLDivElement }) {
 					<div>
 						<Subfield name="Position" />
 						<KRadioGroup
-							value={`${project.camera.position.x}:${project.camera.position.y}`}
+							value={cameraPositionValue()}
 							onChange={(v) => {
 								const [x, y] = v.split(":");
 								const xPosition = CAMERA_X_POSITIONS.find(
@@ -2441,24 +2767,29 @@ function CameraConfig(props: { scrollRef: HTMLDivElement }) {
 									{ x: "right", y: "bottom" } as const,
 								]}
 							>
-								{(item) => (
-									<RadioGroup.Item value={`${item.x}:${item.y}`}>
-										<RadioGroup.ItemInput class="peer" />
-										<RadioGroup.ItemControl
-											class={cx(
-												"cursor-pointer size-6 shrink-0 rounded-md bg-gray-5 absolute flex justify-center items-center data-checked:bg-blue-9 focus-visible:outline-solid peer-focus-visible:outline-solid outline-2 outline-blue-9 outline-offset-2 transition-colors duration-100",
-												item.x === "left"
-													? "left-2"
-													: item.x === "right"
-														? "right-2"
-														: "left-1/2 transform -translate-x-1/2",
-												item.y === "top" ? "top-2" : "bottom-2",
-											)}
-										>
-											<div class="size-2 shrink-0 bg-solid-white rounded-full" />
-										</RadioGroup.ItemControl>
-									</RadioGroup.Item>
-								)}
+								{(item) => {
+									const itemValue = `${item.x}:${item.y}`;
+									const selected = () => cameraPositionValue() === itemValue;
+									return (
+										<RadioGroup.Item value={itemValue}>
+											<RadioGroup.ItemInput class="peer" />
+											<RadioGroup.ItemControl
+												class={cx(
+													"cursor-pointer size-6 shrink-0 rounded-md absolute flex justify-center items-center focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-blue-9 focus-visible:outline-offset-2 peer-focus-visible:outline-solid peer-focus-visible:outline-2 peer-focus-visible:outline-blue-9 peer-focus-visible:outline-offset-2 transition-colors duration-100",
+													selected() ? "bg-blue-9" : "bg-gray-5",
+													item.x === "left"
+														? "left-2"
+														: item.x === "right"
+															? "right-2"
+															: "left-1/2 transform -translate-x-1/2",
+													item.y === "top" ? "top-2" : "bottom-2",
+												)}
+											>
+												<div class="size-2 shrink-0 bg-solid-white rounded-full" />
+											</RadioGroup.ItemControl>
+										</RadioGroup.Item>
+									);
+								}}
 							</For>
 						</KRadioGroup>
 					</div>
@@ -2625,6 +2956,21 @@ function CameraConfig(props: { scrollRef: HTMLDivElement }) {
 					formatTooltip="%"
 				/>
 			</Field>
+			<Subfield name="Keep original size during zoom">
+				<Toggle
+					checked={
+						(project.camera.scaleDuringZoom ??
+							DEFAULT_CAMERA_SCALE_DURING_ZOOM) >= 1
+					}
+					onChange={(keep) =>
+						setProject(
+							"camera",
+							"scaleDuringZoom",
+							keep ? 1 : DEFAULT_CAMERA_SCALE_DURING_ZOOM,
+						)
+					}
+				/>
+			</Subfield>
 			<Field name="Rounded Corners" icon={<IconCapCorners class="size-4" />}>
 				<div class="flex flex-col gap-3">
 					<Slider
@@ -3033,6 +3379,138 @@ function TextSegmentConfig(props: {
 	);
 }
 
+function AudioSegmentConfig(props: {
+	segmentIndex: number;
+	segment: AudioTrackSegment;
+}) {
+	const { setProject, setEditorState } = useEditorContext();
+	const clampNumber = (value: number, min: number, max: number) =>
+		Math.min(Math.max(Number.isFinite(value) ? value : min, min), max);
+
+	const updateSegment = (fn: (segment: AudioTrackSegment) => void) => {
+		setProject(
+			"timeline",
+			"audioSegments",
+			produce((segments) => {
+				const target = segments?.[props.segmentIndex];
+				if (!target) return;
+				fn(target);
+			}),
+		);
+	};
+
+	const segmentDuration = () =>
+		Math.max(props.segment.end - props.segment.start, 0);
+	const fadeMax = () => Math.max(0.1, segmentDuration());
+
+	return (
+		<div class="space-y-4">
+			<Field
+				name={`Audio ${props.segmentIndex + 1}`}
+				icon={<IconLucideMusic class="size-4" />}
+			>
+				<div class="flex flex-col gap-3">
+					<button
+						type="button"
+						onClick={() =>
+							setEditorState("timeline", "audioReplace", props.segmentIndex)
+						}
+						class="flex gap-3 items-center p-2 w-full text-left rounded-xl border transition-colors group border-gray-3 bg-gray-2 hover:border-gray-5 hover:bg-gray-3"
+					>
+						<span
+							class={cx(
+								"rounded-lg ring-1 shrink-0 size-10 ring-black/10",
+								AUDIO_TRACK_BG_CLASS,
+							)}
+						/>
+						<div class="flex flex-col flex-1 min-w-0">
+							<span class="text-sm font-medium truncate text-gray-12">
+								{props.segment.name || "Audio"}
+							</span>
+							<span class="text-xs text-gray-10">Tap to change track</span>
+						</div>
+						<span class="flex gap-1 items-center px-2 h-7 text-xs font-medium rounded-lg border transition-colors shrink-0 border-gray-3 bg-gray-1 text-gray-11 group-hover:text-gray-12">
+							<IconLucideRefreshCw class="size-3.5" />
+							Change
+						</span>
+					</button>
+					<div class="flex gap-3 items-center">
+						<input
+							class="flex-1 px-3 py-2 rounded-lg border border-gray-3 bg-gray-2 text-gray-12"
+							value={props.segment.name ?? ""}
+							placeholder="Audio"
+							onInput={(e) =>
+								updateSegment((segment) => {
+									segment.name = e.currentTarget.value;
+								})
+							}
+						/>
+						<div class="flex flex-col gap-2 items-center">
+							<span class="text-xs text-gray-11">Enabled</span>
+							<Toggle
+								checked={props.segment.enabled}
+								onChange={(value) =>
+									updateSegment((segment) => {
+										segment.enabled = value;
+									})
+								}
+							/>
+						</div>
+					</div>
+				</div>
+			</Field>
+			<Field name="Volume" icon={<IconLucideVolume2 class="size-4" />}>
+				<Slider
+					value={[
+						clampNumber(props.segment.volumeDb, MIN_VOLUME_DB, MAX_VOLUME_DB),
+					]}
+					onChange={([value]) =>
+						updateSegment((segment) => {
+							segment.volumeDb = clampNumber(
+								value,
+								MIN_VOLUME_DB,
+								MAX_VOLUME_DB,
+							);
+						})
+					}
+					minValue={MIN_VOLUME_DB}
+					maxValue={MAX_VOLUME_DB}
+					step={1}
+					formatTooltip="dB"
+				/>
+			</Field>
+			<Field name="Fade In" icon={<IconLucideTimer class="size-4" />}>
+				<Slider
+					value={[clampNumber(props.segment.fadeIn, 0, fadeMax())]}
+					onChange={([value]) =>
+						updateSegment((segment) => {
+							segment.fadeIn = clampNumber(value, 0, segmentDuration());
+						})
+					}
+					minValue={0}
+					maxValue={fadeMax()}
+					step={0.05}
+					formatTooltip="s"
+				/>
+			</Field>
+			<Field name="Fade Out" icon={<IconLucideTimer class="size-4" />}>
+				<Slider
+					value={[clampNumber(props.segment.fadeOut, 0, fadeMax())]}
+					onChange={([value]) =>
+						updateSegment((segment) => {
+							segment.fadeOut = clampNumber(value, 0, segmentDuration());
+						})
+					}
+					minValue={0}
+					maxValue={fadeMax()}
+					step={0.05}
+					formatTooltip="s"
+				/>
+			</Field>
+		</div>
+	);
+}
+
 function KeyboardSegmentConfig(props: {
 	segmentIndex: number;
 	segment: KeyboardTrackSegment;
@@ -3162,7 +3640,7 @@ function CaptionSegmentConfig(props: {
 	return (
 		<div class="space-y-4">
 			<Field
-				name={`Transcript ${props.segmentIndex + 1}`}
+				name={`Caption ${props.segmentIndex + 1}`}
 				icon={<IconCapMessageBubble />}
 			>
 				<textarea
@@ -4025,11 +4503,90 @@ function SourceOffsetField(props: {
 	);
 }
 
+const SCENE_MODE_TRIGGER_CLASS =
+	"z-10 flex justify-center items-center gap-1.5 py-2.5 px-2 text-xs whitespace-nowrap text-gray-11 rounded-[10px] border border-transparent transition-colors duration-200 outline-hidden data-selected:border-gray-3 data-selected:bg-gray-3 data-selected:text-gray-12 not-data-selected:hover:border-gray-7 disabled:opacity-40 disabled:cursor-not-allowed";
+
+// 2D drag pad for a normalized focal point (mirrors the manual-zoom position
+// picker): click/drag anywhere to set {x,y} in 0..1, pausing history so the
+// whole drag is one undo step.
+function PositionPad(props: {
+	value: () => XY<number>;
+	onChange: (pos: XY<number>) => void;
+}) {
+	const { projectHistory } = useEditorContext();
+
+	const onPick = (downEvent: MouseEvent) => {
+		downEvent.preventDefault();
+		const bounds = downEvent.currentTarget as HTMLElement;
+		const rect = bounds.getBoundingClientRect();
+		const resumeHistory = projectHistory.pause();
+		const apply = (e: MouseEvent) => {
+			props.onChange({
+				x: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
+				y: Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height)),
+			});
+		};
+		apply(downEvent);
+		createRoot((dispose) =>
+			createEventListenerMap(window, {
+				mousemove: apply,
+				mouseup: () => {
+					resumeHistory();
+					dispose();
+				},
+			}),
+		);
+	};
+
+	return (
+		<div
+			class="overflow-hidden relative w-full h-28 rounded-lg border border-gray-3 bg-gray-2 cursor-crosshair"
+			onMouseDown={onPick}
+		>
+			<div class="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-gray-3 pointer-events-none" />
+			<div class="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-gray-3 pointer-events-none" />
+			<div
+				class="flex absolute z-10 justify-center items-center w-6 h-6 rounded-full border border-gray-400 -translate-x-1/2 -translate-y-1/2 bg-gray-1 pointer-events-none"
+				style={{
+					left: `${props.value().x * 100}%`,
+					top: `${props.value().y * 100}%`,
+				}}
+			>
+				<div class="rounded-full size-1.5 bg-gray-5" />
+			</div>
+		</div>
+	);
+}
+
 function SceneSegmentConfig(props: {
 	segmentIndex: number;
 	segment: SceneSegment;
 }) {
-	const { setProject, setEditorState, projectActions } = useEditorContext();
+	const { setProject, setEditorState, projectActions, editorInstance } =
+		useEditorContext();
+
+	const hasCamera = () =>
+		!editorInstance.recordings.segments.every((s) => s.camera === null);
+
+	const description = () => {
+		switch (props.segment.mode) {
+			case "cameraOnly":
+				return "Shows only the camera feed";
+			case "hideCamera":
+				return "Shows only the screen recording";
+			case "splitScreen":
+				return "Screen and camera side by side (auto-stacks in portrait)";
+			default:
+				return "Shows both screen and camera";
+		}
+	};
+
+	const split = () => props.segment.splitLayout ?? DEFAULT_SPLIT_LAYOUT;
+	const updateSplit = (patch: Partial<SplitLayout>) =>
+		setProject("timeline", "sceneSegments", props.segmentIndex, "splitLayout", {
+			...split(),
+			...patch,
+		});
 
 	return (
 		<>
@@ -4054,79 +4611,138 @@ function SceneSegmentConfig(props: {
 			</div>
 			<Field name="Camera Layout" icon={<IconLucideLayout />}>
 				<KTabs
-					class="space-y-6"
+					class="space-y-3"
 					value={props.segment.mode || "default"}
 					onChange={(v) => {
-						setProject(
-							"timeline",
-							"sceneSegments",
-							props.segmentIndex,
-							"mode",
-							v as "default" | "cameraOnly" | "hideCamera",
-						);
+						const mode = v as SceneMode;
+						batch(() => {
+							setProject(
+								"timeline",
+								"sceneSegments",
+								props.segmentIndex,
+								"mode",
+								mode,
+							);
+							// Seed identity overrides so the new split segment renders
+							// correctly and the fine-tune controls have values to bind to.
+							if (mode === "splitScreen" && !props.segment.splitLayout)
+								setProject(
+									"timeline",
+									"sceneSegments",
+									props.segmentIndex,
+									"splitLayout",
+									{ ...DEFAULT_SPLIT_LAYOUT },
+								);
+						});
 					}}
 				>
-					<KTabs.List class="flex flex-col gap-3">
-						<div class="flex flex-row items-center rounded-lg relative border">
-							<KTabs.Trigger
-								value="default"
-								class="z-10 flex-1 py-2.5 text-gray-11 transition-colors duration-100 outline-hidden data-selected:text-gray-12 peer"
-							>
-								Default
-							</KTabs.Trigger>
-							<KTabs.Trigger
-								value="cameraOnly"
-								class="z-10 flex-1 py-2.5 text-gray-11 transition-colors duration-100 outline-hidden data-selected:text-gray-12 peer"
-							>
-								Camera Only
-							</KTabs.Trigger>
-							<KTabs.Trigger
-								value="hideCamera"
-								class="z-10 flex-1 py-2.5 text-gray-11 transition-colors duration-100 outline-hidden data-selected:text-gray-12 peer"
-							>
-								Hide Camera
-							</KTabs.Trigger>
-							<KTabs.Indicator class="absolute flex p-px inset-0 transition-transform peer-focus-visible:outline-solid outline-2 outline-blue-9 outline-offset-2 rounded-[0.6rem] overflow-hidden">
-								<div class="flex-1 bg-gray-3" />
-							</KTabs.Indicator>
-						</div>
-
-						<div class="relative">
-							<div
-								class="absolute -top-3 w-px h-3 transition-all duration-200 bg-gray-3"
-								style={{
-									left:
-										props.segment.mode === "cameraOnly"
-											? "50%"
-											: props.segment.mode === "hideCamera"
-												? "83.33%"
-												: "16.67%",
-								}}
-							/>
-							<div
-								class="absolute -top-1 w-2 h-2 rounded-full transition-all duration-200 -translate-x-1/2 bg-gray-3"
-								style={{
-									left:
-										props.segment.mode === "cameraOnly"
-											? "50%"
-											: props.segment.mode === "hideCamera"
-												? "83.33%"
-												: "16.67%",
-								}}
-							/>
-							<div class="p-2.5 rounded-md bg-gray-2 border border-gray-3">
-								<div class="text-xs text-center text-gray-11">
-									{props.segment.mode === "cameraOnly"
-										? "Shows only the camera feed"
-										: props.segment.mode === "hideCamera"
-											? "Shows only the screen recording"
-											: "Shows both screen and camera"}
-								</div>
-							</div>
-						</div>
+					<KTabs.List class="grid grid-cols-2 gap-2">
+						<KTabs.Trigger value="default" class={SCENE_MODE_TRIGGER_CLASS}>
+							<IconLucideMonitor class="size-3.5" />
+							Default
+						</KTabs.Trigger>
+						<KTabs.Trigger value="cameraOnly" class={SCENE_MODE_TRIGGER_CLASS}>
+							<IconLucideVideo class="size-3.5" />
+							Camera Only
+						</KTabs.Trigger>
+						<KTabs.Trigger value="hideCamera" class={SCENE_MODE_TRIGGER_CLASS}>
+							<IconLucideEyeOff class="size-3.5" />
+							Hide Camera
+						</KTabs.Trigger>
+						<KTabs.Trigger
+							value="splitScreen"
+							disabled={!hasCamera()}
+							class={SCENE_MODE_TRIGGER_CLASS}
+						>
+							<IconLucideColumns2 class="size-3.5" />
+							Split Screen
+						</KTabs.Trigger>
 					</KTabs.List>
+					<div class="p-2.5 rounded-md bg-gray-2 border border-gray-3">
+						<div class="text-xs text-center text-gray-11">{description()}</div>
+					</div>
 				</KTabs>
 			</Field>
+
+			<Field name="Transition" icon={<IconLucideTimer class="size-4" />}>
+				<div class="flex flex-col gap-3">
+					<Subfield name="In">
+						<Slider
+							class="flex-1 ml-4"
+							value={[props.segment.transitionIn ?? DEFAULT_SCENE_TRANSITION]}
+							onChange={(v) =>
+								setProject(
+									"timeline",
+									"sceneSegments",
+									props.segmentIndex,
+									"transitionIn",
+									v[0],
+								)
+							}
+							minValue={0}
+							maxValue={2}
+							step={0.05}
+							formatTooltip={(v) => `${v.toFixed(2)}s`}
+						/>
+					</Subfield>
+					<Subfield name="Out">
+						<Slider
+							class="flex-1 ml-4"
+							value={[props.segment.transitionOut ?? DEFAULT_SCENE_TRANSITION]}
+							onChange={(v) =>
+								setProject(
+									"timeline",
+									"sceneSegments",
+									props.segmentIndex,
+									"transitionOut",
+									v[0],
+								)
+							}
+							minValue={0}
+							maxValue={2}
+							step={0.05}
+							formatTooltip={(v) => `${v.toFixed(2)}s`}
+						/>
+					</Subfield>
+				</div>
+			</Field>
+
+			<Show when={props.segment.mode === "splitScreen"}>
+				<div class="w-full border-t border-dashed border-gray-5" />
+				<Field name="Screen Zoom" icon={<IconCapEnlarge class="size-4" />}>
+					<Slider
+						value={[split().screenZoom * 100]}
+						onChange={(v) => updateSplit({ screenZoom: v[0] / 100 })}
+						minValue={100}
+						maxValue={300}
+						step={1}
+						formatTooltip="%"
+					/>
+				</Field>
+				<Field name="Screen Position" icon={<IconLucideMove class="size-4" />}>
+					<PositionPad
+						value={() => split().screenPosition}
+						onChange={(pos) => updateSplit({ screenPosition: pos })}
+					/>
+				</Field>
+				<div class="w-full border-t border-dashed border-gray-5" />
+				<Field name="Camera Zoom" icon={<IconCapEnlarge class="size-4" />}>
+					<Slider
+						value={[split().cameraZoom * 100]}
+						onChange={(v) => updateSplit({ cameraZoom: v[0] / 100 })}
+						minValue={100}
+						maxValue={300}
+						step={1}
+						formatTooltip="%"
+					/>
+				</Field>
+				<Field name="Camera Position" icon={<IconLucideMove class="size-4" />}>
+					<PositionPad
+						value={() => split().cameraPosition}
+						onChange={(pos) => updateSplit({ cameraPosition: pos })}
+					/>
+				</Field>
+			</Show>
 		</>
 	);
 }

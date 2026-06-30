@@ -563,7 +563,7 @@ impl Default for CursorConfiguration {
             mass: 3.0,
             friction: 70.0,
             raw: false,
-            motion_blur: 1.0,
+            motion_blur: 0.5,
             use_svg: true,
             rotation_amount: Self::default_rotation_amount(),
             base_rotation: 0.0,
@@ -612,6 +612,8 @@ pub struct TimelineSegment {
     pub timescale: f64,
     pub start: f64,
     pub end: f64,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 impl TimelineSegment {
@@ -821,6 +823,31 @@ pub enum SceneMode {
     Default,
     CameraOnly,
     HideCamera,
+    SplitScreen,
+}
+
+#[derive(Type, Serialize, Deserialize, Clone, Copy, Debug)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SplitLayout {
+    pub screen_zoom: f64,
+    pub screen_position: XY<f64>,
+    pub camera_zoom: f64,
+    pub camera_position: XY<f64>,
+}
+
+impl Default for SplitLayout {
+    fn default() -> Self {
+        Self {
+            screen_zoom: 1.0,
+            screen_position: XY::new(0.5, 0.5),
+            camera_zoom: 1.0,
+            camera_position: XY::new(0.5, 0.5),
+        }
+    }
+}
+
+fn default_scene_transition() -> f64 {
+    0.3
 }
 
 #[derive(Type, Serialize, Deserialize, Clone, Debug)]
@@ -830,6 +857,51 @@ pub struct SceneSegment {
     pub end: f64,
     #[serde(default)]
     pub mode: SceneMode,
+    #[serde(default)]
+    pub split_layout: Option<SplitLayout>,
+    #[serde(default = "default_scene_transition")]
+    pub transition_in: f64,
+    #[serde(default = "default_scene_transition")]
+    pub transition_out: f64,
+}
+
+/// A timeline-positioned audio clip (background music or imported audio).
+///
+/// Unlike the recording's mic/system audio (which is keyed to recording clips),
+/// these segments live in output/timeline time exactly like zoom/text/mask
+/// segments. `path` is resolved relative to the project directory so projects
+/// stay portable when moved.
+#[derive(Type, Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioTrackSegment {
+    pub start: f64,
+    pub end: f64,
+    #[serde(default)]
+    pub track: u32,
+    pub path: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default = "AudioTrackSegment::default_enabled")]
+    pub enabled: bool,
+    /// Offset into the source audio file (seconds) at which playback begins.
+    #[serde(default)]
+    pub trim_start: f64,
+    #[serde(default)]
+    pub volume_db: f32,
+    #[serde(default)]
+    pub fade_in: f64,
+    #[serde(default)]
+    pub fade_out: f64,
+    /// Source duration in seconds, persisted so the UI can clamp resizing
+    /// without re-decoding the file.
+    #[serde(default)]
+    pub duration: Option<f64>,
+}
+
+impl AudioTrackSegment {
+    fn default_enabled() -> bool {
+        true
+    }
 }
 
 #[derive(Type, Serialize, Deserialize, Clone, Debug)]
@@ -847,6 +919,8 @@ pub struct TimelineConfiguration {
     pub caption_segments: Vec<CaptionTrackSegment>,
     #[serde(default)]
     pub keyboard_segments: Vec<crate::KeyboardTrackSegment>,
+    #[serde(default)]
+    pub audio_segments: Vec<AudioTrackSegment>,
 }
 
 #[derive(Type, Serialize, Deserialize, Clone, Debug)]
@@ -957,6 +1031,13 @@ pub struct CaptionSettings {
     pub word_transition_duration: f32,
     #[serde(alias = "activeWordHighlight")]
     pub active_word_highlight: bool,
+    #[serde(alias = "manualPosition")]
+    pub manual_position: Option<XY<f32>>,
+    pub preset: String,
+    pub animation: String,
+    #[serde(alias = "highlightStyle")]
+    pub highlight_style: String,
+    pub uppercase: bool,
 }
 
 impl CaptionSettings {
@@ -983,6 +1064,18 @@ impl CaptionSettings {
     fn default_active_word_highlight() -> bool {
         false
     }
+
+    fn default_preset() -> String {
+        "classic".to_string()
+    }
+
+    fn default_animation() -> String {
+        "bounce".to_string()
+    }
+
+    fn default_highlight_style() -> String {
+        "color".to_string()
+    }
 }
 
 impl Default for CaptionSettings {
@@ -1005,6 +1098,11 @@ impl Default for CaptionSettings {
             linger_duration: Self::default_linger_duration(),
             word_transition_duration: Self::default_word_transition_duration(),
             active_word_highlight: Self::default_active_word_highlight(),
+            manual_position: None,
+            preset: Self::default_preset(),
+            animation: Self::default_animation(),
+            highlight_style: Self::default_highlight_style(),
+            uppercase: false,
         }
     }
 }
@@ -1014,6 +1112,14 @@ impl Default for CaptionSettings {
 pub struct CaptionsData {
     pub segments: Vec<CaptionSegment>,
     pub settings: CaptionSettings,
+    /// When true, `segments` are stored in source/recording time and the
+    /// rendered `timeline.caption_segments` are derived by projecting them
+    /// through the current edit list, so captions stay aligned to their spoken
+    /// content as clips are trimmed, deleted, reordered, or inserted. Legacy
+    /// projects (false) stored segments in already-edited output time and are
+    /// migrated to source time on first load.
+    #[serde(default)]
+    pub source_timed: bool,
 }
 
 #[derive(Type, Serialize, Deserialize, Clone, Debug)]
@@ -1200,7 +1306,7 @@ impl Annotation {
     }
 }
 
-#[derive(Type, Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Type, Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ProjectConfiguration {
     pub aspect_ratio: Option<AspectRatio>,
@@ -1233,9 +1339,30 @@ fn camera_config_needs_migration(value: &Value) -> bool {
         })
 }
 
+impl Default for ProjectConfiguration {
+    fn default() -> Self {
+        Self {
+            aspect_ratio: Default::default(),
+            background: Default::default(),
+            camera: Default::default(),
+            audio: Default::default(),
+            cursor: Default::default(),
+            hotkeys: Default::default(),
+            timeline: Default::default(),
+            captions: Default::default(),
+            keyboard: Default::default(),
+            clips: Default::default(),
+            annotations: Default::default(),
+            hidden_text_segments: Default::default(),
+            screen_motion_blur: Self::default_screen_motion_blur(),
+            screen_movement_spring: Default::default(),
+        }
+    }
+}
+
 impl ProjectConfiguration {
     fn default_screen_motion_blur() -> f32 {
-        1.0
+        0.5
     }
 
     pub fn validate(&self) -> Result<(), AnnotationValidationError> {
@@ -1358,6 +1485,14 @@ mod tests {
             serde_json::to_string(&value).unwrap(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn default_motion_blur_is_half() {
+        let config = ProjectConfiguration::default();
+
+        assert_eq!(config.cursor.motion_blur, 0.5);
+        assert_eq!(config.screen_motion_blur, 0.5);
     }
 
     #[test]

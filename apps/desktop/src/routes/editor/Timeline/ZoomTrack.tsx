@@ -349,6 +349,54 @@ export function ZoomTrack(props: {
 
 						const zoomSegments = () => project.timeline?.zoomSegments ?? [];
 
+						// Double-clicking a handle expands the segment as far as it can go
+						// in that direction (up to the neighbouring segment / timeline edge).
+						const fillStart = () => {
+							const segs = zoomSegments();
+							let minValue = 0;
+							for (let j = segs.length - 1; j >= 0; j--) {
+								const s = segs[j];
+								if (s && s.end <= segment().start) {
+									minValue = s.end;
+									break;
+								}
+							}
+							batch(() => {
+								setProject("timeline", "zoomSegments", i, "start", minValue);
+								setProject(
+									"timeline",
+									"zoomSegments",
+									produce((s) => {
+										s.sort((a, b) => a.start - b.start);
+									}),
+								);
+							});
+							setPreviewTime(minValue);
+						};
+
+						const fillEnd = () => {
+							const segs = zoomSegments();
+							let maxValue = totalDuration();
+							for (let j = 0; j < segs.length; j++) {
+								const s = segs[j];
+								if (s && s.start > segment().end) {
+									maxValue = s.start;
+									break;
+								}
+							}
+							batch(() => {
+								setProject("timeline", "zoomSegments", i, "end", maxValue);
+								setProject(
+									"timeline",
+									"zoomSegments",
+									produce((s) => {
+										s.sort((a, b) => a.start - b.start);
+									}),
+								);
+							});
+							setPreviewTime(maxValue);
+						};
+
 						function createMouseDownDrag<T>(
 							setup: () => T,
 							_update: (e: MouseEvent, v: T, initialMouseX: number) => void,
@@ -471,9 +519,9 @@ export function ZoomTrack(props: {
 
 						return (
 							<SegmentRoot
+								segColor="var(--track-zoom)"
 								class={cx(
-									"border duration-200 hover:border-gray-12 transition-colors group",
-									"bg-linear-to-r from-[#292929] via-[#434343] to-[#292929] shadow-[inset_0_8px_12px_3px_rgba(255,255,255,0.2)]",
+									"border duration-200 transition-colors group",
 									isSelected() ? "border-gray-12" : "border-transparent",
 								)}
 								innerClass="ring-red-5"
@@ -494,6 +542,10 @@ export function ZoomTrack(props: {
 							>
 								<SegmentHandle
 									position="start"
+									onDblClick={(e) => {
+										e.stopPropagation();
+										fillStart();
+									}}
 									onMouseDown={createMouseDownDrag(
 										() => {
 											const start = segment().start;
@@ -615,6 +667,10 @@ export function ZoomTrack(props: {
 								</SegmentContent>
 								<SegmentHandle
 									position="end"
+									onDblClick={(e) => {
+										e.stopPropagation();
+										fillEnd();
+									}}
 									onMouseDown={createMouseDownDrag(
 										() => {
 											const end = segment().end;
@@ -676,9 +732,10 @@ export function ZoomTrack(props: {
 					<SegmentRoot
 						class="pointer-events-none z-0"
 						innerClass="ring-red-300"
+						segColor="var(--track-zoom)"
 						segment={details()}
 					>
-						<SegmentContent class="bg-linear-to-r hover:border duration-200 hover:border-gray-500 from-[#292929] via-[#434343] to-[#292929] transition-colors group shadow-[inset_0_8px_12px_3px_rgba(255,255,255,0.2)]">
+						<SegmentContent class="group">
 							<p class="w-full text-center text-gray-1 dark:text-gray-12 text-md text-primary">
 								+
 							</p>

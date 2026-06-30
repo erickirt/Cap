@@ -184,9 +184,10 @@ export default async function CapsPage(props: PageProps<"/dashboard/caps">) {
 			ownerName: users.name,
 			effectiveDate: videos.effectiveCreatedAt,
 			hasPassword: sql`${videos.password} IS NOT NULL`.mapWith(Boolean),
-			hasActiveUpload: sql`${videoUploads.videoId} IS NOT NULL`.mapWith(
-				Boolean,
-			),
+			hasActiveUpload:
+				sql`${videoUploads.videoId} IS NOT NULL AND ${videos.isScreenshot} = false`.mapWith(
+					Boolean,
+				),
 			settings: videos.settings,
 		})
 		.from(videos)
@@ -226,6 +227,7 @@ export default async function CapsPage(props: PageProps<"/dashboard/caps">) {
 			id: folders.id,
 			name: folders.name,
 			color: folders.color,
+			public: folders.public,
 			parentId: folders.parentId,
 			videoCount: sql<number>`(
         SELECT COUNT(*) FROM videos WHERE videos.folderId = folders.id

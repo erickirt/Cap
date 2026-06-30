@@ -647,6 +647,11 @@ impl AVAssetReaderDecoder {
             let max_requested_frame = pending_requests.iter().map(|r| r.frame).max().unwrap();
             let requested_frame = min_requested_frame;
             let requested_time = requested_frame as f32 / fps as f32;
+            let minimum_fallback_frame = pending_requests
+                .iter()
+                .map(|r| r.frame.saturating_sub(r.max_fallback_distance))
+                .min()
+                .unwrap_or(requested_frame);
 
             let (decoder_idx, was_reset) = this.select_best_decoder(requested_time, is_scrubbing);
 
@@ -695,6 +700,12 @@ impl AVAssetReaderDecoder {
                         pts_to_frame(frame.pts().value, Rational::new(1, frame.pts().scale), fps);
 
                     let position_secs = current_frame as f32 / fps as f32;
+                    last_decoded_position = Some(position_secs);
+                    decoder.is_done = false;
+
+                    if current_frame < minimum_fallback_frame {
+                        continue;
+                    }
 
                     let Some(frame) = frame.image_buf() else {
                         tracing::debug!(
@@ -704,15 +715,11 @@ impl AVAssetReaderDecoder {
                         continue;
                     };
 
-                    last_decoded_position = Some(position_secs);
-
                     let cache_frame = CachedFrame::new(&processor, frame.retained(), current_frame);
 
                     if first_ever_frame.borrow().is_none() {
                         *first_ever_frame.borrow_mut() = Some(cache_frame.data().clone());
                     }
-
-                    decoder.is_done = false;
 
                     let exceeds_cache_bounds = current_frame > cache_max;
                     let too_small_for_cache_bounds = current_frame < cache_min;
@@ -812,7 +819,20 @@ impl AVAssetReaderDecoder {
                     );
                 }
 
-                if !at_eof {
+                if near_end {
+                    tracing::debug!(
+                        decoder_idx = decoder_idx,
+                        requested_frame = requested_frame,
+                        requested_time = requested_time,
+                        was_reset = was_reset,
+                        cache_size = cache.len(),
+                        consecutive_empty = this.decoders[decoder_idx]
+                            .health
+                            .consecutive_empty_iterations,
+                        near_end = near_end,
+                        "Decoder reached video tail while using EOF tolerance"
+                    );
+                } else if !at_eof {
                     tracing::warn!(
                         decoder_idx = decoder_idx,
                         requested_frame = requested_frame,

@@ -1,0 +1,57 @@
+---
+title: Desktop Automations, Caption Editing, Native Camera Preview & Reliability Fixes
+app: Cap Desktop
+publishedAt: "2026-06-18"
+version: 0.5.2
+image:
+---
+
+This release focuses on making Cap Desktop faster, more reliable, and easier to automate. It adds desktop automations, improves caption and crop editing, speeds up camera and screenshot workflows, and fixes a long list of recording, export, auth, and platform issues.
+
+## Features
+
+- **Desktop automations** - Create rules in Settings that run after screenshots, recordings, uploads, imports, and deleted recordings. Automations can copy, save, export, upload, open files, read screenshot text, show notifications, open or skip the editor, apply presets, run commands, send webhooks, and delete local files. Built-in templates help you set up common flows like auto-copying screenshots, saving to a folder, auto-exporting recordings, uploading and copying the share link, or sending a webhook.
+- **Cap CLI improvements** - Cap Desktop includes the `cap` command and can install, repair, or remove it from Settings -> Command Line. The CLI supports recording, screenshots, target selection, exports, uploads, project validation, diagnostics, updates, automation listing, detached recording, and JSON output for scripts and agents. Compatible desktop automation rules now also run from CLI screenshots, recording finishes, and uploads.
+- **Linux CLI and capture support** - Linux support has been added for the CLI and desktop capture paths, with better installer and release handling.
+- **Improved Windows CLI setup** - Windows CLI installation handles command prompt usage, PATH entries, existing shims, and process checks more reliably.
+- **Split-screen scene mode** - The editor can compose screen and camera as split-screen panes with scene controls, transitions, split factor controls, and export support.
+- **More editor layout control** - Keep the camera size stable during zoom effects, use a no-background layout for transparent or plain scenes, and double-click a zoom handle to expand a zoom segment quickly.
+- **Manual caption positioning** - Drag captions directly in the preview and place them exactly where you want them.
+- **Better transcript editing** - Edit transcript words and create captions from transcript text more easily.
+- **Improved captions** - Caption segmentation, punctuation, text fitting, and final rendering are more accurate.
+- **Live crop preview** - The crop flow now includes a live GPU preview with a clearer side-by-side layout.
+- **Transparent screenshots by default** - New screenshots now start with a transparent background.
+- **Screenshot OCR for automations** - Automations can recognize text from screenshots and copy it to the clipboard.
+- **Native camera preview on macOS** - macOS now uses the native GPU camera preview path by default for smoother previews.
+- **Self-hosted server routing** - Desktop sign-in, settings, links, and API requests now respect the configured server URL more consistently.
+- **Content protection while recording** - Desktop window content protection turns on when recording starts and turns off when recording stops.
+- **Plan-based instant mode resolution** - Instant mode resolution now follows the user's plan.
+
+## Fixes
+
+- **More reliable desktop uploads** - Desktop recordings recover and finalize uploads more reliably after interrupted or stale segment uploads.
+- **Manual titles are preserved** - Desktop uploads keep manually chosen recording names instead of replacing them with generated titles.
+- **Organization fixes** - Desktop organization handling now works better for both owners and members.
+- **More reliable self-hosted sign-in** - Plan and organization refresh failures no longer block sign-in or wipe useful auth state.
+- **macOS auth fix** - macOS Tahoe deep-link delivery no longer clears desktop auth state.
+- **Safer exports** - Unedited recordings now get a default timeline for export, zero-frame exports are guarded, and exports with missing audio now write silent audio instead of producing broken files.
+- **Fragmented recording recovery** - Interrupted or fragmented recordings are remuxed when needed before opening or exporting.
+- **Audio timing fixes** - Cap now handles audio drift, startup overlap, negative timing offsets, and stale microphone timestamps more reliably.
+- **Playback stability fixes** - Playback no longer waits forever when audio stops or a timeline is invalid.
+- **Smoother crop interactions** - Crop and resize handles stay active more reliably during pointer and focus changes.
+- **Better screenshot exports** - Transparent screenshot exports no longer get filled with white.
+- **Rendering artifact fixes** - Camera bounds, inset crops, and edge blur are clamped more carefully to reduce edge artifacts.
+- **Multi-monitor Windows fix** - Target picker overlays no longer steal focus on multi-monitor Windows setups.
+- **Offscreen window recovery** - The main window and Settings window recentre themselves if they would otherwise open offscreen.
+- **macOS window stability** - Fixed several macOS window delegate, Liquid Glass, and quit-time cleanup crashes and leaks.
+- **Crash marker fix** - Crash-sentinel handling is now limited to macOS where it is supported.
+
+## Performance
+
+- **Faster screenshot editor startup** - Screenshot rendering starts faster, backgrounds are cached, and wallpaper previews warm before selection.
+- **Faster camera previews** - Camera preview rendering does less unnecessary frame work and handles websocket previews more efficiently.
+- **Better camera format selection** - Cap now prefers 60fps 16:9 camera formats up to 720p when available.
+- **Smaller background snapshots** - Desktop background snapshots are capped, compressed, and healed when oversized to reduce project size and memory use.
+- **Faster editor timelines** - Off-screen timeline segments are virtualized for smoother editing in larger projects.
+- **Faster crop previews** - Crop previews use downscaled frames so crop editing feels more responsive.
+- **Faster editor startup** - Editor startup and audio repair now run more work in parallel.

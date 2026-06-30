@@ -9,11 +9,12 @@ import {
 	spaces,
 	spaceVideos,
 	users,
+	videoEdits,
 	videos,
 	videoUploads,
 } from "@cap/database/schema";
 import type { VideoMetadata } from "@cap/database/types";
-import { buildEnv } from "@cap/env";
+import { buildEnv, serverEnv } from "@cap/env";
 import { Logo } from "@cap/ui";
 import { userIsPro } from "@cap/utils";
 import {
@@ -42,29 +43,36 @@ import {
 	getDashboardData,
 	type OrganizationSettings,
 } from "@/app/(org)/dashboard/dashboard-data";
+import { completeDesktopSegmentsManifestAndQueue } from "@/lib/desktop-segments-recovery";
 import { createNotification } from "@/lib/Notification";
 import {
 	canManageOrganizationSettings,
 	getEffectiveOrganizationRole,
 } from "@/lib/permissions/roles";
+import { resolveDefaultPlaybackSpeed } from "@/lib/playback-speed";
 import * as EffectRuntime from "@/lib/server";
 import { runPromise } from "@/lib/server";
+import { getSharePageBranding } from "@/lib/share-branding";
 import {
 	isSocialCrawlerUserAgent,
 	SOCIAL_REFERRER_DOMAINS,
 } from "@/lib/social-crawlers";
 import { transcribeVideo } from "@/lib/transcribe";
+import { canUserDownloadVideo } from "@/lib/video-download-permissions";
 import {
 	isEditSourceKey,
 	reconcileStaleEditUpload,
 } from "@/lib/video-edit-processing";
+import {
+	areEditSpecsEquivalent,
+	createIdentityEditSpec,
+} from "@/lib/video-edits";
 import { optionFromTOrFirst } from "@/utils/effect";
 import { isAiGenerationEnabled } from "@/utils/flags";
 import { PasswordOverlay } from "./_components/PasswordOverlay";
 import { PendingRecordingShare } from "./_components/PendingRecordingShare";
 import { ShareHeader } from "./_components/ShareHeader";
 import { Share } from "./Share";
-import type { SharePageBranding } from "./types";
 
 const VIEW_NOTIFICATION_DELAY_MS = 2 * 60 * 1000;
 const VIDEO_ID_PATTERN = /^[0-9abcdefghjkmnpqrstvwxyz]+$/;
@@ -189,36 +197,6 @@ const renderNoSuchElement = (awaitRecording: boolean) =>
 	awaitRecording
 		? Effect.succeed(<PendingRecordingShare />)
 		: Effect.sync(() => notFound());
-
-function getSharePageBranding(data: {
-	owner: { isPro: boolean };
-	orgSettings?: OrganizationSettings | null;
-	organizationName?: string | null;
-	organizationIconUrl?: ImageUpload.ImageUrl | null;
-	shareableLinkIconUrl?: ImageUpload.ImageUrl | null;
-}): SharePageBranding | null {
-	if (!data.owner.isPro) {
-		return { type: "cap" };
-	}
-
-	const brandedIcon = data.orgSettings?.shareableLinkUseOrganizationIcon
-		? data.organizationIconUrl
-		: data.shareableLinkIconUrl;
-
-	if (brandedIcon) {
-		return {
-			type: "custom",
-			imageUrl: brandedIcon,
-			name: data.organizationName ?? "Organization",
-		};
-	}
-
-	if (data.orgSettings?.hideShareableLinkCapLogo) {
-		return null;
-	}
-
-	return { type: "cap" };
-}
 
 const getShareVideoPageCatchers = (
 	videoId: Video.VideoId,
@@ -448,9 +426,10 @@ export default async function ShareVideoPage(props: PageProps<"/s/[videoId]">) {
 					organizationName: organizations.name,
 					organizationIconUrl: organizations.iconUrl,
 					shareableLinkIconUrl: organizations.shareableLinkIconUrl,
-					hasActiveUpload: sql`${videoUploads.videoId} IS NOT NULL`.mapWith(
-						Boolean,
-					),
+					hasActiveUpload:
+						sql`${videoUploads.videoId} IS NOT NULL AND ${videos.isScreenshot} = false`.mapWith(
+							Boolean,
+						),
 					activeUploadRawFileKey: videoUploads.rawFileKey,
 					owner: users,
 				})
@@ -507,8 +486,34 @@ async function AuthorizedContent({
 	// will have already been fetched if auth is required
 	const user = await getCurrentUser();
 	const videoId = video.id;
-	const canRegisterView =
+	let recoveredDesktopSegmentsUpload = false;
+
+	if (
+		user?.id === video.owner.id &&
+		!video.isScreenshot &&
+		video.source?.type === "desktopSegments" &&
 		!video.hasActiveUpload &&
+		serverEnv().MEDIA_SERVER_URL
+	) {
+		try {
+			const result = await completeDesktopSegmentsManifestAndQueue({
+				videoId,
+				userId: user.id,
+			});
+			recoveredDesktopSegmentsUpload =
+				result.status === "queued" || result.status === "already-processing";
+		} catch (error) {
+			console.error(
+				`[ShareVideoPage] Failed to recover desktop segments upload ${videoId}:`,
+				error,
+			);
+		}
+	}
+
+	const hasActiveUpload =
+		video.hasActiveUpload || recoveredDesktopSegmentsUpload;
+	const canRegisterView =
+		!hasActiveUpload &&
 		Date.now() - video.updatedAt.getTime() >= VIEW_NOTIFICATION_DELAY_MS;
 
 	if (user && video && user.id !== video.owner.id && canRegisterView) {
@@ -551,6 +556,12 @@ async function AuthorizedContent({
 		organizationSettings: video.orgSettings,
 		spaces: sharedSpaces.filter((space) => space.id !== space.organizationId),
 	});
+	const env = serverEnv();
+	const transcriptionGenerationAvailable =
+		!video.isScreenshot &&
+		Boolean(env.DEEPGRAM_API_KEY) &&
+		!rules.settings.disableTranscript;
+	const aiProviderAvailable = Boolean(env.GROQ_API_KEY || env.OPENAI_API_KEY);
 
 	let aiGenerationEnabled = false;
 	const videoOwnerQuery = await db()
@@ -569,12 +580,13 @@ async function AuthorizedContent({
 	}
 
 	if (
-		!rules.settings.disableTranscript &&
-		!video.hasActiveUpload &&
+		transcriptionGenerationAvailable &&
+		!hasActiveUpload &&
 		video.transcriptionStatus !== "COMPLETE" &&
 		video.transcriptionStatus !== "PROCESSING" &&
 		video.transcriptionStatus !== "SKIPPED" &&
-		video.transcriptionStatus !== "NO_AUDIO"
+		video.transcriptionStatus !== "NO_AUDIO" &&
+		video.transcriptionStatus !== "ERROR"
 	) {
 		console.log("[ShareVideoPage] Starting transcription for video:", videoId);
 		transcribeVideo(videoId, video.owner.id, aiGenerationEnabled).catch(
@@ -597,6 +609,12 @@ async function AuthorizedContent({
 		chapters: metadata.chapters || null,
 		aiGenerationStatus,
 	};
+
+	const screenshotImageUrl = video.isScreenshot
+		? await Effect.flatMap(Videos, (videos) =>
+				videos.getThumbnailURL(videoId),
+			).pipe(Effect.map(Option.getOrNull), runPromise)
+		: null;
 
 	const customDomainPromise = (async () => {
 		if (!user) {
@@ -795,6 +813,7 @@ async function AuthorizedContent({
 
 		return {
 			...video,
+			hasActiveUpload,
 			owner: {
 				id: video.owner.id,
 				name: video.owner.name,
@@ -824,14 +843,48 @@ async function AuthorizedContent({
 			inheritedSpaceSettings: rules.inheritedSettings,
 		};
 	}).pipe(runPromise);
-	const isEditProcessing = isEditSourceKey({
-		ownerId: video.owner.id,
-		videoId,
-		rawFileKey: video.activeUploadRawFileKey,
-	});
+	const isEditProcessing =
+		isEditSourceKey({
+			ownerId: video.owner.id,
+			videoId,
+			rawFileKey: video.activeUploadRawFileKey,
+		}) && !video.isScreenshot;
+
+	const defaultPlaybackSpeed = resolveDefaultPlaybackSpeed(
+		video.videoSettings?.defaultPlaybackSpeed,
+		video.orgSettings?.defaultPlaybackSpeed,
+	);
+
+	const isVideoDownloadReady =
+		!hasActiveUpload && video.source?.type !== "desktopSegments";
+
+	const canDownloadVideo =
+		userId && isVideoDownloadReady
+			? await canUserDownloadVideo({
+					userId,
+					ownerId: video.owner.id,
+					videoId,
+					orgId: video.orgId,
+				})
+			: false;
+
+	let videoHasEdits = false;
+	if (canDownloadVideo && !video.isScreenshot) {
+		const [videoEditRow] = await db()
+			.select({ editSpec: videoEdits.editSpec })
+			.from(videoEdits)
+			.where(eq(videoEdits.videoId, videoId));
+
+		videoHasEdits = videoEditRow
+			? !areEditSpecsEquivalent(
+					videoEditRow.editSpec,
+					createIdentityEditSpec(videoEditRow.editSpec.sourceDuration),
+				)
+			: false;
+	}
 
 	return (
-		<div className="container flex-1 px-4 mx-auto">
+		<div className="container flex-1 px-4 pb-8 mx-auto">
 			<ShareHeader
 				data={{
 					...videoWithOrganizationInfo,
@@ -849,10 +902,13 @@ async function AuthorizedContent({
 				spacesData={spacesData}
 				branding={getSharePageBranding(videoWithOrganizationInfo)}
 				canManageSharePageBranding={canManageSharePageBranding}
+				canDownload={canDownloadVideo}
+				hasEdits={videoHasEdits}
 			/>
 
 			<Share
 				data={videoWithOrganizationInfo}
+				screenshotImageUrl={screenshotImageUrl}
 				videoSettings={videoWithOrganizationInfo.settings}
 				comments={commentsPromise}
 				views={viewsPromise}
@@ -862,8 +918,10 @@ async function AuthorizedContent({
 				viewerId={user?.id ?? null}
 				isEditProcessing={isEditProcessing}
 				recordingStopped={recordingStopped}
+				defaultPlaybackSpeed={defaultPlaybackSpeed}
 				initialAiData={initialAiData}
-				aiGenerationEnabled={aiGenerationEnabled}
+				aiGenerationAvailable={aiGenerationEnabled && aiProviderAvailable}
+				transcriptionGenerationAvailable={transcriptionGenerationAvailable}
 			/>
 		</div>
 	);

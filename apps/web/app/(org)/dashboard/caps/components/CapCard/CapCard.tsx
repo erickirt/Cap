@@ -20,6 +20,7 @@ import {
 	faDownload,
 	faEllipsis,
 	faGear,
+	faImage,
 	faLink,
 	faLock,
 	faScissors,
@@ -754,7 +755,9 @@ export const CapCard = ({
 
 						<VideoThumbnail
 							videoDuration={
-								hasVisibleUploadProgress ? undefined : cap.duration
+								hasVisibleUploadProgress || cap.isScreenshot
+									? undefined
+									: cap.duration
 							}
 							imageClass={clsx(
 								anyCapSelected
@@ -769,6 +772,7 @@ export const CapCard = ({
 							alt={`${cap.name} Thumbnail`}
 							imageStatus={imageStatus}
 							setImageStatus={setImageStatus}
+							showPreview={cap.isScreenshot !== true}
 							hasActiveUpload={
 								uploadProgress !== null &&
 								uploadProgress.status !== "fetching" &&
@@ -776,6 +780,15 @@ export const CapCard = ({
 								uploadProgress.status !== "error"
 							}
 						/>
+						{cap.isScreenshot === true && !hasVisibleUploadProgress && (
+							<span
+								title="Screenshot"
+								className="absolute bottom-3 left-3 z-30 flex size-6 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur-sm"
+							>
+								<FontAwesomeIcon icon={faImage} className="size-3" />
+								<span className="sr-only">Screenshot</span>
+							</span>
+						)}
 						{effectivePasswordProtected && (
 							<div
 								className="absolute right-2 top-2 z-10 flex size-7 items-center justify-center rounded-full bg-black/70 text-white"

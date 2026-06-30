@@ -21,6 +21,10 @@ import {
 import { createStore, produce, reconcile, unwrap } from "solid-js/store";
 
 import { generalSettingsStore } from "~/store";
+import {
+	type EditorCaptionSettings,
+	normalizeCaptionSettings,
+} from "~/store/captions";
 import { defaultKeyboardSettings } from "~/store/keyboard";
 
 import { createPresets } from "~/utils/createPresets";
@@ -36,6 +40,7 @@ import {
 	type EditorPreviewQuality,
 	events,
 	type FramesRendered,
+	type ImportedAudioTrack,
 	type MultipleSegments,
 	type ProjectConfiguration,
 	type RecordingMeta,
@@ -43,8 +48,15 @@ import {
 	type SerializedEditorInstance,
 	type SingleSegment,
 	type TimelineConfiguration,
+	type TimelineSegment,
 	type XY,
 } from "~/utils/tauri";
+import {
+	type AudioTrackSegment,
+	createAudioTrackSegment,
+	MIN_AUDIO_SEGMENT_DURATION,
+} from "./audio";
+import { deriveCaptionTrackSegments, mapEditedTimeToSource } from "./captions";
 import type { MaskSegment } from "./masks";
 import type { TextSegment } from "./text";
 import {
@@ -62,10 +74,12 @@ export type ModalDialog =
 			type: "crop";
 			position: XY<number>;
 			size: XY<number>;
-			previewUrl?: string | null;
 	  };
 
-export type LayoutMode = { type: "export" } | { type: "transcript" };
+export type LayoutMode =
+	| { type: "export" }
+	| { type: "transcript" }
+	| { type: "clips" };
 
 export type CurrentDialog = ModalDialog | LayoutMode;
 
@@ -76,6 +90,12 @@ export type OpenModalDialog = { open: true } & ModalDialog;
 const LAYOUT_MODE_TYPES: Set<CurrentDialog["type"]> = new Set([
 	"export",
 	"transcript",
+	"clips",
+]);
+
+const PERSISTED_LAYOUT_MODE_TYPES: Set<CurrentDialog["type"]> = new Set([
+	"export",
+	"clips",
 ]);
 
 export function isLayoutMode(d: DialogState): d is OpenLayoutMode {
@@ -118,7 +138,8 @@ export type TimelineTrackType =
 	| "text"
 	| "zoom"
 	| "scene"
-	| "mask";
+	| "mask"
+	| "audio";
 
 export const MAX_ZOOM_IN = 3;
 const PROJECT_SAVE_DEBOUNCE_MS = 250;
@@ -136,22 +157,33 @@ export type CornerRoundingType = "rounded" | "squircle";
 
 type WithCornerStyle<T> = T & { roundingType: CornerRoundingType };
 
+export type EditorTimelineSegment = TimelineSegment & {
+	name?: string | null;
+};
+
 type EditorTimelineConfiguration = Omit<
 	TimelineConfiguration,
-	"sceneSegments" | "maskSegments"
+	"sceneSegments" | "maskSegments" | "segments" | "audioSegments"
 > & {
+	segments: EditorTimelineSegment[];
 	sceneSegments?: SceneSegment[];
 	maskSegments: MaskSegment[];
 	textSegments: TextSegment[];
+	audioSegments?: AudioTrackSegment[];
+};
+
+type EditorCaptionsData = NonNullable<ProjectConfiguration["captions"]> & {
+	settings: EditorCaptionSettings;
 };
 
 export type EditorProjectConfiguration = Omit<
 	ProjectConfiguration,
-	"background" | "camera" | "timeline"
+	"background" | "camera" | "timeline" | "captions"
 > & {
 	background: WithCornerStyle<ProjectConfiguration["background"]>;
 	camera: WithCornerStyle<ProjectConfiguration["camera"]>;
 	timeline?: EditorTimelineConfiguration | null;
+	captions: EditorCaptionsData | null;
 	hiddenTextSegments?: number[];
 };
 
@@ -202,13 +234,27 @@ export function normalizeProject(
 						}
 					).textSegments ?? [],
 				),
+				audioSegments: normalizeTrackSegments(
+					(
+						config.timeline as TimelineConfiguration & {
+							audioSegments?: AudioTrackSegment[];
+						}
+					).audioSegments ?? [],
+				),
 			}
 		: undefined;
+	const captions = config.captions
+		? {
+				...config.captions,
+				settings: normalizeCaptionSettings(config.captions.settings),
+			}
+		: null;
 
 	return {
 		...config,
 		keyboard,
 		timeline,
+		captions,
 		background: withCornerDefaults(config.background),
 		camera: withCornerDefaults(config.camera),
 	};
@@ -229,6 +275,7 @@ export function serializeProjectConfiguration(
 				keyboardSegments: project.timeline.keyboardSegments ?? [],
 				maskSegments: project.timeline.maskSegments ?? [],
 				textSegments: project.timeline.textSegments ?? [],
+				audioSegments: project.timeline.audioSegments ?? [],
 			}
 		: project.timeline;
 
@@ -431,6 +478,138 @@ export const [EditorContextProvider, useEditorContext] = createContextProvider(
 					setEditorState("timeline", "selection", null);
 				});
 			},
+			splitAudioSegment: (index: number, time: number) => {
+				setProject(
+					"timeline",
+					"audioSegments",
+					produce((segments) => {
+						const segment = segments?.[index];
+						if (!segment) return;
+
+						const duration = segment.end - segment.start;
+						const remaining = duration - time;
+						if (time < MIN_AUDIO_SEGMENT_DURATION) return;
+						if (remaining < MIN_AUDIO_SEGMENT_DURATION) return;
+
+						segments.splice(index + 1, 0, {
+							...segment,
+							start: segment.start + time,
+							end: segment.end,
+							trimStart: segment.trimStart + time,
+							// Fades belong to the outer edges of the original clip; the
+							// new boundary created by the split should be a hard cut.
+							fadeIn: 0,
+						});
+						segments[index].end = segment.start + time;
+						segments[index].fadeOut = 0;
+						sortTrackSegments(segments);
+					}),
+				);
+			},
+			deleteAudioSegments: (segmentIndices: number[]) => {
+				batch(() => {
+					setProject(
+						"timeline",
+						"audioSegments",
+						produce((segments) => {
+							if (!segments) return;
+							const sorted = [...new Set(segmentIndices)]
+								.filter(
+									(i) => Number.isInteger(i) && i >= 0 && i < segments.length,
+								)
+								.sort((a, b) => b - a);
+							for (const i of sorted) segments.splice(i, 1);
+							normalizeTrackSegments(segments);
+						}),
+					);
+					setEditorState("timeline", "selection", null);
+				});
+			},
+			addAudioSegment: (laneIndex: number, imported: ImportedAudioTrack) => {
+				const total = totalDuration();
+				const hasSourceDuration = imported.duration > 0;
+				const sourceDuration = hasSourceDuration ? imported.duration : total;
+				const length = Math.max(
+					MIN_AUDIO_SEGMENT_DURATION,
+					Math.min(sourceDuration, total > 0 ? total : sourceDuration),
+				);
+				const maxStart = Math.max(0, total - length);
+				const start = Math.min(Math.max(editorState.playbackTime, 0), maxStart);
+
+				batch(() => {
+					setProject("timeline", "audioSegments", (v) => v ?? []);
+					setProject(
+						"timeline",
+						"audioSegments",
+						produce((segments) => {
+							segments ??= [];
+							segments.push(
+								createAudioTrackSegment({
+									start,
+									end: start + length,
+									track: laneIndex,
+									path: imported.path,
+									name: imported.name,
+									duration: hasSourceDuration ? imported.duration : null,
+								}),
+							);
+							sortTrackSegments(segments);
+						}),
+					);
+
+					const segments = project.timeline?.audioSegments ?? [];
+					setEditorState(
+						"timeline",
+						"tracks",
+						"audio",
+						Math.max(getUsedTrackCount(segments), laneIndex + 1),
+					);
+					setEditorState("timeline", "audioPicker", null);
+					const insertedIndex = segments.findIndex(
+						(segment) =>
+							segment.track === laneIndex &&
+							segment.start === start &&
+							segment.path === imported.path,
+					);
+					if (insertedIndex >= 0) {
+						setEditorState("timeline", "selection", {
+							type: "audio",
+							indices: [insertedIndex],
+						});
+					}
+				});
+			},
+			replaceAudioSegment: (index: number, imported: ImportedAudioTrack) => {
+				setProject(
+					"timeline",
+					"audioSegments",
+					produce((segments) => {
+						const segment = segments?.[index];
+						if (!segment) return;
+
+						const hasSourceDuration = imported.duration > 0;
+						segment.path = imported.path;
+						segment.name = imported.name;
+						segment.duration = hasSourceDuration ? imported.duration : null;
+						segment.trimStart = 0;
+
+						if (hasSourceDuration) {
+							const maxEnd = segment.start + imported.duration;
+							if (segment.end > maxEnd) {
+								segment.end = Math.max(
+									segment.start + MIN_AUDIO_SEGMENT_DURATION,
+									maxEnd,
+								);
+							}
+						}
+
+						const duration = Math.max(segment.end - segment.start, 0);
+						if (segment.fadeIn > duration) segment.fadeIn = duration;
+						if (segment.fadeOut > duration) segment.fadeOut = duration;
+						sortTrackSegments(segments);
+					}),
+				);
+			},
 			splitKeyboardSegment: (index: number, time: number) => {
 				setProject(
 					"timeline",
@@ -588,6 +767,11 @@ export const [EditorContextProvider, useEditorContext] = createContextProvider(
 							textSegment.end += diff(textSegment.end);
 						}
 
+						for (const audioSegment of timeline.audioSegments ?? []) {
+							audioSegment.start += diff(audioSegment.start);
+							audioSegment.end += diff(audioSegment.end);
+						}
+
 						for (const captionSegment of timeline.captionSegments ?? []) {
 							captionSegment.start += diff(captionSegment.start);
 							captionSegment.end += diff(captionSegment.end);
@@ -693,8 +877,43 @@ export const [EditorContextProvider, useEditorContext] = createContextProvider(
 
 		const previewResolutionBase = () => getPreviewResolution(previewQuality());
 
-		const [dialog, setDialog] = createSignal<DialogState>({
-			open: false,
+		const layoutModeStorageKey = `cap:editor:layoutMode:${props.editorInstance.path}`;
+
+		const readPersistedLayoutMode = (): DialogState => {
+			try {
+				const raw = sessionStorage.getItem(layoutModeStorageKey);
+				if (!raw) return { open: false };
+				const parsed = JSON.parse(raw) as { type?: CurrentDialog["type"] };
+				if (parsed?.type && PERSISTED_LAYOUT_MODE_TYPES.has(parsed.type)) {
+					return { open: true, type: parsed.type } as OpenLayoutMode;
+				}
+			} catch (error) {
+				console.error("Failed to read persisted editor layout mode", error);
+			}
+			return { open: false };
+		};
+
+		const [dialog, setDialog] = createSignal<DialogState>(
+			readPersistedLayoutMode(),
+		);
+
+		createEffect(() => {
+			const current = dialog();
+			try {
+				if (
+					isLayoutMode(current) &&
+					PERSISTED_LAYOUT_MODE_TYPES.has(current.type)
+				) {
+					sessionStorage.setItem(
+						layoutModeStorageKey,
+						JSON.stringify({ type: current.type }),
+					);
+				} else {
+					sessionStorage.removeItem(layoutModeStorageKey);
+				}
+			} catch (error) {
+				console.error("Failed to persist editor layout mode", error);
+			}
 		});
 
 		const [exportState, setExportState] = createStore<
@@ -773,6 +992,9 @@ export const [EditorContextProvider, useEditorContext] = createContextProvider(
 		const initialTextTrackCount = getUsedTrackCount(
 			project.timeline?.textSegments ?? [],
 		);
+		const initialAudioTrackCount = getUsedTrackCount(
+			project.timeline?.audioSegments ?? [],
+		);
 		const initialCaptionTrackVisible =
 			project.captions?.settings.enabled ??
 			(project.timeline?.captionSegments?.length ?? 0) > 0;
@@ -801,7 +1023,8 @@ export const [EditorContextProvider, useEditorContext] = createContextProvider(
 					| { type: "mask"; indices: number[] }
 					| { type: "caption"; indices: number[] }
 					| { type: "keyboard"; indices: number[] }
-					| { type: "text"; indices: number[] },
+					| { type: "text"; indices: number[] }
+					| { type: "audio"; indices: number[] },
 				transform: {
 					// visible seconds
 					zoom: zoomOutLimit(),
@@ -846,10 +1069,13 @@ export const [EditorContextProvider, useEditorContext] = createContextProvider(
 					scene: true,
 					mask: initialMaskTrackCount,
 					text: initialTextTrackCount,
+					audio: initialAudioTrackCount,
 				},
 				hoveredTrack: null as null | TimelineTrackType,
 				hoveredMaskIndex: null as number | null,
 				hoveredMaskTime: null as number | null,
+				audioPicker: null as number | null,
+				audioReplace: null as number | null,
 			},
 		});
 
@@ -905,34 +1131,109 @@ export const [EditorContextProvider, useEditorContext] = createContextProvider(
 			})();
 		});
 
+		const captionRecordingSegments = props.editorInstance.recordings.segments;
+
+		// One-time migration: legacy projects stored caption segments in
+		// already-edited output time. Invert them back to source/recording time
+		// so the render track can be derived from them. For unedited timelines
+		// this is a no-op; for edited ones it makes the current positions a fixed
+		// point and lets future edits stay aligned.
+		if (project.captions && !project.captions.sourceTimed) {
+			const timeline = project.timeline;
+			const segments = project.captions.segments ?? [];
+			if (timeline && segments.length > 0) {
+				const toSource = (time: number) =>
+					mapEditedTimeToSource(
+						time,
+						timeline.segments,
+						captionRecordingSegments,
+					);
+				const inverted = segments.flatMap((segment) => {
+					const start = toSource(segment.start);
+					const end = toSource(segment.end);
+					if (start === null || end === null) return [];
+					const words = (segment.words ?? []).flatMap((word) => {
+						const wordStart = toSource(word.start);
+						const wordEnd = toSource(word.end);
+						return wordStart !== null && wordEnd !== null
+							? [{ ...word, start: wordStart, end: wordEnd }]
+							: [];
+					});
+					return [{ ...segment, start, end, words }];
+				});
+				inverted.sort((a, b) => a.start - b.start);
+				setProject("captions", "segments", inverted);
+			}
+			if (project.captions) setProject("captions", "sourceTimed", true);
+		}
+
+		// Keep the rendered caption track (output time) projected from the
+		// source-time caption master through the current edit list, so captions
+		// follow clip trims/deletes/reorders/inserts 1:1 with no re-transcription.
 		createEffect(
 			on(
 				() => {
-					const segs = project.timeline?.segments;
-					if (!segs || segs.length === 0) return "";
-					return segs
+					const segments = project.captions?.segments;
+					const timeline = project.timeline;
+					if (!segments || segments.length === 0 || !timeline) return null;
+					const captionsSig = segments
+						.map(
+							(s) =>
+								`${s.id}|${s.start}|${s.end}|${s.text}|${(s.words ?? [])
+									.map((w) => `${w.start}:${w.end}:${w.text}`)
+									.join("~")}`,
+						)
+						.join(",");
+					const timelineSig = timeline.segments
 						.map(
 							(s) =>
 								`${s.start}|${s.end}|${s.timescale}|${s.recordingSegment ?? 0}`,
 						)
 						.join(",");
+					return `${captionsSig}@@${timelineSig}`;
 				},
-				(current, prev) => {
-					if (prev === undefined || prev === "") return;
-					if (current === prev) return;
+				() => {
+					const timeline = project.timeline;
+					const segments = project.captions?.segments;
+					if (!timeline || !segments) return;
+					const derived = deriveCaptionTrackSegments(
+						segments,
+						timeline.segments,
+						captionRecordingSegments,
+						timeline.captionSegments ?? [],
+					);
+					setProject(
+						"timeline",
+						"captionSegments",
+						reconcile(derived, { key: "id" }),
+					);
 
-					const hasCaptions =
-						(project.timeline?.captionSegments?.length ?? 0) > 0 ||
-						(project.captions?.segments?.length ?? 0) > 0;
-
-					if (hasCaptions) {
-						batch(() => {
-							setEditorState("captions", "isStale", true);
-							setEditorState("captions", "staleDismissed", false);
-						});
+					// Push the refreshed caption track to the renderer immediately.
+					// The store (and timeline strip) update reactively, but the
+					// renderer only reflects config that is explicitly pushed, and
+					// the editor's config-push effect doesn't run on initial load,
+					// so without this the rendered frame keeps stale caption
+					// positions until the next unrelated edit.
+					if (!editorState.playing) {
+						const frameNumber = Math.max(
+							Math.floor(editorState.playbackTime * FPS),
+							0,
+						);
+						commands
+							.updateProjectConfigInMemory(
+								serializeProjectConfiguration(project),
+								frameNumber,
+								FPS,
+								previewResolutionBase(),
+							)
+							.catch((error) => {
+								console.error(
+									"Failed to refresh caption preview config",
+									error,
+								);
+							});
 					}
 				},
-				{ defer: true },
 			),
 		);
 

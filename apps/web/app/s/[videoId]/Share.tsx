@@ -4,6 +4,7 @@ import type { comments as commentsSchema } from "@cap/database/schema";
 import type { ViewerSettingKey } from "@cap/web-backend";
 import type { ImageUpload, Video } from "@cap/web-domain";
 import { useQuery } from "@tanstack/react-query";
+import Image from "next/image";
 import { useSearchParams } from "next/navigation";
 import {
 	startTransition,
@@ -141,10 +142,18 @@ type AiGenerationStatus =
 	| "ERROR"
 	| "SKIPPED";
 
+type TranscriptionStatus =
+	| "PROCESSING"
+	| "COMPLETE"
+	| "ERROR"
+	| "SKIPPED"
+	| "NO_AUDIO";
+
 interface ShareProps {
 	data: VideoData;
 	comments: MaybePromise<CommentWithAuthor[]>;
 	views: MaybePromise<number>;
+	screenshotImageUrl?: string | null;
 	customDomain: string | null;
 	domainVerified: boolean;
 	videoSettings?: OrganizationSettings | null;
@@ -152,20 +161,26 @@ interface ShareProps {
 	viewerId?: string | null;
 	isEditProcessing: boolean;
 	recordingStopped?: boolean;
+	defaultPlaybackSpeed?: number;
 	initialAiData?: {
 		title?: string | null;
 		summary?: string | null;
 		chapters?: { title: string; start: number }[] | null;
 		aiGenerationStatus?: AiGenerationStatus | null;
 	} | null;
-	aiGenerationEnabled: boolean;
+	aiGenerationAvailable: boolean;
+	transcriptionGenerationAvailable: boolean;
 }
 
 const useVideoStatus = (
 	videoId: Video.VideoId,
-	aiGenerationEnabled: boolean,
+	availability: {
+		aiGeneration: boolean;
+		transcriptionGeneration: boolean;
+	},
 	initialData?: {
 		transcriptionStatus?: string | null;
+		name?: string | null;
 		aiData?: {
 			title?: string | null;
 			summary?: string | null;
@@ -173,6 +188,7 @@ const useVideoStatus = (
 			aiGenerationStatus?: AiGenerationStatus | null;
 		} | null;
 	},
+	enabled: boolean = true,
 ) => {
 	return useQuery({
 		queryKey: ["videoStatus", videoId],
@@ -184,30 +200,28 @@ const useVideoStatus = (
 		},
 		initialData: initialData
 			? {
-					transcriptionStatus: initialData.transcriptionStatus as
-						| "PROCESSING"
-						| "COMPLETE"
-						| "ERROR"
-						| "SKIPPED"
-						| "NO_AUDIO"
-						| null,
+					transcriptionStatus:
+						initialData.transcriptionStatus as TranscriptionStatus | null,
 					aiGenerationStatus:
 						(initialData.aiData?.aiGenerationStatus as AiGenerationStatus) ||
 						null,
+					name: initialData.name ?? null,
 					aiTitle: initialData.aiData?.title || null,
 					summary: initialData.aiData?.summary || null,
 					chapters: initialData.aiData?.chapters || null,
 				}
 			: undefined,
+		enabled,
 		refetchInterval: (query) => {
 			const data = query.state.data;
 			if (!data) return 2000;
 
 			const shouldContinuePolling = () => {
-				if (
-					!data.transcriptionStatus ||
-					data.transcriptionStatus === "PROCESSING"
-				) {
+				if (!data.transcriptionStatus) {
+					return availability.transcriptionGeneration;
+				}
+
+				if (data.transcriptionStatus === "PROCESSING") {
 					return true;
 				}
 
@@ -220,7 +234,7 @@ const useVideoStatus = (
 				}
 
 				if (data.transcriptionStatus === "COMPLETE") {
-					if (!aiGenerationEnabled) {
+					if (!availability.aiGeneration) {
 						return false;
 					}
 
@@ -239,7 +253,11 @@ const useVideoStatus = (
 						return true;
 					}
 
-					if (!data.aiGenerationStatus && !data.summary && !data.chapters) {
+					if (
+						!data.aiGenerationStatus &&
+						!data.summary &&
+						!data.chapters?.length
+					) {
 						return true;
 					}
 
@@ -260,13 +278,17 @@ export const Share = ({
 	data,
 	comments,
 	views,
+	screenshotImageUrl,
 	initialAiData,
-	aiGenerationEnabled,
 	videoSettings,
 	viewerId,
 	isEditProcessing,
 	recordingStopped = false,
+	defaultPlaybackSpeed,
+	aiGenerationAvailable,
+	transcriptionGenerationAvailable,
 }: ShareProps) => {
+	const isScreenshot = data.isScreenshot === true;
 	const effectiveDate: Date = data.metadata?.customCreatedAt
 		? new Date(data.metadata.customCreatedAt)
 		: data.createdAt;
@@ -284,10 +306,19 @@ export const Share = ({
 		},
 	);
 
-	const { data: videoStatus } = useVideoStatus(data.id, aiGenerationEnabled, {
-		transcriptionStatus: data.transcriptionStatus,
-		aiData: initialAiData,
-	});
+	const { data: videoStatus } = useVideoStatus(
+		data.id,
+		{
+			aiGeneration: aiGenerationAvailable,
+			transcriptionGeneration: transcriptionGenerationAvailable,
+		},
+		{
+			transcriptionStatus: data.transcriptionStatus,
+			name: data.name,
+			aiData: initialAiData,
+		},
+		!isScreenshot,
+	);
 
 	const transcriptionStatus =
 		videoStatus?.transcriptionStatus || data.transcriptionStatus;
@@ -314,12 +345,33 @@ export const Share = ({
 		});
 	}, [data.id, data.orgId, data.owner.id, viewerId]);
 
+	const isDisabled = (setting: ViewerSettingKey) =>
+		videoSettings?.[setting] ?? data.orgSettings?.[setting] ?? false;
+
+	const areChaptersDisabled = isScreenshot || isDisabled("disableChapters");
+	const isSummaryDisabled = isScreenshot || isDisabled("disableSummary");
+	const areCaptionsDisabled = isScreenshot || isDisabled("disableCaptions");
+	const areCommentStampsDisabled = isDisabled("disableComments");
+	const areReactionStampsDisabled = isDisabled("disableReactions");
+	const allSettingsDisabled = isScreenshot
+		? isDisabled("disableComments")
+		: isDisabled("disableComments") &&
+			isDisabled("disableSummary") &&
+			isDisabled("disableTranscript");
+
 	const shouldShowLoading = () => {
-		if (!aiGenerationEnabled) {
+		const hasVisibleAiSection = !isSummaryDisabled || !areChaptersDisabled;
+		const hasAiData = Boolean(aiData.summary || aiData.chapters?.length);
+
+		if (!hasVisibleAiSection || !aiGenerationAvailable || hasAiData) {
 			return false;
 		}
 
-		if (!transcriptionStatus || transcriptionStatus === "PROCESSING") {
+		if (!transcriptionStatus) {
+			return transcriptionGenerationAvailable;
+		}
+
+		if (transcriptionStatus === "PROCESSING") {
 			return true;
 		}
 
@@ -345,7 +397,7 @@ export const Share = ({
 			) {
 				return true;
 			}
-			if (!aiData.aiGenerationStatus && !aiData.summary && !aiData.chapters) {
+			if (!aiData.aiGenerationStatus) {
 				return true;
 			}
 		}
@@ -410,6 +462,7 @@ export const Share = ({
 	useEffect(() => {
 		if (initialSeekDone.current) return;
 		const tParam = searchParams.get("t");
+		if (isScreenshot) return;
 		if (!tParam) return;
 		const t = parseInt(tParam, 10);
 		if (!Number.isFinite(t) || t < 0) return;
@@ -440,7 +493,7 @@ export const Share = ({
 			clearInterval(interval);
 			clearTimeout(timeout);
 		};
-	}, [searchParams, handleSeek]);
+	}, [searchParams, handleSeek, isScreenshot]);
 
 	const handleOptimisticComment = useCallback(
 		(comment: CommentType) => {
@@ -463,19 +516,6 @@ export const Share = ({
 		}, 100);
 	}, []);
 
-	const isDisabled = (setting: ViewerSettingKey) =>
-		videoSettings?.[setting] ?? data.orgSettings?.[setting] ?? false;
-
-	const areChaptersDisabled = isDisabled("disableChapters");
-	const isSummaryDisabled = isDisabled("disableSummary");
-	const areCaptionsDisabled = isDisabled("disableCaptions");
-	const areCommentStampsDisabled = isDisabled("disableComments");
-	const areReactionStampsDisabled = isDisabled("disableReactions");
-	const allSettingsDisabled =
-		isDisabled("disableComments") &&
-		isDisabled("disableSummary") &&
-		isDisabled("disableTranscript");
-
 	return (
 		<CaptionProvider
 			videoId={data.id}
@@ -486,21 +526,27 @@ export const Share = ({
 					<div className="flex-1">
 						<div className="overflow-visible relative bg-white rounded-2xl border aspect-video border-gray-5">
 							<div className="absolute inset-3 w-[calc(100%-1.5rem)] h-[calc(100%-1.5rem)] overflow-visible rounded-xl">
-								<ShareVideo
-									data={{ ...data, transcriptionStatus }}
-									comments={comments}
-									areChaptersDisabled={areChaptersDisabled}
-									areCaptionsDisabled={areCaptionsDisabled}
-									areCommentStampsDisabled={areCommentStampsDisabled}
-									areReactionStampsDisabled={areReactionStampsDisabled}
-									chapters={aiData?.chapters || []}
-									aiGenerationStatus={aiData?.aiGenerationStatus}
-									canRetryProcessing={viewerId === data.owner.id}
-									showPlaybackStatusBadge={viewerId === data.owner.id}
-									isEditProcessing={isEditProcessing}
-									recordingStopped={recordingStopped}
-									ref={playerRef}
-								/>
+								{isScreenshot ? (
+									<ScreenshotImage src={screenshotImageUrl} alt={data.name} />
+								) : (
+									<ShareVideo
+										data={{ ...data, transcriptionStatus }}
+										comments={comments}
+										areChaptersDisabled={areChaptersDisabled}
+										areCaptionsDisabled={areCaptionsDisabled}
+										areCommentStampsDisabled={areCommentStampsDisabled}
+										areReactionStampsDisabled={areReactionStampsDisabled}
+										chapters={aiData?.chapters || []}
+										aiGenerationStatus={aiData?.aiGenerationStatus}
+										canRetryProcessing={viewerId === data.owner.id}
+										canFinalizeDesktopSegments={viewerId === data.owner.id}
+										showPlaybackStatusBadge={viewerId === data.owner.id}
+										isEditProcessing={isEditProcessing}
+										recordingStopped={recordingStopped}
+										defaultPlaybackSpeed={defaultPlaybackSpeed}
+										ref={playerRef}
+									/>
+								)}
 							</div>
 						</div>
 						<div className="mt-4 lg:hidden">
@@ -529,10 +575,11 @@ export const Share = ({
 								setOptimisticComments={setOptimisticComments}
 								handleCommentSuccess={handleCommentSuccess}
 								views={views}
-								onSeek={handleSeek}
+								onSeek={isScreenshot ? undefined : handleSeek}
+								isScreenshot={isScreenshot}
 								videoId={data.id}
 								aiData={aiData}
-								aiGenerationEnabled={aiGenerationEnabled}
+								aiGenerationEnabled={aiGenerationAvailable}
 								ref={activityRef}
 							/>
 						</div>
@@ -552,7 +599,7 @@ export const Share = ({
 				</div>
 
 				<div className="hidden mt-4 lg:block">
-					{aiLoading && (
+					{!isScreenshot && aiLoading && (
 						<div className="p-4 animate-pulse new-card-style">
 							<div className="space-y-6">
 								<div>
@@ -582,15 +629,41 @@ export const Share = ({
 						</div>
 					)}
 
-					<SummaryChapters
-						isSummaryDisabled={isSummaryDisabled}
-						areChaptersDisabled={areChaptersDisabled}
-						handleSeek={handleSeek}
-						aiData={aiData}
-						aiLoading={aiLoading}
-					/>
+					{!isScreenshot && (
+						<SummaryChapters
+							isSummaryDisabled={isSummaryDisabled}
+							areChaptersDisabled={areChaptersDisabled}
+							handleSeek={handleSeek}
+							aiData={aiData}
+							aiLoading={aiLoading}
+						/>
+					)}
 				</div>
 			</div>
 		</CaptionProvider>
 	);
 };
+
+function ScreenshotImage({ src, alt }: { src?: string | null; alt: string }) {
+	if (!src) {
+		return (
+			<div className="flex size-full items-center justify-center rounded-xl bg-gray-2 text-sm text-gray-10">
+				Screenshot unavailable
+			</div>
+		);
+	}
+
+	return (
+		<div className="relative size-full rounded-xl">
+			<Image
+				src={src}
+				alt={alt}
+				fill
+				priority
+				unoptimized
+				sizes="100vw"
+				className="rounded-xl object-contain"
+			/>
+		</div>
+	);
+}

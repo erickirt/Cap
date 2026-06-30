@@ -1,6 +1,8 @@
+import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import type { MediaOperationHandle } from "./media-operations";
 import type { TempFileHandle } from "./temp-files";
+import { getActiveDirectVideoProcessCount } from "./video-capacity";
 
 export type JobPhase =
 	| "queued"
@@ -65,24 +67,6 @@ const WEBHOOK_MAX_ATTEMPTS = 3;
 const WEBHOOK_RETRY_BASE_MS = 500;
 const WEBHOOK_TIMEOUT_MS = 5000;
 
-// Dynamic concurrency control for video processing.
-//
-// Instead of a manual counter (which drifted and caused permanent "server busy"
-// errors), active process count is derived from actual job state in the map.
-//
-// Concurrency limit is determined by:
-//   1. MEDIA_SERVER_MAX_CONCURRENT_VIDEO_PROCESSES env var (if set, used as ceiling)
-//   2. Otherwise: floor(cpuCount / 2), minimum 1
-//   3. Dynamically reduced when CPU load or process memory is high
-//
-// CPU throttling: when 1-minute load average per core exceeds 0.8,
-// effective max is scaled down proportionally.
-//
-// Memory throttling (opt-in): set MEDIA_SERVER_MEMORY_LIMIT_MB to the container's
-// memory limit. When process RSS exceeds 85% of that limit, effective max is reduced.
-// Uses process-level RSS (not system-wide free memory) so it works correctly on
-// shared hosts where os.freemem() reflects other tenants.
-
 const configuredMaxProcesses =
 	Number.parseInt(
 		process.env.MEDIA_SERVER_MAX_CONCURRENT_VIDEO_PROCESSES ?? "0",
@@ -92,14 +76,50 @@ const configuredMaxProcesses =
 const cpuCount = os.cpus().length;
 
 const CPU_LOAD_THRESHOLD = 0.8;
+const DEFAULT_MAX_CONCURRENT_VIDEO_PROCESSES = 4;
+const CGROUP_MEMORY_LIMIT_PATHS = [
+	"/sys/fs/cgroup/memory.max",
+	"/sys/fs/cgroup/memory/memory.limit_in_bytes",
+];
+const MAX_PLAUSIBLE_CONTAINER_LIMIT_BYTES = 1024 ** 5;
+const MEMORY_THROTTLE_THRESHOLD = 0.85;
+const MEMORY_REJECT_THRESHOLD = 0.95;
+const VIDEO_PROCESS_MEMORY_BUDGET_MB = 768;
+
+function readContainerMemoryLimitMB(): number {
+	for (const path of CGROUP_MEMORY_LIMIT_PATHS) {
+		if (!existsSync(path)) continue;
+
+		let rawValue: string;
+		try {
+			rawValue = readFileSync(path, "utf8").trim();
+		} catch {
+			continue;
+		}
+
+		if (!rawValue || rawValue === "max") continue;
+
+		const bytes = Number.parseInt(rawValue, 10);
+		if (
+			Number.isFinite(bytes) &&
+			bytes > 0 &&
+			bytes < MAX_PLAUSIBLE_CONTAINER_LIMIT_BYTES
+		) {
+			return Math.floor(bytes / (1024 * 1024));
+		}
+	}
+
+	return 0;
+}
+
 const PROCESS_RSS_LIMIT_MB =
-	Number.parseInt(process.env.MEDIA_SERVER_MEMORY_LIMIT_MB ?? "0", 10) || 0;
+	Number.parseInt(process.env.MEDIA_SERVER_MEMORY_LIMIT_MB ?? "0", 10) ||
+	readContainerMemoryLimitMB();
 
 function isActivePhase(phase: JobPhase): boolean {
 	return phase !== "complete" && phase !== "error" && phase !== "cancelled";
 }
 
-// Derived from actual job state — no manual increment/decrement that can drift
 export function getActiveVideoProcessCount(): number {
 	let count = 0;
 	for (const job of jobs.values()) {
@@ -107,14 +127,31 @@ export function getActiveVideoProcessCount(): number {
 			count++;
 		}
 	}
-	return count;
+	return count + getActiveDirectVideoProcessCount();
 }
 
 export function getMaxConcurrentVideoProcesses(): number {
 	if (configuredMaxProcesses > 0) {
 		return configuredMaxProcesses;
 	}
-	return Math.max(1, Math.floor(cpuCount / 2));
+	const memoryBoundMax =
+		PROCESS_RSS_LIMIT_MB > 0
+			? Math.max(
+					1,
+					Math.floor(
+						(PROCESS_RSS_LIMIT_MB * MEMORY_THROTTLE_THRESHOLD) /
+							VIDEO_PROCESS_MEMORY_BUDGET_MB,
+					),
+				)
+			: DEFAULT_MAX_CONCURRENT_VIDEO_PROCESSES;
+	return Math.max(
+		1,
+		Math.min(
+			DEFAULT_MAX_CONCURRENT_VIDEO_PROCESSES,
+			Math.floor(cpuCount / 2),
+			memoryBoundMax,
+		),
+	);
 }
 
 export interface SystemResources {
@@ -148,12 +185,18 @@ export function getSystemResources(): SystemResources {
 		throttleReason = `CPU load ${cpuPressure.toFixed(2)} exceeds ${CPU_LOAD_THRESHOLD} threshold`;
 	}
 
-	if (PROCESS_RSS_LIMIT_MB > 0 && processRssMB > PROCESS_RSS_LIMIT_MB * 0.85) {
+	if (
+		PROCESS_RSS_LIMIT_MB > 0 &&
+		processRssMB > PROCESS_RSS_LIMIT_MB * MEMORY_THROTTLE_THRESHOLD
+	) {
 		const memPressure = processRssMB / PROCESS_RSS_LIMIT_MB;
-		const memMax = Math.max(1, Math.floor(max * (1 - memPressure)));
+		const memMax =
+			memPressure >= MEMORY_REJECT_THRESHOLD
+				? 0
+				: Math.max(1, Math.floor(max * (1 - memPressure)));
 		if (memMax < effectiveMax) {
 			effectiveMax = memMax;
-			throttleReason = `Process RSS ${processRssMB}MB exceeds 85% of ${PROCESS_RSS_LIMIT_MB}MB limit`;
+			throttleReason = `Process RSS ${processRssMB}MB exceeds ${Math.round(MEMORY_THROTTLE_THRESHOLD * 100)}% of ${PROCESS_RSS_LIMIT_MB}MB limit`;
 		}
 	}
 

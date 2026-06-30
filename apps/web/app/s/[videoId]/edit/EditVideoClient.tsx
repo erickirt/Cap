@@ -1,6 +1,14 @@
 "use client";
 
-import { Button } from "@cap/ui";
+import {
+	Button,
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogFooter,
+	DialogHeader,
+	DialogTitle,
+} from "@cap/ui";
 import type { Video } from "@cap/web-domain";
 import {
 	ChevronLeft,
@@ -10,6 +18,7 @@ import {
 	Play,
 	Plus,
 	Redo2,
+	RotateCcw,
 	Scissors,
 	Trash2,
 	Undo2,
@@ -25,7 +34,10 @@ import {
 	useState,
 } from "react";
 import { toast } from "sonner";
-import { saveVideoEdits } from "@/actions/videos/save-edits";
+import {
+	restoreVideoToOriginal,
+	saveVideoEdits,
+} from "@/actions/videos/save-edits";
 import {
 	clearTimelineDraft,
 	getTimelineDraftKey,
@@ -39,12 +51,10 @@ import {
 	createTimelineHistory,
 	createTimelineState,
 	deleteSelectedTimelineSegment,
-	dragTimelineDisplaySplitPoint,
 	findNextPlayableTime,
 	getEditSpecOutputDuration,
 	getTimelineDisplayDuration,
 	getTimelineDisplaySegments,
-	getTimelineDisplaySplitDragTargetTime,
 	getTimelineDisplaySplitPoints,
 	getTimelineEditSpec,
 	getTimelineKeepRanges,
@@ -56,15 +66,15 @@ import {
 	redoTimelineHistory,
 	removeTimelineDisplaySplitPoint,
 	selectTimelineSegment,
-	setTimelineTrim,
 	splitTimelineAt,
 	type TimelineHistory,
+	trimTimelineClipEdge,
 	undoTimelineHistory,
-	type VideoTimelineDisplaySplitDragHandle,
 	type VideoTimelineState,
 } from "@/lib/video-edits";
 import { navigateWithTransition } from "@/utils/view-transition";
 import { CapVideoPlayer } from "../_components/CapVideoPlayer";
+import { VideoDownloadMenu } from "../_components/VideoDownloadMenu";
 import { captureVideoFrameDataUrl } from "../_components/video-frame-thumbnail";
 
 type EditableVideo = {
@@ -604,7 +614,13 @@ function useLazyTimelineThumbnails({
 	return frames;
 }
 
-export function EditVideoClient({ video }: { video: EditableVideo }) {
+export function EditVideoClient({
+	video,
+	hasExistingEdits,
+}: {
+	video: EditableVideo;
+	hasExistingEdits: boolean;
+}) {
 	const router = useRouter();
 	const videoRef = useRef<HTMLVideoElement | null>(null);
 	const timelineRef = useRef<HTMLDivElement | null>(null);
@@ -614,6 +630,10 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 		createTimelineState(video.duration),
 	);
 	const dragDraftRef = useRef<VideoTimelineState | null>(null);
+	// While trimming a clip edge we scrub the <video> to preview the edge frame
+	// but deliberately leave the timeline cursor where the user paused it.
+	const previewWithoutPlayheadRef = useRef(false);
+	const playheadRef = useRef(0);
 	const pendingPlayheadRef = useRef<number | null>(null);
 	const playheadFrameRef = useRef(0);
 	const pendingVideoSeekRef = useRef<number | null>(null);
@@ -634,19 +654,12 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 	const [hydratedDraftKey, setHydratedDraftKey] = useState<string | null>(null);
 	const [draftState, setDraftState] = useState<VideoTimelineState | null>(null);
 	const [activeHandle, setActiveHandle] = useState<DragHandle | null>(null);
-	const [splitToggle, setSplitToggle] = useState(false);
-	const [splitKeyHeld, setSplitKeyHeld] = useState(false);
-	const [splitButtonHeld, setSplitButtonHeld] = useState(false);
-	const splitHoldStartRef = useRef<number | null>(null);
-	const splitClickedDuringHoldRef = useRef(false);
-	const splitMode = splitToggle || splitKeyHeld || splitButtonHeld;
 	const [playhead, setPlayhead] = useState(0);
 	const [isPlaying, setIsPlaying] = useState(false);
 	const [zoom, setZoom] = useState(1);
 	const [isSaving, setIsSaving] = useState(false);
-	const [selectedSplitIndex, setSelectedSplitIndex] = useState<number | null>(
-		null,
-	);
+	const [isRestoring, setIsRestoring] = useState(false);
+	const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
 	const committedState = history.entries[history.index] ?? initialState;
 	const state = draftState ?? committedState;
 	const editSpec = useMemo(() => getTimelineEditSpec(state), [state]);
@@ -746,16 +759,18 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 		trimEndDisplayTime,
 		timelineDisplayDuration,
 	);
-	const trimWidthPct = Math.max(0, trimEndPct - trimStartPct);
+	// Clamp the rendered cursor against the COMMITTED trim bounds, not the live
+	// draft: while dragging a trim edge past the paused cursor, the cursor must
+	// stay put rather than get dragged along with the moving handle.
 	const clampedPlayhead = Math.min(
-		Math.max(playhead, state.trimStart),
-		state.trimEnd,
+		Math.max(playhead, committedState.trimStart),
+		committedState.trimEnd,
 	);
 	const displayPlayhead = mapTimelineSourceTimeToDisplayTime(
 		state,
 		clampedPlayhead,
 	);
-	const isTrimming = activeHandle !== null;
+	const isTrimming = activeHandle !== null || draftState !== null;
 	const outputDuration = useMemo(
 		() => getEditSpecOutputDuration(editSpec),
 		[editSpec],
@@ -779,6 +794,10 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 	}, [state]);
 
 	useEffect(() => {
+		playheadRef.current = playhead;
+	}, [playhead]);
+
+	useEffect(() => {
 		zoomRef.current = zoom;
 	}, [zoom]);
 
@@ -791,7 +810,6 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 		setDraftState(null);
 		dragDraftRef.current = null;
 		setHistory(createTimelineHistory(nextState));
-		setSelectedSplitIndex(null);
 		setPlayhead(nextState.trimStart);
 		setHydratedDraftKey(draftStorageKey);
 	}, [draftStorageKey, initialState, video.duration]);
@@ -817,13 +835,6 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 		hydratedDraftKey,
 		video.duration,
 	]);
-
-	useEffect(() => {
-		setSelectedSplitIndex((current) => {
-			if (current === null) return current;
-			return current >= timelineDisplaySplitPoints.length ? null : current;
-		});
-	}, [timelineDisplaySplitPoints.length]);
 
 	const setPlayheadOnFrame = useCallback((time: number, immediate = false) => {
 		if (immediate) {
@@ -919,47 +930,14 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 		setHistory(redoTimelineHistory);
 	}, []);
 
-	const handleSplitButtonPointerDown = useCallback(() => {
-		splitHoldStartRef.current = Date.now();
-		splitClickedDuringHoldRef.current = false;
-		setSplitButtonHeld(true);
-	}, []);
-
-	const handleSplitButtonPointerUp = useCallback(() => {
-		const heldFor = Date.now() - (splitHoldStartRef.current ?? Date.now());
-		const clickedDuringHold = splitClickedDuringHoldRef.current;
-		splitHoldStartRef.current = null;
-		splitClickedDuringHoldRef.current = false;
-		setSplitButtonHeld(false);
-		if (heldFor < 250 && !clickedDuringHold) {
-			setSplitToggle((prev) => !prev);
-		}
-	}, []);
-
-	useEffect(() => {
-		if (!splitButtonHeld) return;
-		const handleUp = () => {
-			const heldFor = Date.now() - (splitHoldStartRef.current ?? Date.now());
-			const clickedDuringHold = splitClickedDuringHoldRef.current;
-			splitHoldStartRef.current = null;
-			splitClickedDuringHoldRef.current = false;
-			setSplitButtonHeld(false);
-			if (heldFor < 250 && !clickedDuringHold) {
-				setSplitToggle((prev) => !prev);
-			}
-		};
-		document.addEventListener("pointerup", handleUp);
-		document.addEventListener("pointercancel", handleUp);
-		return () => {
-			document.removeEventListener("pointerup", handleUp);
-			document.removeEventListener("pointercancel", handleUp);
-		};
-	}, [splitButtonHeld]);
+	// Loom-style: cut the clip at the current playhead into two independent clips.
+	const handleSplit = useCallback(() => {
+		commitState(splitTimelineAt(stateRef.current, playheadRef.current));
+	}, [commitState]);
 
 	const removeSplitAtIndex = useCallback(
 		(index: number) => {
 			commitState(removeTimelineDisplaySplitPoint(stateRef.current, index));
-			setSelectedSplitIndex(null);
 		},
 		[commitState],
 	);
@@ -986,13 +964,6 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 	}, [activeSegmentAtPlayhead, commitState, visibleSegments.length]);
 
 	const handleBackspace = useCallback(() => {
-		if (selectedSplitIndex !== null) {
-			commitState(
-				removeTimelineDisplaySplitPoint(stateRef.current, selectedSplitIndex),
-			);
-			setSelectedSplitIndex(null);
-			return;
-		}
 		const SPLIT_SNAP = 0.25;
 		const splitAtPlayheadIndex = timelineDisplaySplitPoints.findIndex(
 			(splitPoint) =>
@@ -1007,13 +978,7 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 			return;
 		}
 		handleDelete();
-	}, [
-		commitState,
-		handleDelete,
-		playhead,
-		selectedSplitIndex,
-		timelineDisplaySplitPoints,
-	]);
+	}, [commitState, handleDelete, playhead, timelineDisplaySplitPoints]);
 
 	const handleDone = useCallback(async () => {
 		if (isSaving) return;
@@ -1050,6 +1015,48 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 		navigateWithTransition("edit-exit", () => router.push(`/s/${video.id}`));
 	}, [draftStorageKey, router, video.id]);
 
+	const resetTimeline = useCallback(() => {
+		const draftStorage = getTimelineDraftStorage();
+		setDraftState(null);
+		dragDraftRef.current = null;
+		setHistory(createTimelineHistory(initialState));
+		setPlayhead(initialState.trimStart);
+		if (draftStorage) clearTimelineDraft(draftStorage, draftStorageKey);
+	}, [draftStorageKey, initialState]);
+
+	const canRestore = hasExistingEdits || hasTimelineChanges;
+
+	const handleRestore = useCallback(async () => {
+		if (isRestoring || isSaving) return;
+
+		if (!hasExistingEdits) {
+			resetTimeline();
+			setShowRestoreConfirm(false);
+			return;
+		}
+
+		setIsRestoring(true);
+		try {
+			await restoreVideoToOriginal(video.id);
+			resetTimeline();
+			setShowRestoreConfirm(false);
+			router.push(`/s/${video.id}`);
+			router.refresh();
+		} catch (error) {
+			toast.error(
+				error instanceof Error ? error.message : "Failed to restore video",
+			);
+			setIsRestoring(false);
+		}
+	}, [
+		hasExistingEdits,
+		isRestoring,
+		isSaving,
+		resetTimeline,
+		router,
+		video.id,
+	]);
+
 	const seekTo = useCallback(
 		(time: number, immediate = false) => {
 			const { trimStart, trimEnd } = stateRef.current;
@@ -1075,11 +1082,26 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 		}
 	}, []);
 
-	const startSplitDrag = useCallback(
+	const restoreCursorToPlayable = useCallback(
+		(time: number, finalState: VideoTimelineState) => {
+			const spec = getTimelineEditSpec(finalState);
+			if (spec.keepRanges.length === 0) return;
+			const target =
+				findNextPlayableTime(time, spec) ??
+				spec.keepRanges[spec.keepRanges.length - 1]?.end ??
+				spec.keepRanges[0]?.start ??
+				0;
+			setVideoTimeOnFrame(target, true);
+			setPlayheadOnFrame(target, true);
+		},
+		[setPlayheadOnFrame, setVideoTimeOnFrame],
+	);
+
+	const startClipEdgeDrag = useCallback(
 		(
-			splitIndex: number,
-			splitTime: number,
-			handle: VideoTimelineDisplaySplitDragHandle,
+			clipId: string,
+			edge: DragHandle,
+			isOuter: boolean,
 			event: React.PointerEvent<HTMLButtonElement>,
 		) => {
 			event.preventDefault();
@@ -1087,44 +1109,27 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 			const timeline = timelineRef.current;
 			if (!timeline) return;
 
+			if (isOuter) setActiveHandle(edge);
 			const baseState = stateRef.current;
-			const sortedSplits = [...baseState.splitPoints].sort((a, b) => a - b);
-			const sourceSplitIndex = sortedSplits.findIndex(
-				(value) => Math.abs(value - splitTime) < 0.001,
-			);
-			if (sourceSplitIndex === -1) return;
-
 			const rect = timeline.getBoundingClientRect();
-			let dragged = false;
-			let lastPreviewTime = splitTime;
+			const restorePlayhead = playheadRef.current;
+			previewWithoutPlayheadRef.current = true;
 			let draftFrameId = 0;
 			let pendingClientX = event.clientX;
-			const computeTime = (clientX: number) =>
+			const getTimeFromClientX = (clientX: number) =>
 				getTimelineSourceTimeFromClientX(clientX, rect, baseState);
 			const updateDraft = (clientX: number) => {
-				const time =
-					getTimelineDisplaySplitDragTargetTime(
-						baseState,
-						splitIndex,
-						handle,
-						computeTime(clientX),
-					) ?? splitTime;
-				const nextState = dragTimelineDisplaySplitPoint(
-					baseState,
-					splitIndex,
-					handle,
-					time,
-				);
+				const time = getTimeFromClientX(clientX);
+				const nextState = trimTimelineClipEdge(baseState, clipId, edge, time);
 				dragDraftRef.current = nextState;
 				setDraftState(nextState);
+				// Preview the frame at the trimmed edge, but leave the cursor put.
 				const clamped = getClampedVideoTime(
 					time,
 					videoRef.current,
 					baseState.duration,
 				);
-				lastPreviewTime = clamped;
 				setVideoTimeOnFrame(clamped);
-				setPlayheadOnFrame(clamped);
 			};
 			const scheduleDraftUpdate = (clientX: number) => {
 				pendingClientX = clientX;
@@ -1135,38 +1140,35 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 				});
 			};
 			const handlePointerMove = (moveEvent: PointerEvent) => {
-				dragged = true;
 				scheduleDraftUpdate(moveEvent.clientX);
 			};
 			const handlePointerUp = (upEvent: PointerEvent) => {
 				window.removeEventListener("pointermove", handlePointerMove);
 				window.removeEventListener("pointerup", handlePointerUp);
+				window.removeEventListener("pointercancel", handlePointerUp);
 				if (draftFrameId !== 0) {
 					cancelAnimationFrame(draftFrameId);
 					draftFrameId = 0;
 				}
-				if (dragged) {
-					updateDraft(upEvent.clientX);
-				}
-				if (dragged && dragDraftRef.current) {
-					setVideoTimeOnFrame(lastPreviewTime, true);
-					setPlayheadOnFrame(lastPreviewTime, true);
-					commitState(dragDraftRef.current);
-					setSelectedSplitIndex(null);
-				} else {
-					setDraftState(null);
-					dragDraftRef.current = null;
-					seekTo(splitTime, true);
-					setSelectedSplitIndex((current) =>
-						current === splitIndex ? null : splitIndex,
-					);
-				}
+				updateDraft(upEvent.clientX);
+				previewWithoutPlayheadRef.current = false;
+				setActiveHandle(null);
+				const nextState = dragDraftRef.current;
+				if (nextState) commitState(nextState);
+				// Snap the cursor back to where the user paused, clamped into the
+				// surviving footage so playback resumes from there.
+				restoreCursorToPlayable(restorePlayhead, nextState ?? baseState);
 			};
 
+			updateDraft(event.clientX);
 			window.addEventListener("pointermove", handlePointerMove);
 			window.addEventListener("pointerup", handlePointerUp, { once: true });
+			// pointercancel (touch interrupted, OS takeover) must run the same
+			// teardown, else previewWithoutPlayheadRef stays true and the cursor
+			// freezes for the rest of the session.
+			window.addEventListener("pointercancel", handlePointerUp, { once: true });
 		},
-		[commitState, seekTo, setPlayheadOnFrame, setVideoTimeOnFrame],
+		[commitState, restoreCursorToPlayable, setVideoTimeOnFrame],
 	);
 
 	const updateZoomAround = useCallback(
@@ -1215,15 +1217,6 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 				getTimelineSourceTimeFromClientX(clientX, rect, stateRef.current);
 
 			const time = computeTime(event.clientX);
-			setSelectedSplitIndex(null);
-
-			if (splitMode) {
-				commitState(splitTimelineAt(stateRef.current, time));
-				setSplitToggle(false);
-				splitClickedDuringHoldRef.current = true;
-				seekTo(time, true);
-				return;
-			}
 
 			seekTo(time, true);
 			let lastTime = time;
@@ -1241,75 +1234,7 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 			window.addEventListener("pointermove", handleMove);
 			window.addEventListener("pointerup", handleUp, { once: true });
 		},
-		[commitState, seekTo, splitMode],
-	);
-
-	const startHandleDrag = useCallback(
-		(handle: DragHandle, event: React.PointerEvent<HTMLButtonElement>) => {
-			event.preventDefault();
-			event.stopPropagation();
-			const timeline = timelineRef.current;
-			if (!timeline) return;
-
-			setActiveHandle(handle);
-			const baseState = stateRef.current;
-			const rect = timeline.getBoundingClientRect();
-			let lastPreviewTime =
-				handle === "start" ? baseState.trimStart : baseState.trimEnd;
-			let draftFrameId = 0;
-			let pendingClientX = event.clientX;
-			const getTimeFromClientX = (clientX: number) =>
-				getTimelineSourceTimeFromClientX(clientX, rect, baseState);
-			const updateDraft = (clientX: number) => {
-				const time = getTimeFromClientX(clientX);
-				const nextState =
-					handle === "start"
-						? setTimelineTrim(baseState, time, baseState.trimEnd)
-						: setTimelineTrim(baseState, baseState.trimStart, time);
-				dragDraftRef.current = nextState;
-				setDraftState(nextState);
-				const clamped = getClampedVideoTime(
-					time,
-					videoRef.current,
-					baseState.duration,
-				);
-				lastPreviewTime = clamped;
-				setVideoTimeOnFrame(clamped);
-				setPlayheadOnFrame(clamped);
-			};
-			const scheduleDraftUpdate = (clientX: number) => {
-				pendingClientX = clientX;
-				if (draftFrameId !== 0) return;
-				draftFrameId = requestAnimationFrame(() => {
-					draftFrameId = 0;
-					updateDraft(pendingClientX);
-				});
-			};
-			const handlePointerMove = (moveEvent: PointerEvent) => {
-				scheduleDraftUpdate(moveEvent.clientX);
-			};
-			const handlePointerUp = (upEvent: PointerEvent) => {
-				window.removeEventListener("pointermove", handlePointerMove);
-				window.removeEventListener("pointerup", handlePointerUp);
-				if (draftFrameId !== 0) {
-					cancelAnimationFrame(draftFrameId);
-					draftFrameId = 0;
-				}
-				updateDraft(upEvent.clientX);
-				setVideoTimeOnFrame(lastPreviewTime, true);
-				setPlayheadOnFrame(lastPreviewTime, true);
-				setActiveHandle(null);
-				const nextState = dragDraftRef.current;
-				if (nextState) {
-					commitState(nextState);
-				}
-			};
-
-			updateDraft(event.clientX);
-			window.addEventListener("pointermove", handlePointerMove);
-			window.addEventListener("pointerup", handlePointerUp, { once: true });
-		},
-		[commitState, setPlayheadOnFrame, setVideoTimeOnFrame],
+		[seekTo],
 	);
 
 	useEffect(() => {
@@ -1324,6 +1249,10 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 			}
 
 			const syncPlayhead = () => {
+				if (previewWithoutPlayheadRef.current) {
+					// Trimming a clip edge: scrub the preview but keep the cursor put.
+					return;
+				}
 				if (dragDraftRef.current !== null) {
 					setPlayheadOnFrame(videoElement.currentTime, true);
 					return;
@@ -1459,19 +1388,6 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 			if (isFormTarget(event)) return;
 			const isMeta = event.metaKey || event.ctrlKey;
 
-			if (
-				event.key === "Escape" &&
-				(splitToggle || splitKeyHeld || splitButtonHeld)
-			) {
-				event.preventDefault();
-				setSplitToggle(false);
-				setSplitKeyHeld(false);
-				setSplitButtonHeld(false);
-				splitHoldStartRef.current = null;
-				splitClickedDuringHoldRef.current = false;
-				return;
-			}
-
 			if (event.key === " ") {
 				event.preventDefault();
 				togglePlayPause();
@@ -1486,7 +1402,7 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 
 			if (event.key.toLowerCase() === "s" && !isMeta) {
 				event.preventDefault();
-				if (!event.repeat) setSplitKeyHeld(true);
+				if (!event.repeat) handleSplit();
 				return;
 			}
 
@@ -1533,33 +1449,17 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 			}
 		};
 
-		const handleKeyUp = (event: KeyboardEvent) => {
-			if (event.key.toLowerCase() === "s") {
-				setSplitKeyHeld(false);
-			}
-		};
-
-		const handleBlur = () => {
-			setSplitKeyHeld(false);
-		};
-
 		window.addEventListener("keydown", handleKeyDown);
-		window.addEventListener("keyup", handleKeyUp);
-		window.addEventListener("blur", handleBlur);
 		return () => {
 			window.removeEventListener("keydown", handleKeyDown);
-			window.removeEventListener("keyup", handleKeyUp);
-			window.removeEventListener("blur", handleBlur);
 		};
 	}, [
 		handleBackspace,
 		handleRedo,
+		handleSplit,
 		handleUndo,
 		playhead,
 		seekTo,
-		splitButtonHeld,
-		splitKeyHeld,
-		splitToggle,
 		togglePlayPause,
 		updateZoomAround,
 	]);
@@ -1568,13 +1468,31 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 		<div className="flex min-h-screen flex-col bg-gray-1 text-gray-12">
 			<header className="sticky top-0 z-30 border-b border-gray-4 bg-white/85 backdrop-blur">
 				<div className="mx-auto flex h-14 w-full max-w-6xl items-center justify-between gap-2 px-3 sm:h-16 sm:px-5">
-					<button
-						type="button"
-						onClick={handleCancel}
-						className="inline-flex h-9 items-center rounded-full bg-gray-3 px-4 text-[14px] font-medium text-gray-12 shadow-[inset_0_1px_0_rgba(255,255,255,0.6),inset_0_-1px_0_rgba(0,0,0,0.02)] ring-1 ring-gray-5 transition hover:bg-gray-4 active:bg-gray-5"
-					>
-						Cancel
-					</button>
+					<div className="flex items-center gap-1.5">
+						<button
+							type="button"
+							onClick={handleCancel}
+							className="inline-flex h-9 items-center rounded-full bg-gray-3 px-4 text-[14px] font-medium text-gray-12 shadow-[inset_0_1px_0_rgba(255,255,255,0.6),inset_0_-1px_0_rgba(0,0,0,0.02)] ring-1 ring-gray-5 transition hover:bg-gray-4 active:bg-gray-5"
+						>
+							Cancel
+						</button>
+						<button
+							type="button"
+							aria-label="Restore original"
+							title="Restore original"
+							disabled={!canRestore || isSaving || isRestoring}
+							onClick={() => setShowRestoreConfirm(true)}
+							className="inline-flex h-9 items-center gap-1.5 rounded-full px-2.5 text-[13px] font-medium text-gray-11 transition hover:bg-gray-3 hover:text-gray-12 active:bg-gray-4 disabled:pointer-events-none disabled:opacity-30 sm:px-3"
+						>
+							<RotateCcw className="size-4" aria-hidden />
+							<span className="hidden sm:inline">Restore</span>
+						</button>
+						<VideoDownloadMenu
+							videoId={video.id}
+							hasEdits={hasExistingEdits}
+							align="start"
+						/>
+					</div>
 					<div className="min-w-0 flex-1 px-2 text-center">
 						<h1 className="truncate text-[15px] font-semibold text-gray-12">
 							{video.name}
@@ -1599,7 +1517,7 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 							variant="blue"
 							size="sm"
 							spinner={isSaving}
-							disabled={isSaving || keepRanges.length === 0}
+							disabled={isSaving || isRestoring || keepRanges.length === 0}
 							onClick={handleDone}
 							className="ml-1"
 						>
@@ -1695,10 +1613,7 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 							<div
 								ref={timelineRef}
 								onPointerDown={handleTimelinePointerDown}
-								className={[
-									"relative h-16 select-none",
-									splitMode ? "cursor-crosshair" : "cursor-pointer",
-								].join(" ")}
+								className="group relative h-16 cursor-pointer select-none"
 								style={{
 									width: `${zoom * 100}%`,
 									minWidth: "100%",
@@ -1737,159 +1652,145 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 									}}
 								/>
 
-								{visibleSegmentCount > 1 &&
-									timelineDisplaySegments.map((segment) => {
-										const isActive = activeSegmentAtPlayhead?.id === segment.id;
-										return (
-											<div
-												key={`segment-${segment.id}`}
-												className={[
-													"pointer-events-none absolute inset-y-0 z-[5] transition-colors",
-													isActive
-														? "bg-white/[0.14] outline outline-2 -outline-offset-2 outline-white/85"
-														: "bg-black/45",
-												].join(" ")}
-												style={{
-													left: `${getTimePercent(segment.displayStart, timelineDisplayDuration)}%`,
-													width: `${getTimePercent(segment.displayEnd - segment.displayStart, timelineDisplayDuration)}%`,
-												}}
-											/>
-										);
-									})}
-
-								{timelineDisplaySplitPoints.map((splitPoint, index) => {
-									const isSelected = selectedSplitIndex === index;
-									const isAnySelected = selectedSplitIndex !== null;
-									const dimmed = isAnySelected && !isSelected;
-									const positionPercent = getTimePercent(
-										splitPoint.time,
+								{timelineDisplaySegments.map((clip, index) => {
+									const isFirst = index === 0;
+									const isLast = index === timelineDisplaySegments.length - 1;
+									const hasMultipleClips = timelineDisplaySegments.length > 1;
+									const isActive = activeSegmentAtPlayhead?.id === clip.id;
+									const startPct = getTimePercent(
+										clip.displayStart,
 										timelineDisplayDuration,
 									);
+									const endPct = getTimePercent(
+										clip.displayEnd,
+										timelineDisplayDuration,
+									);
+									const widthPct = Math.max(0, endPct - startPct);
 									return (
-										<Fragment key={splitPoint.id}>
+										<Fragment key={`clip-${clip.id}`}>
+											<div
+												className={[
+													"pointer-events-none absolute inset-y-0 z-[5] overflow-hidden rounded-md transition-colors",
+													!hasMultipleClips
+														? ""
+														: isActive
+															? "bg-white/[0.10] ring-2 ring-inset ring-blue-400"
+															: "bg-black/35 ring-1 ring-inset ring-white/15",
+												].join(" ")}
+												style={{
+													left: `calc(${startPct}% + 1.5px)`,
+													width: `calc(${widthPct}% - 3px)`,
+												}}
+											>
+												<div className="absolute inset-x-0 top-0 h-1.5 bg-blue-500" />
+												<div className="absolute inset-x-0 bottom-0 h-1.5 bg-blue-500" />
+											</div>
+
 											<button
 												type="button"
-												aria-label={`Split at ${formatTime(splitPoint.sourceTime)}`}
-												aria-pressed={isSelected}
+												aria-label={isFirst ? "Trim start" : "Trim clip start"}
 												data-trim-handle
-												onPointerDown={(event) => {
-													startSplitDrag(
-														index,
-														splitPoint.sourceTime,
-														"center",
-														event,
-													);
-												}}
+												onPointerDown={(event) =>
+													startClipEdgeDrag(clip.id, "start", isFirst, event)
+												}
 												className={[
-													"group absolute inset-y-0 flex w-6 -translate-x-1/2 cursor-col-resize touch-none items-stretch justify-center",
-													isSelected ? "z-[12]" : "z-[8]",
-													dimmed ? "opacity-35" : "",
+													"absolute inset-y-0 z-20 flex cursor-ew-resize touch-none items-center justify-center bg-blue-500 text-white transition hover:bg-blue-400 active:bg-blue-600",
+													isFirst
+														? "w-6 rounded-l-lg shadow-[0_1px_2px_rgba(0,0,0,0.3),0_2px_8px_-1px_rgba(59,130,246,0.55)]"
+														: "rounded-l-md shadow-[0_1px_2px_rgba(0,0,0,0.35)]",
+													activeHandle === "start" && isFirst
+														? "ring-2 ring-blue-300 ring-inset"
+														: "",
 												].join(" ")}
-												style={{ left: `${positionPercent}%` }}
+												style={
+													isFirst
+														? { left: `${startPct}%` }
+														: {
+																left: `${startPct}%`,
+																width: `min(0.75rem, ${(widthPct / 3).toFixed(3)}%)`,
+															}
+												}
 											>
-												<span
-													className={[
-														"pointer-events-none absolute left-1/2 -translate-x-1/2 rounded bg-pink-500 shadow-[0_1px_3px_rgba(0,0,0,0.5),0_0_10px_rgba(236,72,153,0.65)] transition-all",
-														isSelected
-															? "-top-2 h-2 w-5"
-															: "-top-1.5 h-1.5 w-4 group-hover:-top-2 group-hover:h-2 group-hover:w-5",
-													].join(" ")}
-												/>
-												<span
-													className={[
-														"pointer-events-none absolute left-1/2 -translate-x-1/2 rounded bg-pink-500 shadow-[0_1px_3px_rgba(0,0,0,0.5),0_0_10px_rgba(236,72,153,0.65)] transition-all",
-														isSelected
-															? "-bottom-2 h-2 w-5"
-															: "-bottom-1.5 h-1.5 w-4 group-hover:-bottom-2 group-hover:h-2 group-hover:w-5",
-													].join(" ")}
-												/>
-												<span
-													className={[
-														"pointer-events-none absolute inset-y-0 left-1/2 -translate-x-1/2 bg-pink-500 shadow-[0_0_10px_rgba(236,72,153,0.7)] transition-all",
-														isSelected
-															? "w-[5px] ring-2 ring-pink-300/40"
-															: "w-1 group-hover:w-[5px]",
-													].join(" ")}
-												/>
+												{isFirst ? (
+													<ChevronLeft
+														className="size-5"
+														strokeWidth={3}
+														aria-hidden
+													/>
+												) : (
+													<span
+														className="h-5 w-0.5 rounded-full bg-white/85"
+														aria-hidden
+													/>
+												)}
 											</button>
+
 											<button
 												type="button"
-												aria-label="Remove split"
-												title="Remove split"
+												aria-label={isLast ? "Trim end" : "Trim clip end"}
 												data-trim-handle
-												onPointerDown={(event) => event.stopPropagation()}
-												onClick={(event) => {
-													event.stopPropagation();
-													removeSplitAtIndex(index);
-												}}
+												onPointerDown={(event) =>
+													startClipEdgeDrag(clip.id, "end", isLast, event)
+												}
 												className={[
-													"absolute -top-9 left-0 z-[50] flex -translate-x-1/2 items-center justify-center rounded-full bg-pink-500 text-white shadow-[0_2px_6px_rgba(0,0,0,0.5),0_0_10px_rgba(236,72,153,0.6)] ring-1 ring-black/40 transition-all hover:bg-pink-400 active:bg-pink-600",
-													isSelected
-														? "size-5 opacity-100"
-														: "size-4 opacity-70 hover:scale-110 hover:opacity-100",
-													dimmed ? "opacity-25" : "",
+													"absolute inset-y-0 z-20 flex -translate-x-full cursor-ew-resize touch-none items-center justify-center bg-blue-500 text-white transition hover:bg-blue-400 active:bg-blue-600",
+													isLast
+														? "w-6 rounded-r-lg shadow-[0_1px_2px_rgba(0,0,0,0.3),0_2px_8px_-1px_rgba(59,130,246,0.55)]"
+														: "rounded-r-md shadow-[0_1px_2px_rgba(0,0,0,0.35)]",
+													activeHandle === "end" && isLast
+														? "ring-2 ring-blue-300 ring-inset"
+														: "",
 												].join(" ")}
-												style={{ left: `${positionPercent}%` }}
+												style={
+													isLast
+														? { left: `${endPct}%` }
+														: {
+																left: `${endPct}%`,
+																width: `min(0.75rem, ${(widthPct / 3).toFixed(3)}%)`,
+															}
+												}
 											>
-												<X
-													className={isSelected ? "size-3" : "size-2.5"}
-													strokeWidth={3}
-													aria-hidden
-												/>
+												{isLast ? (
+													<ChevronRight
+														className="size-5"
+														strokeWidth={3}
+														aria-hidden
+													/>
+												) : (
+													<span
+														className="h-5 w-0.5 rounded-full bg-white/85"
+														aria-hidden
+													/>
+												)}
 											</button>
 										</Fragment>
 									);
 								})}
 
-								<div
-									className="pointer-events-none absolute inset-y-0 z-[10]"
-									style={{
-										left: `${trimStartPct}%`,
-										width: `${trimWidthPct}%`,
-									}}
-								>
-									<div className="absolute inset-x-0 top-0 h-1.5 bg-blue-500" />
-									<div className="absolute inset-x-0 bottom-0 h-1.5 bg-blue-500" />
-								</div>
-
-								<button
-									type="button"
-									aria-label="Trim start"
-									data-trim-handle
-									onPointerDown={(event) => startHandleDrag("start", event)}
-									className={[
-										"absolute inset-y-0 z-20 flex w-6 cursor-ew-resize touch-none items-center justify-center rounded-l-lg bg-blue-500 text-white shadow-[0_1px_2px_rgba(0,0,0,0.3),0_2px_8px_-1px_rgba(59,130,246,0.55)] transition hover:bg-blue-400 active:bg-blue-600",
-										activeHandle === "start"
-											? "ring-2 ring-blue-300 ring-inset"
-											: "",
-									].join(" ")}
-									style={{
-										left: `${trimStartPct}%`,
-									}}
-								>
-									<ChevronLeft className="size-5" strokeWidth={3} aria-hidden />
-								</button>
-								<button
-									type="button"
-									aria-label="Trim end"
-									data-trim-handle
-									onPointerDown={(event) => startHandleDrag("end", event)}
-									className={[
-										"absolute inset-y-0 z-20 flex w-6 -translate-x-full cursor-ew-resize touch-none items-center justify-center rounded-r-lg bg-blue-500 text-white shadow-[0_1px_2px_rgba(0,0,0,0.3),0_2px_8px_-1px_rgba(59,130,246,0.55)] transition hover:bg-blue-400 active:bg-blue-600",
-										activeHandle === "end"
-											? "ring-2 ring-blue-300 ring-inset"
-											: "",
-									].join(" ")}
-									style={{
-										left: `${trimEndPct}%`,
-									}}
-								>
-									<ChevronRight
-										className="size-5"
-										strokeWidth={3}
-										aria-hidden
-									/>
-								</button>
+								{timelineDisplaySplitPoints.map((splitPoint, index) => {
+									const positionPercent = getTimePercent(
+										splitPoint.time,
+										timelineDisplayDuration,
+									);
+									return (
+										<button
+											key={`merge-${splitPoint.id}`}
+											type="button"
+											aria-label="Remove cut"
+											title="Remove cut"
+											data-trim-handle
+											onPointerDown={(event) => event.stopPropagation()}
+											onClick={(event) => {
+												event.stopPropagation();
+												removeSplitAtIndex(index);
+											}}
+											className="absolute -top-9 left-0 z-[50] flex size-4 -translate-x-1/2 items-center justify-center rounded-full bg-gray-12 text-white opacity-0 shadow-[0_2px_6px_rgba(0,0,0,0.45)] ring-1 ring-black/30 transition-all hover:scale-110 hover:!opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 group-hover:opacity-80 [@media(hover:none)]:opacity-70"
+											style={{ left: `${positionPercent}%` }}
+										>
+											<X className="size-2.5" strokeWidth={3} aria-hidden />
+										</button>
+									);
+								})}
 							</div>
 						</div>
 
@@ -1901,11 +1802,10 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 									transform: "translate3d(-9999px, 0, 0) translateX(-50%)",
 								}}
 							>
-								{selectedSplitIndex === null && (
-									<div className="absolute left-1/2 top-0 -translate-x-1/2 whitespace-nowrap rounded-md bg-white px-1.5 py-0.5 font-mono text-[10px] font-semibold tabular-nums text-black shadow-[0_2px_8px_rgba(0,0,0,0.45)]">
-										{formatTimeDetailed(outputPlayhead)}
-									</div>
-								)}
+								<div className="absolute left-1/2 top-0 -translate-x-1/2 whitespace-nowrap rounded-md bg-white px-1.5 py-0.5 font-mono text-[10px] font-semibold tabular-nums text-black shadow-[0_2px_8px_rgba(0,0,0,0.45)]">
+									{formatTimeDetailed(outputPlayhead)}
+								</div>
+
 								<div className="absolute left-1/2 top-6 size-2.5 -translate-x-1/2 rounded-full bg-white shadow-[0_0_0_1.5px_rgba(0,0,0,0.55),0_2px_4px_rgba(0,0,0,0.45)]" />
 								<div className="absolute bottom-0 left-1/2 top-[34px] w-[2.5px] -translate-x-1/2 bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.55),0_0_4px_rgba(0,0,0,0.3)]" />
 							</div>
@@ -1916,18 +1816,12 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 				<div className="mt-4 flex items-center justify-between gap-3 px-1 sm:mt-5">
 					<button
 						type="button"
-						title="Click to split — hold to add multiple"
-						onPointerDown={handleSplitButtonPointerDown}
-						onPointerUp={handleSplitButtonPointerUp}
-						className={[
-							"inline-flex h-9 select-none items-center gap-1.5 rounded-full px-3.5 text-[13px] font-medium transition",
-							splitMode
-								? "bg-pink-500 text-white shadow-[0_2px_8px_-2px_rgba(236,72,153,0.6)]"
-								: "text-gray-12 hover:bg-gray-3 active:bg-gray-4",
-						].join(" ")}
+						title="Split at the playhead (S)"
+						onClick={handleSplit}
+						className="inline-flex h-9 select-none items-center gap-1.5 rounded-full px-3.5 text-[13px] font-medium text-gray-12 transition hover:bg-gray-3 active:bg-gray-4"
 					>
 						<Scissors className="size-3.5" aria-hidden />
-						<span>{splitMode ? "Cancel split" : "Split"}</span>
+						<span>Split</span>
 					</button>
 
 					<div className="flex items-center gap-3">
@@ -1994,6 +1888,43 @@ export function EditVideoClient({ video }: { video: EditableVideo }) {
 					/>
 				</div>
 			</main>
+
+			<Dialog
+				open={showRestoreConfirm}
+				onOpenChange={(open) => {
+					if (isRestoring) return;
+					setShowRestoreConfirm(open);
+				}}
+			>
+				<DialogContent className="max-w-sm p-0">
+					<DialogHeader icon={<RotateCcw className="size-5" />}>
+						<DialogTitle>Restore original video?</DialogTitle>
+					</DialogHeader>
+					<DialogDescription>
+						This discards your current edits and restores the video to its
+						original recording. This can't be undone.
+					</DialogDescription>
+					<DialogFooter>
+						<Button
+							variant="gray"
+							size="sm"
+							disabled={isRestoring}
+							onClick={() => setShowRestoreConfirm(false)}
+						>
+							Cancel
+						</Button>
+						<Button
+							variant="destructive"
+							size="sm"
+							spinner={isRestoring}
+							disabled={isRestoring}
+							onClick={handleRestore}
+						>
+							{isRestoring ? "Restoring" : "Restore original"}
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 		</div>
 	);
 }

@@ -58,6 +58,7 @@ async function fetchFolders(
 			id: folders.id,
 			name: folders.name,
 			color: folders.color,
+			public: folders.public,
 			parentId: folders.parentId,
 			spaceId: folders.spaceId,
 			videoCount: sql<number>`(
@@ -245,6 +246,7 @@ export default async function SharedCapsPage(props: {
 						name: videos.name,
 						createdAt: videos.createdAt,
 						metadata: videos.metadata,
+						isScreenshot: videos.isScreenshot,
 						duration: videos.duration,
 						public: videos.public,
 						settings: videos.settings,
@@ -253,9 +255,10 @@ export default async function SharedCapsPage(props: {
 						totalReactions: sql<number>`COUNT(DISTINCT CASE WHEN ${comments.type} = 'emoji' THEN ${comments.id} END)`,
 						ownerName: users.name,
 						effectiveDate: videos.effectiveCreatedAt,
-						hasActiveUpload: sql`${videoUploads.videoId} IS NOT NULL`.mapWith(
-							Boolean,
-						),
+						hasActiveUpload:
+							sql`${videoUploads.videoId} IS NOT NULL AND ${videos.isScreenshot} = false`.mapWith(
+								Boolean,
+							),
 					})
 					.from(spaceVideos)
 					.innerJoin(videos, eq(spaceVideos.videoId, videos.id))
@@ -276,6 +279,7 @@ export default async function SharedCapsPage(props: {
 						videos.name,
 						videos.createdAt,
 						videos.metadata,
+						videos.isScreenshot,
 						videos.duration,
 						videos.public,
 						videos.settings,
@@ -370,6 +374,7 @@ export default async function SharedCapsPage(props: {
 						name: videos.name,
 						createdAt: videos.createdAt,
 						metadata: videos.metadata,
+						isScreenshot: videos.isScreenshot,
 						duration: videos.duration,
 						public: videos.public,
 						settings: videos.settings,
@@ -378,9 +383,10 @@ export default async function SharedCapsPage(props: {
 						totalReactions: sql<number>`COUNT(DISTINCT CASE WHEN ${comments.type} = 'emoji' THEN ${comments.id} END)`,
 						ownerName: users.name,
 						effectiveDate: videos.effectiveCreatedAt,
-						hasActiveUpload: sql`${videoUploads.videoId} IS NOT NULL`.mapWith(
-							Boolean,
-						),
+						hasActiveUpload:
+							sql`${videoUploads.videoId} IS NOT NULL AND ${videos.isScreenshot} = false`.mapWith(
+								Boolean,
+							),
 					})
 					.from(sharedVideos)
 					.innerJoin(videos, eq(sharedVideos.videoId, videos.id))
@@ -399,6 +405,7 @@ export default async function SharedCapsPage(props: {
 						videos.name,
 						videos.createdAt,
 						videos.metadata,
+						videos.isScreenshot,
 						users.name,
 						videos.duration,
 						videos.public,

@@ -19,6 +19,58 @@ const formatDate = (date: Date) => date.toISOString().slice(0, 10);
 const formatDateTime = (date: Date) =>
 	date.toISOString().slice(0, 19).replace("T", " ");
 const buildPathname = (videoId: Video.VideoId) => `/s/${videoId}`;
+const SCREENSHOT_OBJECT_KEY_SUFFIXES = [
+	"screenshot/screen-capture.png",
+	"screenshot/screen-capture.jpg",
+	"screenshot/screen-capture.jpeg",
+	"screen-capture.jpg",
+	"screen-capture.jpeg",
+];
+type ScreenshotObject = {
+	Key?: string | null;
+	LastModified?: Date | string | number | null;
+};
+type ScreenshotCandidate = {
+	key: string;
+	suffixIndex: number;
+	lastModified: number | null;
+};
+const getScreenshotObjectTime = (value: ScreenshotObject["LastModified"]) => {
+	if (value == null) return null;
+	const time =
+		value instanceof Date ? value.getTime() : new Date(value).getTime();
+	return Number.isFinite(time) ? time : null;
+};
+export const findScreenshotObjectKey = (
+	contents: ReadonlyArray<ScreenshotObject>,
+) => {
+	const candidates = contents
+		.map((item): ScreenshotCandidate | null => {
+			const key = item.Key;
+			if (!key) return null;
+			const suffixIndex = SCREENSHOT_OBJECT_KEY_SUFFIXES.findIndex((suffix) =>
+				key.endsWith(suffix),
+			);
+			if (suffixIndex < 0) return null;
+			return {
+				key,
+				suffixIndex,
+				lastModified: getScreenshotObjectTime(item.LastModified),
+			};
+		})
+		.filter((item): item is ScreenshotCandidate => item !== null)
+		.sort((a, b) => {
+			if (a.lastModified !== null || b.lastModified !== null) {
+				const timeDiff =
+					(b.lastModified ?? Number.NEGATIVE_INFINITY) -
+					(a.lastModified ?? Number.NEGATIVE_INFINITY);
+				if (timeDiff !== 0) return timeDiff;
+			}
+			return a.suffixIndex - b.suffixIndex;
+		});
+
+	return candidates[0]?.key ?? null;
+};
 const getFileExtensionFromKey = (fileKey: string) => {
 	const fileName = fileKey.split("/").at(-1) ?? "";
 	const extension = fileName.split(".").at(-1)?.toLowerCase();
@@ -443,12 +495,39 @@ export class Videos extends Effect.Service<Videos>()("Videos", {
 						},
 					});
 
-					const shareUrl = `${serverEnv().WEB_URL}/s/${videoId}`;
+					const canonicalShareUrl = `${serverEnv().WEB_URL}/s/${videoId}`;
+
+					const verifiedCustomDomain = yield* db
+						.use((db) =>
+							db
+								.select({
+									customDomain: Db.organizations.customDomain,
+									domainVerified: Db.organizations.domainVerified,
+								})
+								.from(Db.organizations)
+								.where(Dz.eq(Db.organizations.id, input.orgId))
+								.limit(1),
+						)
+						.pipe(
+							Effect.map(([org]) =>
+								org?.customDomain && org.domainVerified
+									? org.customDomain.startsWith("http://") ||
+										org.customDomain.startsWith("https://")
+										? org.customDomain
+										: `https://${org.customDomain}`
+									: null,
+							),
+							Effect.catchAll(() => Effect.succeed(null)),
+						);
+
+					const shareUrl = verifiedCustomDomain
+						? `${verifiedCustomDomain}/s/${videoId}`
+						: canonicalShareUrl;
 
 					if (buildEnv.NEXT_PUBLIC_IS_CAP && NODE_ENV === "production")
 						yield* Effect.tryPromise(() =>
 							dub().links.create({
-								url: shareUrl,
+								url: canonicalShareUrl,
 								domain: "cap.link",
 								key: videoId,
 							}),
@@ -479,6 +558,29 @@ export class Videos extends Effect.Service<Videos>()("Videos", {
 				const [video] = maybeVideo.value;
 
 				const [bucket] = yield* storage.getAccessForVideo(video);
+				const [videoRow] = yield* db.use((db) =>
+					db
+						.select({ isScreenshot: Db.videos.isScreenshot })
+						.from(Db.videos)
+						.where(Dz.eq(Db.videos.id, videoId)),
+				);
+
+				if (videoRow?.isScreenshot) {
+					const listResponse = yield* bucket.listObjects({
+						prefix: `${video.ownerId}/${video.id}/`,
+					});
+					const screenshotKey = findScreenshotObjectKey(
+						listResponse.Contents || [],
+					);
+					if (!screenshotKey) return Option.none();
+					const extension = getFileExtensionFromKey(screenshotKey) ?? "jpg";
+					const downloadUrl = yield* bucket.getSignedObjectUrl(screenshotKey);
+					return Option.some({
+						fileName: `${video.name}.${extension}`,
+						downloadUrl,
+					});
+				}
+
 				const src = Video.Video.getSource(video);
 
 				if (src instanceof Video.Mp4Source && video.source.type === "webMP4") {
@@ -542,9 +644,7 @@ export class Videos extends Effect.Service<Videos>()("Videos", {
 					prefix: `${video.ownerId}/${video.id}/`,
 				});
 				const contents = listResponse.Contents || [];
-				const thumbnailKey = contents.find((item) =>
-					item.Key?.endsWith("screen-capture.jpg"),
-				)?.Key;
+				const thumbnailKey = findScreenshotObjectKey(contents);
 				if (!thumbnailKey) return Option.none();
 				const url = yield* bucket.getSignedObjectUrl(thumbnailKey);
 				return Option.some(url);

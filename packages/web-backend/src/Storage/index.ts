@@ -36,6 +36,38 @@ type UploadTargetInput = {
 	method?: "post" | "put";
 };
 
+type MultipartAccess = {
+	create: (
+		key: string,
+		args?: Omit<S3.CreateMultipartUploadCommandInput, "Bucket" | "Key">,
+	) => Effect.Effect<{ UploadId?: string }, StorageDomain.StorageError>;
+	getPresignedUploadPartUrl: (
+		key: string,
+		uploadId: string,
+		partNumber: number,
+		args?: Omit<
+			S3.UploadPartCommandInput,
+			"Key" | "Bucket" | "PartNumber" | "UploadId"
+		>,
+	) => Effect.Effect<string, StorageDomain.StorageError>;
+	complete: (
+		key: string,
+		uploadId: string,
+		args?: Omit<
+			S3.CompleteMultipartUploadCommandInput,
+			"Key" | "Bucket" | "UploadId"
+		>,
+	) => Effect.Effect<{ Location?: string }, StorageDomain.StorageError>;
+	abort: (
+		key: string,
+		uploadId: string,
+		args?: Omit<
+			S3.AbortMultipartUploadCommandInput,
+			"Key" | "Bucket" | "UploadId"
+		>,
+	) => Effect.Effect<unknown, StorageDomain.StorageError>;
+};
+
 const toS3UploadTarget = (data: {
 	url: string;
 	fields: Record<string, string>;
@@ -127,6 +159,41 @@ const mapStorageError = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 		Effect.mapError((cause) => new StorageDomain.StorageError({ cause })),
 	);
 
+const makeS3MultipartAccess = (s3: S3BucketAccess): MultipartAccess => ({
+	create: (
+		key: string,
+		args?: Omit<S3.CreateMultipartUploadCommandInput, "Bucket" | "Key">,
+	) => mapStorageError(s3.multipart.create(key, args)),
+	getPresignedUploadPartUrl: (
+		key: string,
+		uploadId: string,
+		partNumber: number,
+		args?: Omit<
+			S3.UploadPartCommandInput,
+			"Key" | "Bucket" | "PartNumber" | "UploadId"
+		>,
+	) =>
+		mapStorageError(
+			s3.multipart.getPresignedUploadPartUrl(key, uploadId, partNumber, args),
+		),
+	complete: (
+		key: string,
+		uploadId: string,
+		args?: Omit<
+			S3.CompleteMultipartUploadCommandInput,
+			"Key" | "Bucket" | "UploadId"
+		>,
+	) => mapStorageError(s3.multipart.complete(key, uploadId, args)),
+	abort: (
+		key: string,
+		uploadId: string,
+		args?: Omit<
+			S3.AbortMultipartUploadCommandInput,
+			"Key" | "Bucket" | "UploadId"
+		>,
+	) => mapStorageError(s3.multipart.abort(key, uploadId, args)),
+});
+
 const makeGoogleDriveTokenStore = (
 	repo: StorageRepo,
 	integration: typeof Db.storageIntegrations.$inferSelect,
@@ -177,6 +244,7 @@ const makeS3Access = (s3: S3BucketAccess) => ({
 				Contents: result.Contents?.map((object) => ({
 					Key: object.Key,
 					Size: object.Size,
+					LastModified: object.LastModified,
 				})),
 				KeyCount: result.KeyCount,
 				IsTruncated: result.IsTruncated,
@@ -225,40 +293,7 @@ const makeS3Access = (s3: S3BucketAccess) => ({
 		key: string,
 		args: Parameters<S3BucketAccess["getPresignedPostUrl"]>[1],
 	) => mapStorageError(s3.getPresignedPostUrl(key, args)),
-	multipart: {
-		create: (
-			key: string,
-			args?: Omit<S3.CreateMultipartUploadCommandInput, "Bucket" | "Key">,
-		) => mapStorageError(s3.multipart.create(key, args)),
-		getPresignedUploadPartUrl: (
-			key: string,
-			uploadId: string,
-			partNumber: number,
-			args?: Omit<
-				S3.UploadPartCommandInput,
-				"Key" | "Bucket" | "PartNumber" | "UploadId"
-			>,
-		) =>
-			mapStorageError(
-				s3.multipart.getPresignedUploadPartUrl(key, uploadId, partNumber, args),
-			),
-		complete: (
-			key: string,
-			uploadId: string,
-			args?: Omit<
-				S3.CompleteMultipartUploadCommandInput,
-				"Key" | "Bucket" | "UploadId"
-			>,
-		) => mapStorageError(s3.multipart.complete(key, uploadId, args)),
-		abort: (
-			key: string,
-			uploadId: string,
-			args?: Omit<
-				S3.AbortMultipartUploadCommandInput,
-				"Key" | "Bucket" | "UploadId"
-			>,
-		) => mapStorageError(s3.multipart.abort(key, uploadId, args)),
-	},
+	multipart: makeS3MultipartAccess(s3),
 	createUploadTarget: (key: string, input: UploadTargetInput) =>
 		Effect.gen(function* () {
 			if (input.method === "put") {
@@ -364,6 +399,68 @@ const makeGoogleDriveAccess = ({
 			),
 		);
 
+	const multipart: MultipartAccess = {
+		create: (
+			key: string,
+			args?: Omit<S3.CreateMultipartUploadCommandInput, "Bucket" | "Key">,
+		) =>
+			createGoogleDriveResumableUpload(
+				repo,
+				config,
+				{
+					integrationId,
+					ownerId,
+					videoId: parseVideoIdFromObjectKey(key).pipe(
+						Option.map((id) => id as Video.VideoId),
+						Option.getOrNull,
+					),
+					key,
+					contentType: args?.ContentType ?? "application/octet-stream",
+				},
+				tokenStore,
+			).pipe(
+				mapStorageError,
+				Effect.map((UploadId) => ({ UploadId })),
+			),
+		getPresignedUploadPartUrl: (
+			_key: string,
+			uploadId: string,
+			_partNumber: number,
+			_args?: Omit<
+				S3.UploadPartCommandInput,
+				"Key" | "Bucket" | "PartNumber" | "UploadId"
+			>,
+		) => Effect.succeed(uploadId),
+		complete: (
+			key: string,
+			_uploadId: string,
+			args?: Omit<
+				S3.CompleteMultipartUploadCommandInput,
+				"Key" | "Bucket" | "UploadId"
+			>,
+		) =>
+			getObjectRecord(key).pipe(
+				Effect.flatMap(() =>
+					mapStorageError(
+						repo.markObjectComplete(integrationId, key, args?.MpuObjectSize),
+					),
+				),
+				Effect.flatMap(() => createDriveObjectUrl(key)),
+				Effect.map((Location) => ({ Location })),
+			),
+		abort: (
+			key: string,
+			_uploadId: string,
+			_args?: Omit<
+				S3.AbortMultipartUploadCommandInput,
+				"Key" | "Bucket" | "UploadId"
+			>,
+		) =>
+			mapStorageError(repo.deleteObjectByKey(integrationId, key)).pipe(
+				Effect.as({}),
+			),
+	};
+
 	return {
 		provider: "googleDrive" as const,
 		bucketName: "google-drive",
@@ -405,6 +502,7 @@ const makeGoogleDriveAccess = ({
 						.map((object) => ({
 							Key: object.objectKey,
 							Size: object.contentLength ?? undefined,
+							LastModified: object.updatedAt,
 						})),
 					KeyCount: objects.filter(
 						(object) =>
@@ -602,67 +700,7 @@ const makeGoogleDriveAccess = ({
 					),
 				}),
 			),
-		multipart: {
-			create: (
-				key: string,
-				args?: Omit<S3.CreateMultipartUploadCommandInput, "Bucket" | "Key">,
-			) =>
-				createGoogleDriveResumableUpload(
-					repo,
-					config,
-					{
-						integrationId,
-						ownerId,
-						videoId: parseVideoIdFromObjectKey(key).pipe(
-							Option.map((id) => id as Video.VideoId),
-							Option.getOrNull,
-						),
-						key,
-						contentType: args?.ContentType ?? "application/octet-stream",
-					},
-					tokenStore,
-				).pipe(
-					mapStorageError,
-					Effect.map((UploadId) => ({ UploadId })),
-				),
-			getPresignedUploadPartUrl: (
-				_key: string,
-				uploadId: string,
-				_partNumber: number,
-				_args?: Omit<
-					S3.UploadPartCommandInput,
-					"Key" | "Bucket" | "PartNumber" | "UploadId"
-				>,
-			) => Effect.succeed(uploadId),
-			complete: (
-				key: string,
-				_uploadId?: string,
-				args?: Omit<
-					S3.CompleteMultipartUploadCommandInput,
-					"Key" | "Bucket" | "UploadId"
-				>,
-			) =>
-				getObjectRecord(key).pipe(
-					Effect.flatMap(() =>
-						mapStorageError(
-							repo.markObjectComplete(integrationId, key, args?.MpuObjectSize),
-						),
-					),
-					Effect.flatMap(() => createDriveObjectUrl(key)),
-					Effect.map((Location) => ({ Location })),
-				),
-			abort: (
-				key: string,
-				_uploadId?: string,
-				_args?: Omit<
-					S3.AbortMultipartUploadCommandInput,
-					"Key" | "Bucket" | "UploadId"
-				>,
-			) =>
-				mapStorageError(repo.deleteObjectByKey(integrationId, key)).pipe(
-					Effect.as({}),
-				),
-		},
+		multipart,
 		createUploadTarget: (key: string, input: UploadTargetInput) =>
 			createGoogleDriveResumableUpload(
 				repo,

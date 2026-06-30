@@ -6,6 +6,7 @@ import type { SpaceRuleSource, ViewerSettingKey } from "@cap/web-backend";
 import type {
 	ImageUpload,
 	Organisation,
+	PublicCollection,
 	Space,
 	User,
 	Video,
@@ -16,7 +17,7 @@ import {
 	faInfoCircle,
 } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import {
 	canManageOrganizationMembers,
@@ -25,6 +26,7 @@ import {
 	getEffectiveSpaceRole,
 } from "@/lib/permissions/roles";
 import { useVideosAnalyticsQuery } from "@/lib/Queries/Analytics";
+import { CollectionShareControl } from "../../_components/CollectionShareControl";
 import SpaceDialog from "../../_components/Navbar/SpaceDialog";
 import { useDashboardContext } from "../../Contexts";
 import { CapPagination } from "../../caps/components/CapPagination";
@@ -51,6 +53,7 @@ type SharedVideoData = {
 	totalReactions: number;
 	ownerName: string | null;
 	metadata?: VideoMetadata;
+	isScreenshot: boolean;
 	hasPassword?: boolean;
 	hasInheritedPassword?: boolean;
 	inheritedPasswordSources?: SpaceRuleSource[];
@@ -74,8 +77,13 @@ type SpaceData = {
 	organizationId: Organisation.OrganisationId;
 	createdById: User.UserId;
 	iconUrl?: ImageUpload.ImageUrl | null;
-	settings?: Partial<Record<ViewerSettingKey, boolean>> | null;
+	settings?:
+		| (Partial<Record<ViewerSettingKey, boolean>> & {
+				publicPage?: PublicCollection.PublicPageSettings;
+		  })
+		| null;
 	hasPassword?: boolean;
+	public?: boolean;
 };
 
 export const SharedCaps = ({
@@ -107,6 +115,7 @@ export const SharedCaps = ({
 	};
 }) => {
 	const params = useSearchParams();
+	const pathname = usePathname();
 	const router = useRouter();
 	const page = Number(params.get("page")) || 1;
 	const { activeOrganization } = useDashboardContext();
@@ -183,7 +192,21 @@ export const SharedCaps = ({
 				iconUrl: spaceData.iconUrl ?? undefined,
 				settings: spaceData.settings ?? null,
 				hasPassword: spaceData.hasPassword,
+				public: spaceData.public,
 			}}
+		/>
+	) : null;
+
+	const collectionShareControl = spaceData ? (
+		<CollectionShareControl
+			kind="space"
+			collectionId={spaceData.id}
+			isPublic={Boolean(spaceData.public)}
+			canManage={canManageCurrentSpace}
+			isPro={Boolean(activeOrganization?.ownerIsPro)}
+			settings={
+				canManageCurrentSpace ? (spaceData.settings?.publicPage ?? null) : null
+			}
 		/>
 	) : null;
 
@@ -201,6 +224,17 @@ export const SharedCaps = ({
 				<div className="flex flex-wrap gap-3">
 					{spaceData && spaceMembers && (
 						<>
+							{canManageCurrentSpace && (
+								<Button
+									variant="gray"
+									size="sm"
+									onClick={() => setIsSpaceSettingsOpen(true)}
+								>
+									<FontAwesomeIcon className="size-3" icon={faGear} />
+									Space settings
+								</Button>
+							)}
+							{collectionShareControl}
 							<MembersIndicator
 								memberCount={spaceMemberCount}
 								members={spaceMembers}
@@ -213,16 +247,6 @@ export const SharedCaps = ({
 										: undefined
 								}
 							/>
-							{canManageCurrentSpace && (
-								<Button
-									variant="gray"
-									size="sm"
-									onClick={() => setIsSpaceSettingsOpen(true)}
-								>
-									<FontAwesomeIcon className="size-3" icon={faGear} />
-									Space settings
-								</Button>
-							)}
 						</>
 					)}
 					{organizationData && organizationMembers && !spaceData && (
@@ -246,7 +270,7 @@ export const SharedCaps = ({
 							className="flex gap-2 items-center w-fit"
 						>
 							<FontAwesomeIcon className="size-3.5" icon={faFolderPlus} />
-							New Folder
+							New folder
 						</Button>
 					)}
 				</div>
@@ -315,6 +339,17 @@ export const SharedCaps = ({
 			<div className="flex flex-wrap gap-3 mb-10">
 				{spaceData && spaceMembers && (
 					<>
+						{canManageCurrentSpace && (
+							<Button
+								variant="gray"
+								size="sm"
+								onClick={() => setIsSpaceSettingsOpen(true)}
+							>
+								<FontAwesomeIcon className="size-3" icon={faGear} />
+								Space settings
+							</Button>
+						)}
+						{collectionShareControl}
 						<MembersIndicator
 							memberCount={spaceMemberCount}
 							members={spaceMembers}
@@ -327,16 +362,6 @@ export const SharedCaps = ({
 									: undefined
 							}
 						/>
-						{canManageCurrentSpace && (
-							<Button
-								variant="gray"
-								size="sm"
-								onClick={() => setIsSpaceSettingsOpen(true)}
-							>
-								<FontAwesomeIcon className="size-3" icon={faGear} />
-								Space settings
-							</Button>
-						)}
 					</>
 				)}
 				{organizationData && organizationMembers && !spaceData && (
@@ -379,7 +404,7 @@ export const SharedCaps = ({
 						className="flex gap-2 items-center w-fit"
 					>
 						<FontAwesomeIcon className="size-3.5" icon={faFolderPlus} />
-						New Folder
+						New folder
 					</Button>
 				)}
 			</div>
@@ -396,7 +421,9 @@ export const SharedCaps = ({
 
 			{data.length > 0 && (
 				<>
-					<h1 className="mb-4 text-2xl font-medium text-gray-12">Videos</h1>
+					<h1 className="mb-4 text-2xl font-medium text-gray-12">
+						Videos and screenshots
+					</h1>
 					<div className="grid grid-cols-1 gap-4 sm:gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
 						{data.map((cap) => {
 							const isOwner = cap.ownerId === currentUserId;
@@ -422,7 +449,13 @@ export const SharedCaps = ({
 					</div>
 					{(data.length > limit || data.length === limit || page !== 1) && (
 						<div className="mt-4">
-							<CapPagination currentPage={page} totalPages={totalPages} />
+							<CapPagination
+								currentPage={page}
+								totalPages={totalPages}
+								hrefForPage={(targetPage) =>
+									targetPage <= 1 ? pathname : `${pathname}?page=${targetPage}`
+								}
+							/>
 						</div>
 					)}
 				</>

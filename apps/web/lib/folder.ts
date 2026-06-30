@@ -215,9 +215,10 @@ export const getVideosByFolderId = Effect.fn(function* (
 				ownerName: users.name,
 				effectiveDate: videos.effectiveCreatedAt,
 				hasPassword: sql`${videos.password} IS NOT NULL`.mapWith(Boolean),
-				hasActiveUpload: sql`${videoUploads.videoId} IS NOT NULL`.mapWith(
-					Boolean,
-				),
+				hasActiveUpload:
+					sql`${videoUploads.videoId} IS NOT NULL AND ${videos.isScreenshot} = false`.mapWith(
+						Boolean,
+					),
 			})
 			.from(videos)
 			.leftJoin(comments, eq(videos.id, comments.videoId))
@@ -371,6 +372,7 @@ export const getChildFolders = Effect.fn(function* (
 				id: folders.id,
 				name: folders.name,
 				color: folders.color,
+				public: folders.public,
 				parentId: folders.parentId,
 				organizationId: folders.organizationId,
 				videoCount: sql<number>`(

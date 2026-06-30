@@ -1,6 +1,7 @@
 export * from "./Auth.ts";
 export * from "./Aws.ts";
 export * from "./Database.ts";
+export * from "./Extension/index.ts";
 export { Folders } from "./Folders/index.ts";
 export { HttpLive } from "./Http/Live.ts";
 export { ImageUploads } from "./ImageUploads/index.ts";
@@ -34,7 +35,7 @@ export {
 	type ViewerSettingKey,
 	type ViewerSettings,
 } from "./Videos/EffectiveVideoRules.ts";
-export { Videos } from "./Videos/index.ts";
+export { findScreenshotObjectKey, Videos } from "./Videos/index.ts";
 export {
 	buildCanView,
 	VideosPolicy,

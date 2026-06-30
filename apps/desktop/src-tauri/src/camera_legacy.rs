@@ -1,13 +1,16 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use cap_recording::FFmpegVideoFrame;
+#[cfg(target_os = "macos")]
+use cap_utils::macos_qos::{MacOsQosClass, set_current_thread_qos};
 use flume::Sender;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::frame_ws::{WSFrame, create_frame_ws};
+use crate::camera::{CameraPreviewState, MAX_CAMERA_SIZE, MIN_CAMERA_SIZE, is_low_spec_preview};
+use crate::frame_ws::{WSFrame, create_watch_frame_ws};
 
 const WS_READBACK_PENDING: u8 = 0;
 const WS_READBACK_READY_OK: u8 = 1;
@@ -23,22 +26,117 @@ struct WsReadback {
     state: WsReadbackState,
 }
 
-const WS_PREVIEW_MAX_WIDTH: u32 = 640;
-const WS_PREVIEW_MAX_HEIGHT: u32 = 360;
-const WS_PREVIEW_TARGET_FRAME_INTERVAL: Duration = Duration::from_micros(33_333);
-const WS_PREVIEW_FRAME_INTERVAL_SLACK: Duration = Duration::from_millis(3);
+const WS_PREVIEW_SURFACE_SCALE: u32 = 2;
+// Same drag-resize hysteresis as the native preview: only rebuild the scaler
+// and reallocate buffers when the target width crosses a 64px bucket.
+const WS_PREVIEW_WIDTH_BUCKET: u32 = 64;
+const WS_PREVIEW_MIN_WIDTH: u32 = 320;
+const WS_PREVIEW_MAX_WIDTH: u32 = 960;
+const WS_PREVIEW_MAX_HEIGHT: u32 = 540;
+const WS_PREVIEW_BLUR_MAX_WIDTH: u32 = 640;
+const WS_PREVIEW_BLUR_MAX_HEIGHT: u32 = 360;
+const WS_PREVIEW_TARGET_FRAME_INTERVAL: Duration = Duration::from_micros(16_666);
+const WS_PREVIEW_FRAME_INTERVAL_SLACK: Duration = Duration::from_millis(1);
 const WS_BLUR_INFERENCE_INTERVAL: Duration = Duration::from_millis(150);
 
+// Low-spec preview profile (mirrors the native path in camera.rs). Only used
+// when `is_low_spec_preview()` is true (machines <= 8GB RAM detected at
+// startup); high-spec machines use the constants above bit-for-bit.
+const WS_PREVIEW_LOW_SPEC_MAX_WIDTH: u32 = 640;
+const WS_PREVIEW_LOW_SPEC_MAX_HEIGHT: u32 = 360;
+const WS_PREVIEW_LOW_SPEC_TARGET_FRAME_INTERVAL: Duration = Duration::from_micros(33_333);
+const FRAME_POOL_LOW_SPEC_MAX: usize = 2;
+
 fn preview_frame_due(last_preview_at: Option<Instant>, now: Instant) -> bool {
+    // High-spec keeps the original 60fps target; low-spec paces at 30fps.
+    let target_interval = if is_low_spec_preview() {
+        WS_PREVIEW_LOW_SPEC_TARGET_FRAME_INTERVAL
+    } else {
+        WS_PREVIEW_TARGET_FRAME_INTERVAL
+    };
     last_preview_at.is_none_or(|last| {
-        now.saturating_duration_since(last) + WS_PREVIEW_FRAME_INTERVAL_SLACK
-            >= WS_PREVIEW_TARGET_FRAME_INTERVAL
+        now.saturating_duration_since(last) + WS_PREVIEW_FRAME_INTERVAL_SLACK >= target_interval
     })
 }
 
-fn scaled_preview_dimensions(width: u32, height: u32) -> (u32, u32) {
-    let width_scale = WS_PREVIEW_MAX_WIDTH as f64 / width.max(1) as f64;
-    let height_scale = WS_PREVIEW_MAX_HEIGHT as f64 / height.max(1) as f64;
+const FRAME_POOL_MAX: usize = 4;
+
+/// Frame-pool cap, lowered on low-spec to hold fewer ~2MB buffers in memory.
+#[inline]
+fn frame_pool_max() -> usize {
+    if is_low_spec_preview() {
+        FRAME_POOL_LOW_SPEC_MAX
+    } else {
+        FRAME_POOL_MAX
+    }
+}
+
+// Reuses a previously-sent frame buffer once every WSFrame referencing it has
+// been dropped (watch cell replaced + socket sends finished), eliminating the
+// ~2MB allocation + page-fault churn per frame at steady state.
+fn with_pooled_buffer(
+    pool: &mut Vec<Arc<Vec<u8>>>,
+    fill: impl FnOnce(&mut Vec<u8>),
+) -> Arc<Vec<u8>> {
+    for buf in pool.iter_mut() {
+        if Arc::strong_count(buf) == 1
+            && let Some(vec) = Arc::get_mut(buf)
+        {
+            vec.clear();
+            fill(vec);
+            return buf.clone();
+        }
+    }
+
+    let mut vec = Vec::new();
+    fill(&mut vec);
+    let buf = Arc::new(vec);
+    if pool.len() < frame_pool_max() {
+        pool.push(buf.clone());
+    }
+    buf
+}
+
+// Copies rows without ffmpeg's stride padding so the payload is packed
+// (stride == width * 4); this lets the frontend skip stride correction.
+fn pack_rows(dst: &mut Vec<u8>, src: &[u8], width: u32, height: u32, stride: u32) {
+    let row_bytes = (width as usize) * 4;
+    let stride = stride as usize;
+    let height = height as usize;
+    dst.reserve(row_bytes * height);
+    if stride == row_bytes {
+        dst.extend_from_slice(&src[..row_bytes * height]);
+    } else {
+        for row in 0..height {
+            let start = row * stride;
+            dst.extend_from_slice(&src[start..start + row_bytes]);
+        }
+    }
+}
+
+fn scaled_preview_dimensions(width: u32, height: u32, state: &CameraPreviewState) -> (u32, u32) {
+    let blur_enabled = state.background_blur != cap_project::BackgroundBlurMode::Off;
+    let (max_width, max_height) = if is_low_spec_preview() {
+        // Low-spec caps preview to 640x360 (blur is skipped on low-spec, so the
+        // blur-vs-no-blur branch below does not apply).
+        (
+            WS_PREVIEW_LOW_SPEC_MAX_WIDTH,
+            WS_PREVIEW_LOW_SPEC_MAX_HEIGHT,
+        )
+    } else if blur_enabled {
+        (WS_PREVIEW_BLUR_MAX_WIDTH, WS_PREVIEW_BLUR_MAX_HEIGHT)
+    } else {
+        (WS_PREVIEW_MAX_WIDTH, WS_PREVIEW_MAX_HEIGHT)
+    };
+    let visible_width = (state.size.clamp(MIN_CAMERA_SIZE, MAX_CAMERA_SIZE) as u32)
+        .saturating_mul(WS_PREVIEW_SURFACE_SCALE);
+    let requested_width = visible_width
+        .max(WS_PREVIEW_MIN_WIDTH)
+        .div_ceil(WS_PREVIEW_WIDTH_BUCKET)
+        .saturating_mul(WS_PREVIEW_WIDTH_BUCKET)
+        .min(max_width);
+    let width_scale = requested_width as f64 / width.max(1) as f64;
+    let height_scale = max_height as f64 / height.max(1) as f64;
     let scale = width_scale.min(height_scale).min(1.0);
     let target_width = ((width as f64 * scale).round() as u32).max(1);
     let target_height = ((height as f64 * scale).round() as u32).max(1);
@@ -46,20 +144,44 @@ fn scaled_preview_dimensions(width: u32, height: u32) -> (u32, u32) {
 }
 
 pub async fn create_camera_preview_ws(
-    blur_rx: watch::Receiver<cap_project::BackgroundBlurMode>,
+    state_rx: watch::Receiver<CameraPreviewState>,
 ) -> (Sender<FFmpegVideoFrame>, u16, CancellationToken) {
-    let (camera_tx, camera_rx) = flume::bounded::<FFmpegVideoFrame>(4);
-    let (frame_tx, _) = tokio::sync::broadcast::channel::<WSFrame>(4);
+    let (camera_tx, camera_rx) = flume::bounded::<FFmpegVideoFrame>(1);
+    let (frame_tx, frame_rx) = watch::channel::<Option<Arc<WSFrame>>>(None);
+    let subscriber_count = Arc::new(AtomicUsize::new(0));
     let frame_tx_clone = frame_tx.clone();
+    let thread_subscriber_count = subscriber_count.clone();
     std::thread::spawn(move || {
         use ffmpeg::format::Pixel;
 
+        #[cfg(target_os = "macos")]
+        {
+            let result = set_current_thread_qos(MacOsQosClass::UserInteractive);
+            if result != 0 {
+                tracing::warn!(result, "pthread_set_qos_class_self_np failed");
+            }
+        }
+        #[cfg(windows)]
+        {
+            use windows::Win32::System::Threading::{
+                GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
+            };
+            if let Err(err) =
+                unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL) }
+            {
+                tracing::warn!("SetThreadPriority failed: {err}");
+            }
+        }
+
         let mut converter: Option<(Pixel, ffmpeg::software::scaling::Context)> = None;
         let mut reusable_frame: Option<ffmpeg::util::frame::Video> = None;
-        let mut blur_rx = blur_rx;
+        let mut state_rx = state_rx;
 
         let mut blur_state = WsBlurState::new();
         let mut last_preview_at = None;
+        let mut frame_pool: Vec<Arc<Vec<u8>>> = Vec::new();
+        let mut frame_counter: u32 = 0;
+        let mut idle = true;
 
         while let Ok(raw_frame) = camera_rx.recv() {
             let mut frame = raw_frame.inner;
@@ -68,13 +190,31 @@ pub async fn create_camera_preview_ws(
                 frame = newer.inner;
             }
 
+            // With no connected ws clients, skip all conversion work and
+            // release retained resources; the cleared watch cell also stops
+            // stale frames from being replayed to the next connection.
+            if thread_subscriber_count.load(Ordering::Acquire) == 0 {
+                if !idle {
+                    idle = true;
+                    converter = None;
+                    reusable_frame = None;
+                    frame_pool.clear();
+                    blur_state.release();
+                    last_preview_at = None;
+                    let _previous_frame = frame_tx_clone.send_replace(None);
+                }
+                continue;
+            }
+            idle = false;
+
             let now = Instant::now();
             if !preview_frame_due(last_preview_at, now) {
                 continue;
             }
             last_preview_at = Some(now);
 
-            let blur_mode = *blur_rx.borrow_and_update();
+            let state = state_rx.borrow_and_update().clone();
+            let blur_mode = state.background_blur;
             let blur_enabled = blur_mode != cap_project::BackgroundBlurMode::Off;
             let effects_mode = match blur_mode {
                 cap_project::BackgroundBlurMode::Off | cap_project::BackgroundBlurMode::Light => {
@@ -84,17 +224,23 @@ pub async fn create_camera_preview_ws(
             };
 
             let (target_width, target_height) =
-                scaled_preview_dimensions(frame.width(), frame.height());
+                scaled_preview_dimensions(frame.width(), frame.height(), &state);
             let needs_convert = frame.format() != Pixel::RGBA
                 || frame.width() != target_width
                 || frame.height() != target_height;
+
+            if !blur_enabled {
+                blur_state.release();
+            }
 
             if needs_convert {
                 let ctx = match &mut converter {
                     Some((format, ctx))
                         if *format == frame.format()
                             && ctx.input().width == frame.width()
-                            && ctx.input().height == frame.height() =>
+                            && ctx.input().height == frame.height()
+                            && ctx.output().width == target_width
+                            && ctx.output().height == target_height =>
                     {
                         ctx
                     }
@@ -128,85 +274,75 @@ pub async fn create_camera_preview_ws(
                     continue;
                 }
 
-                let (data, width, height, stride) = if blur_enabled {
-                    match blur_state.process(
+                let width = out_frame.width();
+                let height = out_frame.height();
+                let src_stride = out_frame.stride(0) as u32;
+                let data = if blur_enabled {
+                    blur_state.process(
                         out_frame.data(0),
-                        out_frame.width(),
-                        out_frame.height(),
-                        out_frame.stride(0) as u32,
-                        effects_mode,
-                    ) {
-                        Some(blurred) => blurred,
-                        None => (
-                            std::sync::Arc::new(out_frame.data(0).to_vec()),
-                            out_frame.width(),
-                            out_frame.height(),
-                            out_frame.stride(0) as u32,
-                        ),
-                    }
-                } else {
-                    (
-                        std::sync::Arc::new(out_frame.data(0).to_vec()),
-                        out_frame.width(),
-                        out_frame.height(),
-                        out_frame.stride(0) as u32,
-                    )
-                };
-
-                frame_tx_clone
-                    .send(WSFrame {
-                        data,
                         width,
                         height,
-                        stride,
-                        frame_number: 0,
-                        target_time_ns: 0,
-                        format: crate::frame_ws::WSFrameFormat::Rgba,
-                        created_at: Instant::now(),
+                        src_stride,
+                        effects_mode,
+                        &mut frame_pool,
+                    )
+                } else {
+                    None
+                }
+                .unwrap_or_else(|| {
+                    with_pooled_buffer(&mut frame_pool, |vec| {
+                        pack_rows(vec, out_frame.data(0), width, height, src_stride)
                     })
-                    .ok();
+                });
+
+                frame_counter = frame_counter.wrapping_add(1);
+                let _previous_frame = frame_tx_clone.send_replace(Some(Arc::new(WSFrame {
+                    data,
+                    width,
+                    height,
+                    stride: width * 4,
+                    frame_number: frame_counter,
+                    target_time_ns: 0,
+                    format: crate::frame_ws::WSFrameFormat::Rgba,
+                    created_at: Instant::now(),
+                })));
             } else {
-                let (data, width, height, stride) = if blur_enabled {
-                    match blur_state.process(
+                let width = frame.width();
+                let height = frame.height();
+                let src_stride = frame.stride(0) as u32;
+                let data = if blur_enabled {
+                    blur_state.process(
                         frame.data(0),
-                        frame.width(),
-                        frame.height(),
-                        frame.stride(0) as u32,
-                        effects_mode,
-                    ) {
-                        Some(blurred) => blurred,
-                        None => (
-                            std::sync::Arc::new(frame.data(0).to_vec()),
-                            frame.width(),
-                            frame.height(),
-                            frame.stride(0) as u32,
-                        ),
-                    }
-                } else {
-                    (
-                        std::sync::Arc::new(frame.data(0).to_vec()),
-                        frame.width(),
-                        frame.height(),
-                        frame.stride(0) as u32,
-                    )
-                };
-
-                frame_tx_clone
-                    .send(WSFrame {
-                        data,
                         width,
                         height,
-                        stride,
-                        frame_number: 0,
-                        target_time_ns: 0,
-                        format: crate::frame_ws::WSFrameFormat::Rgba,
-                        created_at: Instant::now(),
+                        src_stride,
+                        effects_mode,
+                        &mut frame_pool,
+                    )
+                } else {
+                    None
+                }
+                .unwrap_or_else(|| {
+                    with_pooled_buffer(&mut frame_pool, |vec| {
+                        pack_rows(vec, frame.data(0), width, height, src_stride)
                     })
-                    .ok();
+                });
+
+                frame_counter = frame_counter.wrapping_add(1);
+                let _previous_frame = frame_tx_clone.send_replace(Some(Arc::new(WSFrame {
+                    data,
+                    width,
+                    height,
+                    stride: width * 4,
+                    frame_number: frame_counter,
+                    target_time_ns: 0,
+                    format: crate::frame_ws::WSFrameFormat::Rgba,
+                    created_at: Instant::now(),
+                })));
             }
         }
     });
-    let (camera_ws_port, _shutdown) = create_frame_ws(frame_tx).await;
+    let (camera_ws_port, _shutdown) = create_watch_frame_ws(frame_rx, subscriber_count).await;
 
     (camera_tx, camera_ws_port, _shutdown)
 }
@@ -233,6 +369,16 @@ impl WsBlurState {
         }
     }
 
+    // Drops the dedicated wgpu device, ONNX session, and readback buffers as
+    // soon as blur is off; re-enabling re-runs the lazy init.
+    fn release(&mut self) {
+        if self.processor.is_some() {
+            self.processor = None;
+            tracing::info!("Released WebSocket camera blur resources");
+        }
+        self.init_attempted = false;
+    }
+
     fn process(
         &mut self,
         rgba_data: &[u8],
@@ -240,7 +386,16 @@ impl WsBlurState {
         height: u32,
         stride: u32,
         mode: cap_camera_effects::BlurMode,
-    ) -> Option<(Arc<Vec<u8>>, u32, u32, u32)> {
+        pool: &mut Vec<Arc<Vec<u8>>>,
+    ) -> Option<Arc<Vec<u8>>> {
+        // Low-spec: never spin up the headless ONNX/wgpu blur processor (the
+        // heaviest preview cost). Returning `None` makes the caller fall back to
+        // packing the raw camera rows, so the preview is unblurred but cheap.
+        // The UI blur toggle is unaffected; it just has no visual effect here.
+        if is_low_spec_preview() {
+            return None;
+        }
+
         if !self.init_attempted {
             self.init_attempted = true;
             self.processor = init_headless_blur();
@@ -332,12 +487,14 @@ impl WsBlurState {
             width,
             height,
             bytes_per_row_aligned,
+            pool,
         );
         let curr_data = try_drain_readback(
             &mut res.readbacks.as_mut().unwrap().2[current_idx],
             width,
             height,
             bytes_per_row_aligned,
+            pool,
         );
         let blurred_out = prev_data.or(curr_data);
 
@@ -406,7 +563,7 @@ impl WsBlurState {
             res.current_idx = 1 - idx;
         }
 
-        blurred_out.map(|out| (Arc::new(out), width, height, width * 4))
+        blurred_out
     }
 }
 
@@ -415,7 +572,8 @@ fn try_drain_readback(
     width: u32,
     height: u32,
     bytes_per_row_aligned: u32,
-) -> Option<Vec<u8>> {
+    pool: &mut Vec<Arc<Vec<u8>>>,
+) -> Option<Arc<Vec<u8>>> {
     let WsReadbackState::InFlight(status) = &readback.state else {
         return None;
     };
@@ -424,11 +582,13 @@ fn try_drain_readback(
             let slice = readback.buffer.slice(..);
             let data = slice.get_mapped_range();
             let row_bytes = (width * 4) as usize;
-            let mut out = Vec::with_capacity(row_bytes * height as usize);
-            for row in 0..height as usize {
-                let start = row * bytes_per_row_aligned as usize;
-                out.extend_from_slice(&data[start..start + row_bytes]);
-            }
+            let out = with_pooled_buffer(pool, |vec| {
+                vec.reserve(row_bytes * height as usize);
+                for row in 0..height as usize {
+                    let start = row * bytes_per_row_aligned as usize;
+                    vec.extend_from_slice(&data[start..start + row_bytes]);
+                }
+            });
             drop(data);
             readback.buffer.unmap();
             readback.state = WsReadbackState::Idle;
@@ -443,10 +603,11 @@ fn try_drain_readback(
 }
 
 fn init_headless_blur() -> Option<WsBlurResources> {
-    let instance = wgpu::Instance::default();
+    let instance = cap_rendering::create_wgpu_instance_sync();
+    let force_software_adapter = cap_rendering::force_software_wgpu_adapter();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::LowPower,
-        force_fallback_adapter: false,
+        force_fallback_adapter: force_software_adapter,
         compatible_surface: None,
     }))
     .ok()?;

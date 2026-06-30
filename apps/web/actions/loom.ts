@@ -7,7 +7,6 @@ import { nanoId } from "@cap/database/helpers";
 import {
 	importedVideos,
 	organizationMembers,
-	organizations,
 	spaceMembers,
 	spaces,
 	spaceVideos,
@@ -26,12 +25,17 @@ import {
 	Video,
 } from "@cap/web-domain";
 import { checkRateLimit } from "@vercel/firewall";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Option } from "effect";
 import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
 import { start } from "workflow/api";
-import { requireOrganizationAccess } from "@/actions/organization/authorization";
+import {
+	getOrganizationAccess,
+	requireOrganizationAccess,
+} from "@/actions/organization/authorization";
+import { provisionOrganizationInvitee } from "@/lib/organization-provisioning";
+import { canManageOrganizationSettings } from "@/lib/permissions/roles";
 import { runPromise } from "@/lib/server";
 import { importLoomVideoWorkflow } from "@/workflows/import-loom-video";
 
@@ -39,10 +43,18 @@ interface LoomUrlResponse {
 	url?: string;
 }
 
+type LoomDownloadMode = "direct-download" | "browser-conversion";
+
 interface LoomDownloadResult {
 	success: boolean;
 	videoId?: string;
 	videoName?: string;
+	downloadUrl?: string;
+	downloadMode?: LoomDownloadMode;
+	durationSeconds?: number;
+	width?: number;
+	height?: number;
+	requiresProxy?: boolean;
 	error?: string;
 }
 
@@ -82,6 +94,8 @@ const LOOM_IMPORT_RATE_LIMIT_ID = "rl_loom_import_per_user";
 const LOOM_IMPORT_RATE_LIMIT_ERROR =
 	"Too many Loom imports started. Please wait a few minutes, then try again.";
 const LOOM_CSV_LIMIT_ERROR = `CSV imports are limited to ${MAX_LOOM_CSV_ROWS} rows at a time. Contact support to raise this limit.`;
+const LOOM_CSV_PERMISSION_ERROR =
+	"Only organization admins and owners can import Loom videos from a CSV.";
 
 async function createLoomImportRateLimitCheck(userId: User.UserId) {
 	if (NODE_ENV !== "production") return async () => false;
@@ -198,6 +212,11 @@ function isStreamingUrl(url: string): boolean {
 	return path.endsWith(".m3u8") || path.endsWith(".mpd");
 }
 
+function isDirectMp4Url(url: string): boolean {
+	const path = (url.split("?")[0] ?? "").toLowerCase();
+	return path.endsWith(".mp4");
+}
+
 async function getLoomDownloadUrl(loomVideoId: string): Promise<string | null> {
 	const requestVariants: Array<{ endpoint: string; includeBody: boolean }> = [
 		{ endpoint: "transcoded-url", includeBody: true },
@@ -268,11 +287,22 @@ export async function downloadLoomVideo(
 			};
 		}
 
-		const videoName = await fetchVideoName(videoId);
+		const [videoName, oembedMeta] = await Promise.all([
+			fetchVideoName(videoId),
+			fetchLoomOEmbed(videoId),
+		]);
 		return {
 			success: true,
 			videoId,
 			videoName: videoName ?? undefined,
+			downloadUrl,
+			downloadMode: isDirectMp4Url(downloadUrl)
+				? "direct-download"
+				: "browser-conversion",
+			durationSeconds: oembedMeta?.duration,
+			width: oembedMeta?.width,
+			height: oembedMeta?.height,
+			requiresProxy: false,
 		};
 	} catch {
 		return {
@@ -497,21 +527,6 @@ async function getOrganizationMemberByEmail(
 	return member ?? null;
 }
 
-async function isOrganizationOwner(
-	userId: User.UserId,
-	orgId: Organisation.OrganisationId,
-) {
-	const [organization] = await db()
-		.select({
-			ownerId: organizations.ownerId,
-		})
-		.from(organizations)
-		.where(and(eq(organizations.id, orgId), isNull(organizations.tombstoneAt)))
-		.limit(1);
-
-	return organization?.ownerId === userId;
-}
-
 type ImportSpaceCacheValue = {
 	id: Space.SpaceIdOrOrganisationId;
 	name: string;
@@ -607,6 +622,33 @@ async function addImportedVideoToSpace({
 	});
 }
 
+async function addImportOwnerToSpace({
+	spaceId,
+	userId,
+}: {
+	spaceId: Space.SpaceIdOrOrganisationId;
+	userId: User.UserId;
+}) {
+	const [existingSpaceMember] = await db()
+		.select({ id: spaceMembers.id })
+		.from(spaceMembers)
+		.where(
+			and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.userId, userId)),
+		)
+		.limit(1);
+
+	if (existingSpaceMember) return;
+
+	await db()
+		.insert(spaceMembers)
+		.values({
+			id: SpaceMemberId.make(nanoId()),
+			spaceId,
+			userId,
+			role: "member",
+		});
+}
+
 export async function importFromLoomCsv({
 	rows,
 	orgId,
@@ -635,14 +677,14 @@ export async function importFromLoomCsv({
 		};
 	}
 
-	if (!(await isOrganizationOwner(user.id, orgId))) {
+	const access = await getOrganizationAccess(user.id, orgId);
+	if (!canManageOrganizationSettings(access?.role)) {
 		return {
 			success: false,
 			importedCount: 0,
 			failedCount: 0,
 			results: [],
-			error:
-				"Only the organization owner can import Loom videos from a CSV. Ask the owner to do it.",
+			error: LOOM_CSV_PERMISSION_ERROR,
 		};
 	}
 
@@ -724,17 +766,30 @@ export async function importFromLoomCsv({
 			continue;
 		}
 
-		const member = await getOrganizationMemberByEmail(orgId, row.userEmail);
+		let member = await getOrganizationMemberByEmail(orgId, row.userEmail);
 
 		if (!member) {
-			results.push({
-				rowNumber: row.rowNumber,
-				userEmail: row.userEmail,
-				spaceName: row.spaceName || undefined,
-				success: false,
-				error: "This email is not a member of the organization.",
-			});
-			continue;
+			try {
+				const provisionedMember = await provisionOrganizationInvitee({
+					organizationId: orgId,
+					email: row.userEmail,
+					invitedByUserId: user.id,
+					role: "member",
+				});
+				member = {
+					userId: provisionedMember.userId,
+					email: row.userEmail,
+				};
+			} catch {
+				results.push({
+					rowNumber: row.rowNumber,
+					userEmail: row.userEmail,
+					spaceName: row.spaceName || undefined,
+					success: false,
+					error: "Could not add this email to the organization.",
+				});
+				continue;
+			}
 		}
 
 		if (await isRateLimited()) {
@@ -769,6 +824,10 @@ export async function importFromLoomCsv({
 						videoId: result.videoId,
 						spaceId: space.id,
 						addedById: user.id,
+					});
+					await addImportOwnerToSpace({
+						spaceId: space.id,
+						userId: member.userId,
 					});
 					touchedSpaceIds.add(space.id);
 					spaceName = space.name;

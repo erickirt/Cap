@@ -12,8 +12,13 @@ use ringbuf::{
     HeapRb,
     traits::{Consumer, Observer, Producer},
 };
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tracing::info;
+
+/// Decoded music/imported-audio tracks, keyed by the path string stored in the
+/// project config's `timeline.audio_segments`. The renderer mixes these on top
+/// of the recording audio in output/timeline time.
+pub type MusicTracks = HashMap<String, Arc<AudioData>>;
 
 pub struct AudioRenderer {
     data: Vec<AudioSegment>,
@@ -21,6 +26,7 @@ pub struct AudioRenderer {
     // sum of `frame.samples()` that have elapsed
     // this * channel count = cursor
     elapsed_samples: usize,
+    music: MusicTracks,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -43,6 +49,7 @@ pub struct AudioSegmentTrack {
     get_gain: fn(&AudioConfiguration) -> f32,
     get_stereo_mode: fn(&AudioConfiguration) -> StereoMode,
     get_offset: fn(&ClipOffsets) -> f32,
+    timing_offset_secs: f32,
 }
 
 impl AudioSegmentTrack {
@@ -57,7 +64,13 @@ impl AudioSegmentTrack {
             get_gain,
             get_stereo_mode,
             get_offset,
+            timing_offset_secs: 0.0,
         }
+    }
+
+    pub fn with_timing_offset_secs(mut self, timing_offset_secs: f32) -> Self {
+        self.timing_offset_secs = timing_offset_secs;
+        self
     }
 
     pub fn data(&self) -> &Arc<AudioData> {
@@ -73,7 +86,7 @@ impl AudioSegmentTrack {
     }
 
     pub fn offset(&self, offsets: &ClipOffsets) -> f32 {
-        (self.get_offset)(offsets)
+        (self.get_offset)(offsets) + self.timing_offset_secs
     }
 }
 
@@ -101,7 +114,13 @@ impl AudioRenderer {
                 timescale: 1.0,
             },
             elapsed_samples: 0,
+            music: MusicTracks::new(),
         }
+    }
+
+    pub fn with_music(mut self, music: MusicTracks) -> Self {
+        self.music = music;
+        self
     }
 
     pub fn set_playhead(&mut self, playhead: f64, project: &ProjectConfiguration) {
@@ -122,7 +141,7 @@ impl AudioRenderer {
     }
 
     fn playhead_to_samples(&self, playhead: f64) -> usize {
-        (playhead * AudioData::SAMPLE_RATE as f64) as usize
+        (playhead * AudioData::SAMPLE_RATE as f64).round() as usize
     }
 
     pub fn elapsed_samples_to_playhead(&self) -> f64 {
@@ -152,7 +171,16 @@ impl AudioRenderer {
         project: &ProjectConfiguration,
     ) -> Option<(usize, Vec<f32>)> {
         if let Some(timeline) = &project.timeline {
-            return self.render_timeline_frame_raw(samples, project, timeline);
+            // Capture the output-time playhead before the recording mix advances
+            // it, so timeline-positioned music is aligned to the same grid.
+            let frame_start = self.elapsed_samples;
+            let (written, mut buf) = self.render_timeline_frame_raw(samples, project, timeline)?;
+
+            if !self.music.is_empty() && !timeline.audio_segments.is_empty() {
+                mix_music(&self.music, timeline, frame_start, written, &mut buf);
+            }
+
+            return Some((written, buf));
         }
 
         self.render_linear_frame_raw(samples, project)
@@ -287,7 +315,8 @@ impl AudioRenderer {
         let max_samples = tracks
             .iter()
             .map(|t| {
-                let track_offset_samples = (t.offset(&offsets) * Self::SAMPLE_RATE as f32) as isize;
+                let track_offset_samples =
+                    (t.offset(&offsets) * Self::SAMPLE_RATE as f32).round() as isize;
                 let available = t.data().sample_count() as isize - track_offset_samples;
                 available.max(0) as usize
             })
@@ -311,11 +340,119 @@ impl AudioRenderer {
                     if g < -30.0 { f32::NEG_INFINITY } else { g }
                 },
                 stereo_mode: t.stereo_mode(&project.audio),
-                offset: (t.offset(&offsets) * Self::SAMPLE_RATE as f32) as isize,
+                offset: (t.offset(&offsets) * Self::SAMPLE_RATE as f32).round() as isize,
             })
             .collect::<Vec<_>>();
 
         cap_audio::render_audio(&track_datas, self.cursor.samples, samples, out_offset, out)
+    }
+}
+
+/// Below this volume a music track is treated as silent and skipped entirely.
+const MUSIC_SILENCE_DB: f32 = -60.0;
+
+fn music_gain(volume_db: f32) -> f32 {
+    if volume_db <= MUSIC_SILENCE_DB {
+        0.0
+    } else {
+        10.0_f32.powf(volume_db / 20.0)
+    }
+}
+
+/// Mixes timeline-positioned music tracks into an already-rendered, interleaved
+/// stereo buffer covering output samples `[frame_start, frame_start + samples)`.
+///
+/// Each segment is placed in output time (`start`/`end`), reads its source from
+/// `trim_start`, and applies linear fade-in/out ramps. Sources may be mono or
+/// stereo; mono is centre-panned at -3dB to match `cap_audio::render_audio`.
+fn mix_music(
+    music: &MusicTracks,
+    timeline: &TimelineConfiguration,
+    frame_start: usize,
+    samples: usize,
+    out: &mut [f32],
+) {
+    if samples == 0 {
+        return;
+    }
+
+    let sample_rate = AudioData::SAMPLE_RATE as f64;
+    let frame_start = frame_start as i64;
+    let frame_end = frame_start + samples as i64;
+
+    for segment in &timeline.audio_segments {
+        if !segment.enabled || segment.end <= segment.start {
+            continue;
+        }
+
+        let gain = music_gain(segment.volume_db);
+        if gain <= 0.0 {
+            continue;
+        }
+
+        let Some(data) = music.get(&segment.path) else {
+            continue;
+        };
+
+        let start_sample = (segment.start * sample_rate).round() as i64;
+        let end_sample = (segment.end * sample_rate).round() as i64;
+        let segment_len = end_sample - start_sample;
+        if segment_len <= 0 {
+            continue;
+        }
+
+        // Window of this segment that intersects the current frame.
+        let lo = start_sample.max(frame_start);
+        let hi = end_sample.min(frame_end);
+        if lo >= hi {
+            continue;
+        }
+
+        let trim_sample = (segment.trim_start.max(0.0) * sample_rate).round() as i64;
+        let fade_in = (segment.fade_in.max(0.0) * sample_rate).round() as i64;
+        let fade_out = (segment.fade_out.max(0.0) * sample_rate).round() as i64;
+
+        let channels = data.channels() as usize;
+        let src = data.samples();
+        let src_frames = data.sample_count() as i64;
+
+        for out_sample in lo..hi {
+            let local = out_sample - start_sample;
+            let src_index = trim_sample + local;
+            if src_index < 0 || src_index >= src_frames {
+                continue;
+            }
+
+            let mut g = gain;
+            if fade_in > 0 && local < fade_in {
+                g *= local as f32 / fade_in as f32;
+            }
+            let until_end = segment_len - local;
+            if fade_out > 0 && until_end <= fade_out {
+                g *= (until_end as f32 / fade_out as f32).clamp(0.0, 1.0);
+            }
+            if g <= 0.0 {
+                continue;
+            }
+
+            let (l, r) = if channels == 1 {
+                let Some(sample) = src.get(src_index as usize) else {
+                    continue;
+                };
+                let s = sample * 0.707;
+                (s, s)
+            } else {
+                let base = (src_index as usize) * channels;
+                let (Some(l), Some(r)) = (src.get(base), src.get(base + 1)) else {
+                    continue;
+                };
+                (*l, *r)
+            };
+
+            let out_index = ((out_sample - frame_start) as usize) * 2;
+            out[out_index] = (out[out_index] + l * g).clamp(-1.0, 1.0);
+            out[out_index + 1] = (out[out_index + 1] + r * g).clamp(-1.0, 1.0);
+        }
     }
 }
 
@@ -334,7 +471,7 @@ impl<T: FromSampleBytes> AudioPlaybackBuffer<T> {
 
     const PROCESSING_SAMPLES_COUNT: u32 = 1024;
 
-    pub fn new(data: Vec<AudioSegment>, output_info: AudioInfo) -> Self {
+    pub fn new(data: Vec<AudioSegment>, music: MusicTracks, output_info: AudioInfo) -> Self {
         // Clamp output info for FFmpeg compatibility (max 8 channels)
         let output_info = output_info.for_ffmpeg_output();
 
@@ -352,7 +489,7 @@ impl<T: FromSampleBytes> AudioPlaybackBuffer<T> {
             * output_info.sample_format.bytes();
         let resampled_buffer = HeapRb::new(capacity);
 
-        let frame_buffer = AudioRenderer::new(data);
+        let frame_buffer = AudioRenderer::new(data).with_music(music);
 
         Self {
             frame_buffer,
@@ -533,6 +670,7 @@ pub struct PrerenderedAudioBuffer<T: FromSampleBytes> {
 impl<T: FromSampleBytes> PrerenderedAudioBuffer<T> {
     pub fn new(
         segments: Vec<AudioSegment>,
+        music: MusicTracks,
         project: &ProjectConfiguration,
         output_info: AudioInfo,
         duration_secs: f64,
@@ -548,7 +686,7 @@ impl<T: FromSampleBytes> PrerenderedAudioBuffer<T> {
             "Pre-rendering audio for playback"
         );
 
-        let mut renderer = AudioRenderer::new(segments);
+        let mut renderer = AudioRenderer::new(segments).with_music(music);
         let mut resampler = AudioResampler::new(output_info).unwrap();
 
         let total_source_samples = (duration_secs * AudioData::SAMPLE_RATE as f64) as usize;
@@ -741,36 +879,42 @@ mod tests {
                         timescale: 1.0,
                         start: 0.0,
                         end: 1.0,
+                        name: None,
                     },
                     TimelineSegment {
                         recording_clip: 0,
                         timescale: 4.0,
                         start: 1.0,
                         end: 2.0,
+                        name: None,
                     },
                     TimelineSegment {
                         recording_clip: 0,
                         timescale: 1.0,
                         start: 2.0,
                         end: 3.0,
+                        name: None,
                     },
                     TimelineSegment {
                         recording_clip: 1,
                         timescale: 1.0,
                         start: 0.0,
                         end: 1.0,
+                        name: None,
                     },
                     TimelineSegment {
                         recording_clip: 1,
                         timescale: 2.0,
                         start: 1.0,
                         end: 2.0,
+                        name: None,
                     },
                     TimelineSegment {
                         recording_clip: 1,
                         timescale: 1.0,
                         start: 2.0,
                         end: 3.0,
+                        name: None,
                     },
                 ],
                 zoom_segments: Vec::new(),
@@ -779,6 +923,7 @@ mod tests {
                 text_segments: Vec::new(),
                 caption_segments: Vec::new(),
                 keyboard_segments: Vec::new(),
+                audio_segments: Vec::new(),
             }),
             clips: vec![
                 ClipConfiguration {
@@ -845,5 +990,390 @@ mod tests {
 
         assert!(before < 0.0001);
         assert!(after > 0.15);
+    }
+
+    /// One clip per second `section_values`, on a timeline made of `segments`.
+    fn single_clip_fixture(
+        section_values: &[i16],
+        segments: Vec<TimelineSegment>,
+    ) -> (TempDir, AudioRenderer, ProjectConfiguration) {
+        let _ = ffmpeg::init();
+
+        let dir = tempfile::tempdir().unwrap();
+        let clip_path = dir.path().join("clip.wav");
+        write_step_wav(&clip_path, section_values);
+
+        let data = vec![AudioSegment {
+            tracks: vec![AudioSegmentTrack::new(
+                Arc::new(AudioData::from_file(&clip_path).unwrap()),
+                gain,
+                stereo,
+                no_offset,
+            )],
+        }];
+
+        let project = ProjectConfiguration {
+            timeline: Some(TimelineConfiguration {
+                segments,
+                zoom_segments: Vec::new(),
+                scene_segments: Vec::new(),
+                mask_segments: Vec::new(),
+                text_segments: Vec::new(),
+                caption_segments: Vec::new(),
+                keyboard_segments: Vec::new(),
+                audio_segments: Vec::new(),
+            }),
+            clips: vec![ClipConfiguration {
+                index: 0,
+                offsets: Default::default(),
+            }],
+            ..Default::default()
+        };
+
+        (dir, AudioRenderer::new(data), project)
+    }
+
+    fn segment(recording_clip: u32, start: f64, end: f64, timescale: f64) -> TimelineSegment {
+        TimelineSegment {
+            recording_clip,
+            timescale,
+            start,
+            end,
+            name: None,
+        }
+    }
+
+    /// Mirrors the export encoder loop in `crates/export/src/mp4.rs`: seed the
+    /// playhead once at 0.0, then render `((n+1)*sr)/fps - cursor` samples per
+    /// output frame. Returns the interleaved-stereo stream, padded so that output
+    /// sample index `j` maps to output presentation time `j / sr`.
+    fn render_export_audio(
+        renderer: &mut AudioRenderer,
+        project: &ProjectConfiguration,
+        fps: u64,
+        frames: u64,
+    ) -> Vec<f32> {
+        let sr = u64::from(AudioData::SAMPLE_RATE);
+        renderer.set_playhead(0.0, project);
+
+        let mut cursor = 0u64;
+        let mut out = Vec::new();
+        for n in 0..frames {
+            let end = ((n + 1) * sr) / fps;
+            if end <= cursor {
+                continue;
+            }
+            let budget = (end - cursor) as usize;
+            cursor = end;
+
+            let mut chunk = renderer
+                .render_frame_raw(budget, project)
+                .map(|(_, samples)| samples)
+                .unwrap_or_default();
+            chunk.resize(budget * 2, 0.0);
+            out.extend(chunk);
+        }
+        out
+    }
+
+    /// Left channel value at the middle of output second `out_second`. The fixture
+    /// holds a constant value per source second, so this reveals which source
+    /// sample the export read for that presentation time.
+    fn left_at_second(stream: &[f32], out_second: usize) -> f32 {
+        let mid = (out_second * AudioData::SAMPLE_RATE as usize
+            + AudioData::SAMPLE_RATE as usize / 2)
+            * 2;
+        stream[mid]
+    }
+
+    fn expected(value: i16) -> f32 {
+        value as f32 / 32768.0
+    }
+
+    #[test]
+    fn export_audio_virtual_negative_timing_offset_inserts_leading_silence() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("delayed.wav");
+        write_step_wav(&path, &[12000, 24000]);
+
+        let data = Arc::new(AudioData::from_file(&path).unwrap());
+        let mut renderer = AudioRenderer::new(vec![AudioSegment {
+            tracks: vec![
+                AudioSegmentTrack::new(data, gain, stereo, no_offset).with_timing_offset_secs(-1.0),
+            ],
+        }]);
+        let project = ProjectConfiguration {
+            timeline: Some(TimelineConfiguration {
+                segments: vec![segment(0, 0.0, 3.0, 1.0)],
+                zoom_segments: Vec::new(),
+                scene_segments: Vec::new(),
+                mask_segments: Vec::new(),
+                text_segments: Vec::new(),
+                caption_segments: Vec::new(),
+                keyboard_segments: Vec::new(),
+                audio_segments: Vec::new(),
+            }),
+            clips: vec![ClipConfiguration {
+                index: 0,
+                offsets: Default::default(),
+            }],
+            ..Default::default()
+        };
+
+        let stream = render_export_audio(&mut renderer, &project, 30, 3 * 30);
+
+        assert_eq!(left_at_second(&stream, 0), 0.0);
+        assert!((left_at_second(&stream, 1) - expected(12000)).abs() < 0.01);
+        assert!((left_at_second(&stream, 2) - expected(24000)).abs() < 0.01);
+    }
+
+    #[test]
+    fn prerendered_playback_and_export_apply_negative_timing_offset_consistently() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("delayed.wav");
+        write_step_wav(&path, &[12000, 24000]);
+
+        let data = Arc::new(AudioData::from_file(&path).unwrap());
+        let segments = vec![AudioSegment {
+            tracks: vec![
+                AudioSegmentTrack::new(data, gain, stereo, no_offset)
+                    .with_timing_offset_secs(-0.867),
+            ],
+        }];
+        let project = ProjectConfiguration {
+            timeline: Some(TimelineConfiguration {
+                segments: vec![segment(0, 0.0, 3.0, 1.0)],
+                zoom_segments: Vec::new(),
+                scene_segments: Vec::new(),
+                mask_segments: Vec::new(),
+                text_segments: Vec::new(),
+                caption_segments: Vec::new(),
+                keyboard_segments: Vec::new(),
+                audio_segments: Vec::new(),
+            }),
+            clips: vec![ClipConfiguration {
+                index: 0,
+                offsets: Default::default(),
+            }],
+            ..Default::default()
+        };
+
+        let mut export_renderer = AudioRenderer::new(segments.clone());
+        let export_stream = render_export_audio(&mut export_renderer, &project, 30, 3 * 30);
+
+        let mut playback_buffer = PrerenderedAudioBuffer::<f32>::new(
+            segments,
+            MusicTracks::new(),
+            &project,
+            AudioRenderer::info(),
+            3.0,
+        );
+        let mut playback_stream = vec![0.0; 3 * AudioData::SAMPLE_RATE as usize * 2];
+        playback_buffer.fill(&mut playback_stream);
+
+        for second in 0..3usize {
+            let export_sample = left_at_second(&export_stream, second);
+            let playback_sample = left_at_second(&playback_stream, second);
+            assert!(
+                (export_sample - playback_sample).abs() < 0.01,
+                "second {second}: export {export_sample}, playback {playback_sample}"
+            );
+        }
+        assert_eq!(left_at_second(&export_stream, 0), 0.0);
+        assert_eq!(left_at_second(&playback_stream, 0), 0.0);
+    }
+
+    // Time->sample conversion rounds to nearest (not truncates), so a fractional
+    // sample position lands on the nearest sample rather than biasing downward.
+    #[test]
+    fn playhead_to_samples_rounds_to_nearest() {
+        let renderer = AudioRenderer::new(vec![]);
+        let sr = AudioData::SAMPLE_RATE as f64;
+        // 5.7 samples of time -> 6 (rounded); truncation would give 5.
+        assert_eq!(renderer.playhead_to_samples(5.7 / sr), 6);
+        // 5.2 samples of time -> 5 (rounded down).
+        assert_eq!(renderer.playhead_to_samples(5.2 / sr), 5);
+    }
+
+    // Invariant: with a full, untrimmed, 1.0-timescale segment the exported audio
+    // reads the source 1:1 — output presentation time T contains source audio at
+    // time T — and this holds identically across every fps (no fps-dependent
+    // positional shift).
+    #[test]
+    fn export_audio_tracks_presentation_time_across_fps() {
+        let values = [3000i16, 6000, 9000, 12000, 15000];
+        for fps in [24u64, 30, 60] {
+            let (_dir, mut renderer, project) =
+                single_clip_fixture(&values, vec![segment(0, 0.0, 5.0, 1.0)]);
+            let stream = render_export_audio(&mut renderer, &project, fps, 5 * fps);
+
+            for (sec, value) in values.iter().enumerate() {
+                let got = left_at_second(&stream, sec);
+                assert!(
+                    (got - expected(*value)).abs() < 0.01,
+                    "fps {fps} second {sec}: read {got}, expected {}",
+                    expected(*value)
+                );
+            }
+        }
+    }
+
+    // Invariant #1: a trimmed segment (start = 2.0s) must offset the audio read
+    // position by the trim, exactly like the video timeline mapping.
+    #[test]
+    fn export_audio_honors_timeline_trim_offset() {
+        let values = [3000i16, 6000, 9000, 12000, 15000];
+        let (_dir, mut renderer, project) =
+            single_clip_fixture(&values, vec![segment(0, 2.0, 5.0, 1.0)]);
+        let stream = render_export_audio(&mut renderer, &project, 30, 3 * 30);
+
+        // Output second k reads source second 2 + k.
+        for out_second in 0..3usize {
+            let got = left_at_second(&stream, out_second);
+            let want = expected(values[2 + out_second]);
+            assert!(
+                (got - want).abs() < 0.01,
+                "out second {out_second}: read {got}, expected {want}"
+            );
+        }
+    }
+
+    // Invariant #1: a multi-segment jump cut must re-anchor the audio read at the
+    // boundary (no carry-over from segment 0), keeping audio aligned to the cut.
+    #[test]
+    fn export_audio_reanchors_across_segment_boundary() {
+        let values = [3000i16, 6000, 9000, 12000, 15000];
+        let (_dir, mut renderer, project) = single_clip_fixture(
+            &values,
+            vec![segment(0, 0.0, 1.0, 1.0), segment(0, 3.0, 4.0, 1.0)],
+        );
+        let stream = render_export_audio(&mut renderer, &project, 30, 2 * 30);
+
+        // Output second 0 -> source second 0; output second 1 -> source second 3.
+        assert!((left_at_second(&stream, 0) - expected(values[0])).abs() < 0.01);
+        assert!((left_at_second(&stream, 1) - expected(values[3])).abs() < 0.01);
+    }
+
+    fn music_track_segment(
+        path: &str,
+        start: f64,
+        end: f64,
+        fade_in: f64,
+        fade_out: f64,
+    ) -> cap_project::AudioTrackSegment {
+        cap_project::AudioTrackSegment {
+            start,
+            end,
+            track: 0,
+            path: path.to_string(),
+            name: None,
+            enabled: true,
+            trim_start: 0.0,
+            volume_db: 0.0,
+            fade_in,
+            fade_out,
+            duration: Some(end - start),
+        }
+    }
+
+    fn music_project(audio_segments: Vec<cap_project::AudioTrackSegment>) -> ProjectConfiguration {
+        ProjectConfiguration {
+            timeline: Some(TimelineConfiguration {
+                segments: vec![segment(0, 0.0, 3.0, 1.0)],
+                zoom_segments: Vec::new(),
+                scene_segments: Vec::new(),
+                mask_segments: Vec::new(),
+                text_segments: Vec::new(),
+                caption_segments: Vec::new(),
+                keyboard_segments: Vec::new(),
+                audio_segments,
+            }),
+            clips: vec![ClipConfiguration {
+                index: 0,
+                offsets: Default::default(),
+            }],
+            ..Default::default()
+        }
+    }
+
+    // Timeline music must be mixed on top of the recording even when the
+    // recording itself carries no audio (empty renderer `data`).
+    #[test]
+    fn mixes_timeline_music_over_silent_recording() {
+        let _ = ffmpeg::init();
+        let dir = tempfile::tempdir().unwrap();
+        let music_path = dir.path().join("music.wav");
+        write_step_wav(&music_path, &[8000, 8000, 8000]);
+
+        let mut music = MusicTracks::new();
+        music.insert(
+            "music.wav".to_string(),
+            Arc::new(AudioData::from_file(&music_path).unwrap()),
+        );
+
+        let project = music_project(vec![music_track_segment("music.wav", 0.0, 3.0, 0.0, 0.0)]);
+        let mut renderer = AudioRenderer::new(vec![]).with_music(music);
+        let stream = render_export_audio(&mut renderer, &project, 30, 3 * 30);
+
+        for second in 0..3usize {
+            assert!(
+                (left_at_second(&stream, second) - expected(8000)).abs() < 0.02,
+                "second {second}: music not mixed",
+            );
+        }
+    }
+
+    // A timeline-positioned music clip only sounds inside its [start, end) window.
+    #[test]
+    fn timeline_music_respects_start_offset() {
+        let _ = ffmpeg::init();
+        let dir = tempfile::tempdir().unwrap();
+        let music_path = dir.path().join("music.wav");
+        write_step_wav(&music_path, &[8000, 8000, 8000]);
+
+        let mut music = MusicTracks::new();
+        music.insert(
+            "music.wav".to_string(),
+            Arc::new(AudioData::from_file(&music_path).unwrap()),
+        );
+
+        // Starts at 1.0s, so output second 0 is silent and 1..3 play.
+        let project = music_project(vec![music_track_segment("music.wav", 1.0, 3.0, 0.0, 0.0)]);
+        let mut renderer = AudioRenderer::new(vec![]).with_music(music);
+        let stream = render_export_audio(&mut renderer, &project, 30, 3 * 30);
+
+        assert!(
+            left_at_second(&stream, 0).abs() < 0.001,
+            "before start must be silent"
+        );
+        assert!((left_at_second(&stream, 1) - expected(8000)).abs() < 0.02);
+        assert!((left_at_second(&stream, 2) - expected(8000)).abs() < 0.02);
+    }
+
+    // A linear fade-in ramps the gain from 0 at the clip start to full at
+    // `fade_in` seconds. Sampling the mid-point of each output second reveals
+    // the ramp.
+    #[test]
+    fn timeline_music_applies_fade_in() {
+        let _ = ffmpeg::init();
+        let dir = tempfile::tempdir().unwrap();
+        let music_path = dir.path().join("music.wav");
+        write_step_wav(&music_path, &[8000, 8000, 8000]);
+
+        let mut music = MusicTracks::new();
+        music.insert(
+            "music.wav".to_string(),
+            Arc::new(AudioData::from_file(&music_path).unwrap()),
+        );
+
+        // 2s fade-in over a 3s clip: 0.5s -> ~25%, 1.5s -> ~75%, 2.5s -> 100%.
+        let project = music_project(vec![music_track_segment("music.wav", 0.0, 3.0, 2.0, 0.0)]);
+        let mut renderer = AudioRenderer::new(vec![]).with_music(music);
+        let stream = render_export_audio(&mut renderer, &project, 30, 3 * 30);
+
+        let full = expected(8000);
+        assert!((left_at_second(&stream, 0) - full * 0.25).abs() < 0.03);
+        assert!((left_at_second(&stream, 1) - full * 0.75).abs() < 0.03);
+        assert!((left_at_second(&stream, 2) - full).abs() < 0.03);
     }
 }

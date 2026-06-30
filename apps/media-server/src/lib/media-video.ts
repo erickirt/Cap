@@ -23,10 +23,41 @@ const PROCESS_TIMEOUT_PER_SECOND_MS = 20_000;
 const MAX_PROCESS_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const THUMBNAIL_TIMEOUT_MS = 60_000;
 const PREVIEW_GIF_TIMEOUT_MS = 30_000;
+const PROBE_H264_LEVEL_TIMEOUT_MS = 10_000;
 const UPLOAD_MAX_RETRIES = 4;
 const UPLOAD_RETRY_BASE_MS = 250;
 const MAX_STDERR_BYTES = 64 * 1024;
 const REPAIR_TIMEOUT_MS = 5 * 60 * 1000;
+const MAX_LEVEL_4_2_WIDTH = 2048;
+const MAX_LEVEL_4_2_HEIGHT = 1088;
+const MAX_LEVEL_5_1_WIDTH = 4096;
+const MAX_LEVEL_5_1_HEIGHT = 2304;
+const MULTIPART_MIN_PART_SIZE_BYTES = 5 * 1024 * 1024;
+const MULTIPART_MAX_PARTS = 10_000;
+const STORAGE_ERROR_BODY_LIMIT_BYTES = 2_048;
+
+export type StorageUploadTarget =
+	| {
+			type: "put";
+			url: string;
+	  }
+	| {
+			type: "multipart";
+			videoId: string;
+			key: string;
+			uploadId: string;
+			partSize: number;
+			signPartUrl: string;
+			completeUrl: string;
+			abortUrl: string;
+			webhookSecret?: string;
+	  };
+
+type UploadedPart = {
+	partNumber: number;
+	etag: string;
+	size: number;
+};
 
 export interface VideoProcessingOptions {
 	maxWidth?: number;
@@ -853,6 +884,19 @@ async function readStreamWithLimit(
 		.join("");
 }
 
+async function storageResponseError(
+	prefix: string,
+	response: Response,
+): Promise<Error> {
+	const body = response.body
+		? await readStreamWithLimit(response.body, STORAGE_ERROR_BODY_LIMIT_BYTES)
+		: "";
+	const details = body.trim();
+	return new Error(
+		`${prefix}: ${response.status} ${response.statusText}${details ? ` ${details}` : ""}`,
+	);
+}
+
 function parseProgressFromStderr(
 	stderrLine: string,
 	totalDurationUs: number,
@@ -912,6 +956,33 @@ async function runFfmpegCommand(
 	}
 }
 
+export function buildStreamingDownloadFfmpegArgs(
+	inputPath: string,
+	outputPath: string,
+): string[] {
+	return [
+		"ffmpeg",
+		"-threads",
+		"2",
+		"-protocol_whitelist",
+		"file,http,https,tcp,tls,crypto,data",
+		"-allowed_extensions",
+		"ALL",
+		"-allowed_segment_extensions",
+		"ALL",
+		"-extension_picky",
+		"0",
+		"-i",
+		inputPath,
+		"-map",
+		"0",
+		"-c",
+		"copy",
+		"-y",
+		outputPath,
+	];
+}
+
 async function downloadStreamingVideoToTemp(
 	videoUrl: string,
 	abortSignal?: AbortSignal,
@@ -928,21 +999,7 @@ async function downloadStreamingVideoToTemp(
 		const inputPath = await materializeStreamingInput(videoUrl, manifestDir);
 
 		await runFfmpegCommand(
-			[
-				"ffmpeg",
-				"-threads",
-				"2",
-				"-protocol_whitelist",
-				"file,http,https,tcp,tls,crypto,data",
-				"-i",
-				inputPath,
-				"-map",
-				"0",
-				"-c",
-				"copy",
-				"-y",
-				tempFile.path,
-			],
+			buildStreamingDownloadFfmpegArgs(inputPath, tempFile.path),
 			DOWNLOAD_TIMEOUT_MS,
 			abortSignal,
 		);
@@ -1022,13 +1079,16 @@ export async function downloadVideoToTemp(
 function needsVideoTranscode(
 	metadata: VideoMetadata,
 	options: VideoProcessingOptions,
+	sourceH264Level: number | null,
 ): boolean {
 	const maxWidth = options.maxWidth ?? DEFAULT_OPTIONS.maxWidth;
 	const maxHeight = options.maxHeight ?? DEFAULT_OPTIONS.maxHeight;
 	return (
 		metadata.width > maxWidth ||
 		metadata.height > maxHeight ||
-		metadata.videoCodec !== "h264"
+		metadata.videoCodec !== "h264" ||
+		(sourceH264Level !== null &&
+			sourceH264Level > pickMobileSafeH264Level(metadata, options).value)
 	);
 }
 
@@ -1115,6 +1175,102 @@ function buildExtraOutputFlags(flags: ResilientInputFlags): string[] {
 	return [];
 }
 
+type H264Level = {
+	value: number;
+	ffmpegValue: string;
+};
+
+function getTargetVideoDimensions(
+	metadata: VideoMetadata,
+	options: VideoProcessingOptions,
+) {
+	const maxWidth = options.maxWidth ?? DEFAULT_OPTIONS.maxWidth;
+	const maxHeight = options.maxHeight ?? DEFAULT_OPTIONS.maxHeight;
+
+	return {
+		width: Math.min(metadata.width, maxWidth),
+		height: Math.min(metadata.height, maxHeight),
+	};
+}
+
+export function pickMobileSafeH264Level(
+	metadata: VideoMetadata,
+	options: VideoProcessingOptions = {},
+): H264Level {
+	const { width, height } = getTargetVideoDimensions(metadata, options);
+
+	if (width <= MAX_LEVEL_4_2_WIDTH && height <= MAX_LEVEL_4_2_HEIGHT) {
+		return { value: 42, ffmpegValue: "4.2" };
+	}
+
+	if (width <= MAX_LEVEL_5_1_WIDTH && height <= MAX_LEVEL_5_1_HEIGHT) {
+		return { value: 51, ffmpegValue: "5.1" };
+	}
+
+	return { value: 52, ffmpegValue: "5.2" };
+}
+
+async function probeH264Level(
+	inputPath: string,
+	abortSignal?: AbortSignal,
+): Promise<number | null> {
+	const proc = registerSubprocess(
+		spawn({
+			cmd: [
+				"ffprobe",
+				"-v",
+				"error",
+				"-select_streams",
+				"v:0",
+				"-show_entries",
+				"stream=level",
+				"-of",
+				"default=noprint_wrappers=1:nokey=1",
+				inputPath,
+			],
+			stdout: "pipe",
+			stderr: "pipe",
+		}),
+	);
+	let abortCleanup: (() => void) | undefined;
+	if (abortSignal) {
+		abortCleanup = () => {
+			void terminateProcess(proc);
+		};
+		abortSignal.addEventListener("abort", abortCleanup, { once: true });
+	}
+
+	try {
+		const stdoutPromise = readStreamWithLimit(
+			proc.stdout as ReadableStream<Uint8Array>,
+			1024,
+		);
+		const stderrPromise = readStreamWithLimit(
+			proc.stderr as ReadableStream<Uint8Array>,
+			2048,
+		);
+
+		const [stdout] = await withTimeout(
+			Promise.all([stdoutPromise, stderrPromise, proc.exited]),
+			PROBE_H264_LEVEL_TIMEOUT_MS,
+			() => terminateProcess(proc),
+		);
+		const exitCode = await proc.exited;
+		if (exitCode !== 0) return null;
+
+		const rawLevel = stdout.trim().split(/\s+/)[0] ?? "";
+		const level = Number.parseInt(rawLevel, 10);
+		return Number.isFinite(level) && level > 0 ? level : null;
+	} catch {
+		return null;
+	} finally {
+		if (abortCleanup) {
+			abortSignal?.removeEventListener("abort", abortCleanup);
+		}
+		await terminateProcess(proc);
+	}
+}
+
 export async function processVideo(
 	inputPath: string,
 	metadata: VideoMetadata,
@@ -1130,9 +1286,14 @@ export async function processVideo(
 	const outputTempFile = await createTempFile(".mp4");
 
 	const remuxOnly = opts.remuxOnly;
+	const sourceH264Level =
+		!remuxOnly && metadata.videoCodec === "h264"
+			? await probeH264Level(inputPath, abortSignal)
+			: null;
+	const targetH264Level = pickMobileSafeH264Level(metadata, opts);
 	const videoTranscode = remuxOnly
 		? false
-		: needsVideoTranscode(metadata, opts);
+		: needsVideoTranscode(metadata, opts, sourceH264Level);
 	const audioTranscode = remuxOnly ? false : needsAudioTranscode(metadata);
 	const extraInputArgs = resilientFlags
 		? buildExtraInputFlags(resilientFlags)
@@ -1163,6 +1324,10 @@ export async function processVideo(
 			opts.crf.toString(),
 			"-vf",
 			`scale='min(${opts.maxWidth},iw)':'min(${opts.maxHeight},ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2`,
+			"-pix_fmt",
+			"yuv420p",
+			"-level:v",
+			targetH264Level.ffmpegValue,
 		);
 	} else {
 		ffmpegArgs.push("-c:v", "copy");
@@ -1635,8 +1800,9 @@ async function uploadWithRetry(
 			return;
 		}
 
-		const responseError = new Error(
-			`Storage upload failed: ${response.status} ${response.statusText}`,
+		const responseError = await storageResponseError(
+			"Storage upload failed",
+			response,
 		);
 
 		if (
@@ -1676,6 +1842,226 @@ export async function uploadFileToS3(
 	await uploadWithRetry(presignedUrl, contentType, fileHandle.size, () =>
 		file(filePath),
 	);
+}
+
+async function postMultipartJson<TBody extends Record<string, unknown>>(
+	url: string,
+	body: TBody,
+	webhookSecret: string | undefined,
+): Promise<Response> {
+	const headers: Record<string, string> = {
+		"Content-Type": "application/json",
+	};
+	if (webhookSecret) {
+		headers["x-media-server-secret"] = webhookSecret;
+	}
+
+	return await fetch(url, {
+		method: "POST",
+		headers,
+		body: JSON.stringify(body),
+		signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
+	});
+}
+
+async function getMultipartPartUrl(
+	target: Extract<StorageUploadTarget, { type: "multipart" }>,
+	partNumber: number,
+	contentLength: number,
+): Promise<string> {
+	const response = await postMultipartJson(
+		target.signPartUrl,
+		{
+			videoId: target.videoId,
+			key: target.key,
+			uploadId: target.uploadId,
+			partNumber,
+			contentLength,
+		},
+		target.webhookSecret,
+	);
+
+	if (!response.ok) {
+		throw await storageResponseError("Multipart part signing failed", response);
+	}
+
+	const data = await response.json().catch(() => null);
+	const url = (data as { url?: unknown } | null)?.url;
+	if (typeof url !== "string" || !url) {
+		throw new Error("Multipart part signing returned an invalid URL");
+	}
+
+	return url;
+}
+
+async function uploadMultipartPart(
+	url: string,
+	body: Blob,
+	contentLength: number,
+	partNumber: number,
+): Promise<string> {
+	let lastError: Error | undefined;
+
+	for (let attempt = 0; attempt <= UPLOAD_MAX_RETRIES; attempt++) {
+		let response: Response;
+		try {
+			response = await fetch(url, {
+				method: "PUT",
+				headers: {
+					"Content-Length": contentLength.toString(),
+				},
+				body,
+				signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
+			});
+		} catch (err) {
+			const uploadError = err instanceof Error ? err : new Error(String(err));
+
+			if (attempt === UPLOAD_MAX_RETRIES) {
+				throw uploadError;
+			}
+
+			lastError = uploadError;
+			await sleep(UPLOAD_RETRY_BASE_MS * 2 ** attempt);
+			continue;
+		}
+
+		if (response.ok) {
+			const etag = response.headers.get("etag");
+			if (!etag) {
+				throw new Error(`Multipart upload part ${partNumber} missing ETag`);
+			}
+			return etag;
+		}
+
+		const responseError = await storageResponseError(
+			`Multipart upload part ${partNumber} failed`,
+			response,
+		);
+
+		if (
+			!isRetryableUploadStatus(response.status) ||
+			attempt === UPLOAD_MAX_RETRIES
+		) {
+			throw responseError;
+		}
+
+		lastError = responseError;
+		await sleep(UPLOAD_RETRY_BASE_MS * 2 ** attempt);
+	}
+
+	throw lastError ?? new Error(`Multipart upload part ${partNumber} failed`);
+}
+
+async function completeMultipartUpload(
+	target: Extract<StorageUploadTarget, { type: "multipart" }>,
+	parts: UploadedPart[],
+): Promise<void> {
+	const response = await postMultipartJson(
+		target.completeUrl,
+		{
+			videoId: target.videoId,
+			key: target.key,
+			uploadId: target.uploadId,
+			parts,
+		},
+		target.webhookSecret,
+	);
+
+	if (!response.ok) {
+		throw await storageResponseError(
+			"Multipart upload completion failed",
+			response,
+		);
+	}
+}
+
+async function abortMultipartUpload(
+	target: Extract<StorageUploadTarget, { type: "multipart" }>,
+): Promise<void> {
+	const response = await postMultipartJson(
+		target.abortUrl,
+		{
+			videoId: target.videoId,
+			key: target.key,
+			uploadId: target.uploadId,
+		},
+		target.webhookSecret,
+	);
+
+	if (!response.ok) {
+		throw await storageResponseError("Multipart upload abort failed", response);
+	}
+}
+
+async function uploadFileMultipart(
+	filePath: string,
+	target: Extract<StorageUploadTarget, { type: "multipart" }>,
+): Promise<void> {
+	const fileHandle = file(filePath);
+	const contentLength = fileHandle.size;
+	const partSize = Math.floor(target.partSize);
+	const parts: UploadedPart[] = [];
+
+	try {
+		if (contentLength <= 0) {
+			throw new Error("Multipart upload requires a non-empty file");
+		}
+
+		if (partSize < MULTIPART_MIN_PART_SIZE_BYTES) {
+			throw new Error("Multipart upload part size is too small");
+		}
+
+		const partCount = Math.ceil(contentLength / partSize);
+		if (partCount > MULTIPART_MAX_PARTS) {
+			throw new Error(
+				`Multipart upload would require too many parts: ${partCount}/${MULTIPART_MAX_PARTS}`,
+			);
+		}
+
+		for (let partNumber = 1; partNumber <= partCount; partNumber++) {
+			const start = (partNumber - 1) * partSize;
+			const end = Math.min(start + partSize, contentLength);
+			const partLength = end - start;
+			const url = await getMultipartPartUrl(target, partNumber, partLength);
+			const etag = await uploadMultipartPart(
+				url,
+				fileHandle.slice(start, end),
+				partLength,
+				partNumber,
+			);
+			parts.push({ partNumber, etag, size: partLength });
+		}
+
+		await completeMultipartUpload(target, parts);
+	} catch (error) {
+		await abortMultipartUpload(target).catch((abortError) => {
+			console.warn(
+				"Multipart upload abort failed:",
+				abortError instanceof Error ? abortError.message : abortError,
+			);
+		});
+		throw error;
+	}
+}
+
+export async function abortStorageUploadTarget(
+	target: StorageUploadTarget,
+): Promise<void> {
+	if (target.type === "put") return;
+	await abortMultipartUpload(target);
+}
+
+export async function uploadFileToStorage(
+	filePath: string,
+	target: StorageUploadTarget,
+	contentType: string,
+): Promise<void> {
+	if (target.type === "put") {
+		await uploadFileToS3(filePath, target.url, contentType);
+		return;
+	}
+
+	await uploadFileMultipart(filePath, target);
 }
 
 export async function copyFileToMp4(

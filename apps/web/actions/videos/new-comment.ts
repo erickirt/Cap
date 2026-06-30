@@ -15,7 +15,7 @@ export async function newComment(data: {
 	type: "text" | "emoji";
 	authorImage: ImageUpload.ImageUrl | null;
 	parentCommentId: Comment.CommentId;
-	timestamp: number;
+	timestamp: number | null;
 }) {
 	const user = await getCurrentUser();
 

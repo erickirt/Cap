@@ -24,7 +24,11 @@ export const saveCapVideoToPhotos = async (
 		download.fileName,
 	)}`;
 	const result = await FileSystem.downloadAsync(download.url, target);
-	await MediaLibrary.saveToLibraryAsync(result.uri);
+	try {
+		await MediaLibrary.saveToLibraryAsync(result.uri);
+	} finally {
+		await FileSystem.deleteAsync(result.uri, { idempotent: true });
+	}
 
 	return download.fileName;
 };

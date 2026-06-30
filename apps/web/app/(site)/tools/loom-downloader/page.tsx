@@ -133,7 +133,7 @@ const pageContent: ToolPageContent = {
 		{
 			question: "Do you store my downloaded videos?",
 			answer:
-				"No. We never store, cache, or process your videos. Our server simply fetches the direct download URL from Loom and passes it to your browser. The video downloads directly from Loom's servers to your device.",
+				"No. The free downloader resolves public Loom videos in your browser and saves the MP4 to your device. Cap Pro's Loom importer uses Cap's server-side import pipeline when you choose to migrate videos into your Cap workspace.",
 		},
 		{
 			question: "What is Cap?",
@@ -165,12 +165,9 @@ const breadcrumbSchema = createBreadcrumbSchema([
 export default function LoomDownloaderPage() {
 	return (
 		<>
-			<script
-				type="application/ld+json"
-				dangerouslySetInnerHTML={{
-					__html: JSON.stringify(breadcrumbSchema),
-				}}
-			/>
+			<script type="application/ld+json">
+				{JSON.stringify(breadcrumbSchema)}
+			</script>
 			<ToolsPageTemplate
 				content={pageContent}
 				toolComponent={<LoomDownloader />}

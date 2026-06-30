@@ -26,8 +26,12 @@ import {
 	probeVideo,
 	probeVideoFile,
 } from "../lib/media-probe";
-import type { ResilientInputFlags } from "../lib/media-video";
+import type {
+	ResilientInputFlags,
+	StorageUploadTarget,
+} from "../lib/media-video";
 import {
+	abortStorageUploadTarget,
 	downloadVideoToTemp,
 	generatePreviewGif,
 	generateThumbnail,
@@ -35,15 +39,23 @@ import {
 	processVideo,
 	repairContainer,
 	uploadFileToS3,
+	uploadFileToStorage,
 	uploadToS3,
 } from "../lib/media-video";
 import type { TempFileHandle } from "../lib/temp-files";
 import { cleanupStaleTempFiles } from "../lib/temp-files";
+import {
+	getActiveDirectVideoProcessCount,
+	getMaxConcurrentDirectVideoProcesses,
+	tryAcquireDirectVideoProcessSlot,
+	type VideoProcessSlot,
+} from "../lib/video-capacity";
 
 const video = new Hono();
 const PROCESSING_HEARTBEAT_MS = 60 * 1000;
 const MEDIA_ENGINE_ERROR_CODE = ["FF", "MPEG_ERROR"].join("");
 const PROBE_ERROR_CODE = ["FF", "PROBE_ERROR"].join("");
+const VIDEO_BUSY_RETRY_AFTER_SECONDS = 15;
 
 const probeSchema = z.object({
 	videoUrl: z.string().url(),
@@ -93,6 +105,7 @@ const editSchema = z.object({
 	userId: z.string(),
 	sourceUrl: z.string().url(),
 	outputPresignedUrl: z.string().url(),
+	outputVerificationUrl: z.string().url().optional(),
 	thumbnailPresignedUrl: z.string().url().optional(),
 	previewGifPresignedUrl: z.string().url().optional(),
 	webhookUrl: z.string().url().optional(),
@@ -102,6 +115,93 @@ const editSchema = z.object({
 
 function getInstanceId(): string {
 	return process.env.HOSTNAME || `pid-${process.pid}`;
+}
+
+function logVideoEvent(event: string, data: Record<string, unknown>) {
+	console.info(
+		JSON.stringify({
+			event,
+			timestamp: new Date().toISOString(),
+			instanceId: getInstanceId(),
+			pid: process.pid,
+			...data,
+		}),
+	);
+}
+
+function getVideoCapacitySnapshot() {
+	const resources = getSystemResources();
+	const jobs = getAllJobs();
+	return {
+		instanceId: getInstanceId(),
+		pid: process.pid,
+		activeVideoProcesses: getActiveVideoProcessCount(),
+		activeDirectVideoProcesses: getActiveDirectVideoProcessCount(),
+		maxConcurrentVideoProcesses: getMaxConcurrentVideoProcesses(),
+		maxConcurrentDirectVideoProcesses: getMaxConcurrentDirectVideoProcesses(),
+		effectiveMaxVideoProcesses: resources.effectiveMax,
+		resources,
+		jobCount: jobs.length,
+		jobs: jobs.map((job) => ({
+			jobId: job.jobId,
+			videoId: job.videoId,
+			phase: job.phase,
+			progress: job.progress,
+			updatedAt: job.updatedAt,
+		})),
+	};
+}
+
+function getBusyDetails(snapshot: ReturnType<typeof getVideoCapacitySnapshot>) {
+	return snapshot.resources.throttleReason
+		? `Throttled: ${snapshot.resources.throttleReason} (${snapshot.activeVideoProcesses}/${snapshot.resources.effectiveMax} active)`
+		: `Too many concurrent video processing jobs (${snapshot.activeVideoProcesses}/${snapshot.resources.effectiveMax}), please retry later`;
+}
+
+function getBusyResponseBody(
+	snapshot: ReturnType<typeof getVideoCapacitySnapshot>,
+) {
+	return {
+		error: "Server is busy",
+		code: "SERVER_BUSY",
+		details: getBusyDetails(snapshot),
+		...snapshot,
+	};
+}
+
+function getMuxBusyResponseBody(
+	snapshot: ReturnType<typeof getVideoCapacitySnapshot>,
+) {
+	return {
+		...getBusyResponseBody(snapshot),
+		error: "SERVER_BUSY",
+		message: "Server is at capacity",
+	};
+}
+
+function summarizeVideoInput(videoUrl: string, inputExtension?: string) {
+	const extension = inputExtension?.toLowerCase() ?? null;
+	try {
+		const url = new URL(videoUrl);
+		const pathnameExtension = url.pathname.includes(".")
+			? `.${url.pathname.split(".").pop()?.toLowerCase() ?? ""}`
+			: null;
+		const effectiveExtension = extension ?? pathnameExtension;
+		return {
+			host: url.hostname,
+			extension: effectiveExtension,
+			streaming:
+				effectiveExtension === ".m3u8" ||
+				effectiveExtension === ".m3u" ||
+				effectiveExtension === ".mpd",
+		};
+	} catch {
+		return {
+			host: null,
+			extension,
+			streaming: false,
+		};
+	}
 }
 
 function isBusyError(err: unknown): boolean {
@@ -128,6 +228,7 @@ async function cleanupTempFiles(
 async function createVideoDownloadResponse(
 	outputTempFile: TempFileHandle,
 	tempFiles: TempFileHandle[],
+	onCleanup?: () => void,
 ): Promise<Response> {
 	const outputFile = file(outputTempFile.path);
 	const outputSize = await outputFile.size;
@@ -137,6 +238,7 @@ async function createVideoDownloadResponse(
 		if (cleanedUp) return;
 		cleanedUp = true;
 		await cleanupTempFiles(tempFiles);
+		onCleanup?.();
 	};
 
 	const stream = new ReadableStream<Uint8Array>({
@@ -208,10 +310,12 @@ video.get("/status", (c) => {
 		activeVideoProcesses: getActiveVideoProcessCount(),
 		maxConcurrentVideoProcesses: getMaxConcurrentVideoProcesses(),
 		effectiveMaxVideoProcesses: resources.effectiveMax,
+		maxConcurrentDirectVideoProcesses: getMaxConcurrentDirectVideoProcesses(),
 		activeProbeProcesses: getActiveProbeProcessCount(),
 		canAcceptNewVideoProcess: canAcceptNewVideoProcess(),
 		canAcceptNewProbeProcess: canAcceptNewProbeProcess(),
 		resources,
+		activeDirectVideoProcesses: getActiveDirectVideoProcessCount(),
 		jobCount: jobs.length,
 		jobs: jobs.map((j) => ({
 			jobId: j.jobId,
@@ -381,28 +485,84 @@ video.post("/convert", async (c) => {
 
 	let inputTempFile: TempFileHandle | null = null;
 	let outputTempFile: TempFileHandle | null = null;
+	let slot: VideoProcessSlot | null = null;
+	const requestId = crypto.randomUUID();
+	const startedAt = Date.now();
 
 	try {
+		slot = tryAcquireDirectVideoProcessSlot(canAcceptNewVideoProcess);
+		const capacity = getVideoCapacitySnapshot();
+		if (!slot) {
+			c.header("Retry-After", VIDEO_BUSY_RETRY_AFTER_SECONDS.toString());
+			logVideoEvent("video_convert_rejected", {
+				requestId,
+				reason: "capacity",
+				...capacity,
+			});
+			return c.json(getBusyResponseBody(capacity), 503);
+		}
+
+		logVideoEvent("video_convert_started", {
+			requestId,
+			input: summarizeVideoInput(
+				result.data.videoUrl,
+				result.data.inputExtension,
+			),
+			...capacity,
+		});
+
 		inputTempFile = await downloadVideoToTemp(
 			result.data.videoUrl,
 			result.data.inputExtension,
+			c.req.raw.signal,
 		);
 
 		const metadata = await probeVideoFile(inputTempFile.path);
-		outputTempFile = await processVideo(inputTempFile.path, metadata, {
-			maxWidth: metadata.width > 0 ? metadata.width : undefined,
-			maxHeight: metadata.height > 0 ? metadata.height : undefined,
+		outputTempFile = await processVideo(
+			inputTempFile.path,
+			metadata,
+			{
+				maxWidth: metadata.width > 0 ? metadata.width : undefined,
+				maxHeight: metadata.height > 0 ? metadata.height : undefined,
+			},
+			undefined,
+			c.req.raw.signal,
+		);
+
+		const outputSize = await file(outputTempFile.path).size;
+		logVideoEvent("video_convert_succeeded", {
+			requestId,
+			durationMs: Date.now() - startedAt,
+			outputSize,
+			metadata: {
+				duration: metadata.duration,
+				width: metadata.width,
+				height: metadata.height,
+				videoCodec: metadata.videoCodec,
+				audioCodec: metadata.audioCodec,
+				fileSize: metadata.fileSize,
+			},
+			...getVideoCapacitySnapshot(),
 		});
 
-		return await createVideoDownloadResponse(outputTempFile, [
-			inputTempFile,
+		return await createVideoDownloadResponse(
 			outputTempFile,
-		]);
+			[inputTempFile, outputTempFile],
+			slot.release,
+		);
 	} catch (err) {
+		slot?.release();
 		await cleanupTempFiles([outputTempFile, inputTempFile]);
+		logVideoEvent("video_convert_failed", {
+			requestId,
+			durationMs: Date.now() - startedAt,
+			error: err instanceof Error ? err.message : String(err),
+			...getVideoCapacitySnapshot(),
+		});
 		console.error("[video/convert] Error:", err);
 
 		if (isBusyError(err)) {
+			c.header("Retry-After", VIDEO_BUSY_RETRY_AFTER_SECONDS.toString());
 			return c.json(
 				{
 					error: "Server is busy",
@@ -455,33 +615,8 @@ video.post("/process", async (c) => {
 	}
 
 	if (!canAcceptNewVideoProcess()) {
-		const activeVideoProcesses = getActiveVideoProcessCount();
-		const resources = getSystemResources();
-		const jobs = getAllJobs();
-		return c.json(
-			{
-				error: "Server is busy",
-				code: "SERVER_BUSY",
-				details: resources.throttleReason
-					? `Throttled: ${resources.throttleReason} (${activeVideoProcesses}/${resources.effectiveMax} active)`
-					: `Too many concurrent video processing jobs (${activeVideoProcesses}/${resources.effectiveMax}), please retry later`,
-				instanceId: getInstanceId(),
-				pid: process.pid,
-				activeVideoProcesses,
-				maxConcurrentVideoProcesses: getMaxConcurrentVideoProcesses(),
-				effectiveMaxVideoProcesses: resources.effectiveMax,
-				resources,
-				jobCount: jobs.length,
-				jobs: jobs.map((job) => ({
-					jobId: job.jobId,
-					videoId: job.videoId,
-					phase: job.phase,
-					progress: job.progress,
-					updatedAt: job.updatedAt,
-				})),
-			},
-			503,
-		);
+		c.header("Retry-After", VIDEO_BUSY_RETRY_AFTER_SECONDS.toString());
+		return c.json(getBusyResponseBody(getVideoCapacitySnapshot()), 503);
 	}
 
 	const {
@@ -557,33 +692,8 @@ video.post("/edit", async (c) => {
 	}
 
 	if (!canAcceptNewVideoProcess()) {
-		const activeVideoProcesses = getActiveVideoProcessCount();
-		const resources = getSystemResources();
-		const jobs = getAllJobs();
-		return c.json(
-			{
-				error: "Server is busy",
-				code: "SERVER_BUSY",
-				details: resources.throttleReason
-					? `Throttled: ${resources.throttleReason} (${activeVideoProcesses}/${resources.effectiveMax} active)`
-					: `Too many concurrent video processing jobs (${activeVideoProcesses}/${resources.effectiveMax}), please retry later`,
-				instanceId: getInstanceId(),
-				pid: process.pid,
-				activeVideoProcesses,
-				maxConcurrentVideoProcesses: getMaxConcurrentVideoProcesses(),
-				effectiveMaxVideoProcesses: resources.effectiveMax,
-				resources,
-				jobCount: jobs.length,
-				jobs: jobs.map((job) => ({
-					jobId: job.jobId,
-					videoId: job.videoId,
-					phase: job.phase,
-					progress: job.progress,
-					updatedAt: job.updatedAt,
-				})),
-			},
-			503,
-		);
+		c.header("Retry-After", VIDEO_BUSY_RETRY_AFTER_SECONDS.toString());
+		return c.json(getBusyResponseBody(getVideoCapacitySnapshot()), 503);
 	}
 
 	const {
@@ -861,6 +971,58 @@ async function generateAndUploadPreviewGif(
 	}
 }
 
+const UPLOAD_VERIFICATION_ATTEMPTS = 4;
+const UPLOAD_VERIFICATION_RETRY_MS = 1000;
+
+function getDurationTolerance(duration: number) {
+	if (!Number.isFinite(duration) || duration <= 0) return 0.5;
+	return Math.max(0.5, Math.min(5, duration * 0.01));
+}
+
+function isDurationClose(actual: number, expected: number) {
+	return (
+		Number.isFinite(actual) &&
+		Number.isFinite(expected) &&
+		Math.abs(actual - expected) <= getDurationTolerance(expected)
+	);
+}
+
+async function waitForVerificationRetry(attempt: number) {
+	await new Promise((resolve) =>
+		setTimeout(resolve, UPLOAD_VERIFICATION_RETRY_MS * (attempt + 1)),
+	);
+}
+
+async function verifyUploadedVideo(
+	outputVerificationUrl: string | undefined,
+	expectedMetadata: VideoMetadata,
+) {
+	if (!outputVerificationUrl) return;
+
+	let lastError: Error | undefined;
+
+	for (let attempt = 0; attempt < UPLOAD_VERIFICATION_ATTEMPTS; attempt++) {
+		try {
+			const actualMetadata = await probeVideo(outputVerificationUrl);
+			if (isDurationClose(actualMetadata.duration, expectedMetadata.duration)) {
+				return;
+			}
+
+			lastError = new Error(
+				`Uploaded video duration mismatch: expected ${expectedMetadata.duration.toFixed(3)}s, got ${actualMetadata.duration.toFixed(3)}s`,
+			);
+		} catch (error) {
+			lastError = error instanceof Error ? error : new Error(String(error));
+		}
+
+		if (attempt < UPLOAD_VERIFICATION_ATTEMPTS - 1) {
+			await waitForVerificationRetry(attempt);
+		}
+	}
+
+	throw lastError ?? new Error("Uploaded video verification failed");
+}
+
 async function editVideoAsync(
 	jobId: string,
 	sourceUrl: string,
@@ -955,6 +1117,7 @@ async function editVideoAsync(
 		}
 
 		await uploadFileToS3(outputTempFile.path, outputPresignedUrl, "video/mp4");
+		await verifyUploadedVideo(options.outputVerificationUrl, outputMetadata);
 
 		if (thumbnailPresignedUrl || previewGifPresignedUrl) {
 			updateJob(jobId, {
@@ -1329,19 +1492,56 @@ video.post("/force-cleanup", (c) => {
 	});
 });
 
-const muxSegmentsSchema = z.object({
-	videoId: z.string(),
-	userId: z.string(),
-	outputPresignedUrl: z.string().url(),
-	thumbnailPresignedUrl: z.string().url().optional(),
-	previewGifPresignedUrl: z.string().url().optional(),
-	webhookUrl: z.string().url().optional(),
-	webhookSecret: z.string().optional(),
-	videoInitUrl: z.string().url(),
-	videoSegmentUrls: z.array(z.string().url()),
-	audioInitUrl: z.string().url().optional(),
-	audioSegmentUrls: z.array(z.string().url()).optional(),
-});
+const muxSegmentsOutputUploadSchema = z.discriminatedUnion("type", [
+	z.object({
+		type: z.literal("put"),
+		url: z.string().url(),
+	}),
+	z.object({
+		type: z.literal("multipart"),
+		videoId: z.string(),
+		key: z.string().min(1),
+		uploadId: z.string().min(1),
+		partSize: z
+			.number()
+			.int()
+			.min(5 * 1024 * 1024),
+		signPartUrl: z.string().url(),
+		completeUrl: z.string().url(),
+		abortUrl: z.string().url(),
+		webhookSecret: z.string().optional(),
+	}),
+]);
+
+const muxSegmentsSchema = z
+	.object({
+		videoId: z.string(),
+		userId: z.string(),
+		outputPresignedUrl: z.string().url().optional(),
+		outputUpload: muxSegmentsOutputUploadSchema.optional(),
+		thumbnailPresignedUrl: z.string().url().optional(),
+		previewGifPresignedUrl: z.string().url().optional(),
+		webhookUrl: z.string().url().optional(),
+		webhookSecret: z.string().optional(),
+		videoInitUrl: z.string().url(),
+		videoSegmentUrls: z.array(z.string().url()),
+		audioInitUrl: z.string().url().optional(),
+		audioSegmentUrls: z.array(z.string().url()).optional(),
+	})
+	.refine((body) => body.outputPresignedUrl || body.outputUpload, {
+		message: "outputPresignedUrl or outputUpload is required",
+		path: ["outputUpload"],
+	});
+
+function getMuxSegmentsOutputUpload(
+	body: z.infer<typeof muxSegmentsSchema>,
+): StorageUploadTarget {
+	if (body.outputUpload) return body.outputUpload;
+	if (body.outputPresignedUrl) {
+		return { type: "put", url: body.outputPresignedUrl };
+	}
+	throw new Error("Missing mux output upload target");
+}
 
 video.post("/mux-segments", async (c) => {
 	if (!validateMediaServerSecret(c)) {
@@ -1359,7 +1559,6 @@ video.post("/mux-segments", async (c) => {
 	const {
 		videoId,
 		userId,
-		outputPresignedUrl,
 		thumbnailPresignedUrl,
 		previewGifPresignedUrl,
 		webhookUrl,
@@ -1368,13 +1567,8 @@ video.post("/mux-segments", async (c) => {
 	const jobId = generateJobId();
 
 	if (!canAcceptNewVideoProcess()) {
-		return c.json(
-			{
-				error: "SERVER_BUSY",
-				message: "Server is at capacity",
-			},
-			503,
-		);
+		c.header("Retry-After", VIDEO_BUSY_RETRY_AFTER_SECONDS.toString());
+		return c.json(getMuxBusyResponseBody(getVideoCapacitySnapshot()), 503);
 	}
 
 	createJob(jobId, videoId, userId, webhookUrl, webhookSecret);
@@ -1385,11 +1579,12 @@ video.post("/mux-segments", async (c) => {
 		audioInitUrl,
 		audioSegmentUrls: audioSegUrls,
 	} = body.data;
+	const outputUpload = getMuxSegmentsOutputUpload(body.data);
 
 	muxSegmentsAsync(
 		jobId,
 		videoId,
-		outputPresignedUrl,
+		outputUpload,
 		thumbnailPresignedUrl,
 		previewGifPresignedUrl,
 		videoInitUrl,
@@ -1516,7 +1711,7 @@ function sendCurrentJobWebhook(jobId: string): void {
 async function muxSegmentsAsync(
 	jobId: string,
 	videoId: string,
-	outputPresignedUrl: string,
+	outputUpload: StorageUploadTarget,
 	thumbnailPresignedUrl: string | undefined,
 	previewGifPresignedUrl: string | undefined,
 	videoInitUrl: string,
@@ -1535,6 +1730,7 @@ async function muxSegmentsAsync(
 	);
 	const abortController = new AbortController();
 	updateJob(jobId, { abortController });
+	let outputUploadStarted = false;
 
 	try {
 		await ensureTempDir();
@@ -1659,7 +1855,8 @@ async function muxSegmentsAsync(
 		updateJob(jobId, { phase: "uploading", progress: 80 });
 		sendCurrentJobWebhook(jobId);
 
-		await uploadFileToS3(resultPath, outputPresignedUrl, "video/mp4");
+		outputUploadStarted = true;
+		await uploadFileToStorage(resultPath, outputUpload, "video/mp4");
 
 		let metadata: VideoMetadata | undefined;
 		try {
@@ -1706,6 +1903,14 @@ async function muxSegmentsAsync(
 
 		setTimeout(() => deleteJob(jobId), 5 * 60 * 1000);
 	} catch (error: unknown) {
+		if (!outputUploadStarted) {
+			await abortStorageUploadTarget(outputUpload).catch((abortError) => {
+				console.warn(
+					`[mux-segments] Failed to abort output upload for ${videoId}:`,
+					abortError instanceof Error ? abortError.message : abortError,
+				);
+			});
+		}
 		console.error(`Mux-segments job ${jobId} failed:`, error);
 		updateJob(jobId, {
 			phase: "error",
