@@ -9,7 +9,7 @@ import {
 import { faChevronDown } from "@fortawesome/free-solid-svg-icons";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import Link from "next/link";
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { useState } from "react";
 
 type FooterLink = {
@@ -112,20 +112,23 @@ const footerLinks = {
 	] as FooterLink[],
 };
 
-const socialLinks: { label: string; href: string; icon: typeof faXTwitter }[] =
-	[
-		{ label: "X (@Cap)", href: "https://x.com/cap", icon: faXTwitter },
-		{
-			label: "Discord",
-			href: "https://discord.gg/y8gdQ3WRN3",
-			icon: faDiscord,
-		},
-		{
-			label: "LinkedIn",
-			href: "https://www.linkedin.com/company/caprecorder/",
-			icon: faLinkedinIn,
-		},
-	];
+const socialLinks: {
+	label: string;
+	href: string;
+	icon: ComponentProps<typeof FontAwesomeIcon>["icon"];
+}[] = [
+	{ label: "X (@Cap)", href: "https://x.com/cap", icon: faXTwitter },
+	{
+		label: "Discord",
+		href: "https://discord.gg/y8gdQ3WRN3",
+		icon: faDiscord,
+	},
+	{
+		label: "LinkedIn",
+		href: "https://www.linkedin.com/company/caprecorder/",
+		icon: faLinkedinIn,
+	},
+];
 
 const complianceBadges: { label: string; content: ReactNode }[] = [
 	{
