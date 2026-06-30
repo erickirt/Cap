@@ -1302,7 +1302,18 @@ const ApiLive = HttpApiBuilder.api(Mobile.MobileApiContract).pipe(
 					.handle("getDownload", ({ path }) =>
 						withMappedErrors(
 							Effect.gen(function* () {
-								yield* getCapById(path.id);
+								const user = yield* CurrentUser;
+								const [video] = yield* videos.getByIdForViewing(path.id).pipe(
+									Effect.flatten,
+									Effect.catchTag(
+										"NoSuchElementException",
+										() => new Video.NotFoundError(),
+									),
+								);
+								if (video.ownerId !== user.id) {
+									return yield* Effect.fail(new HttpApiError.NotFound());
+								}
+
 								return yield* videos.getDownloadInfo(path.id).pipe(
 									Effect.flatMap(
 										Option.match({
