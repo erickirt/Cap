@@ -170,4 +170,89 @@ describe("runMobileUpload", () => {
 		});
 		expect(onProgress).toHaveBeenCalledWith(0);
 	});
+
+	it("throttles server upload progress updates without throttling UI progress", async () => {
+		uploadMock.uploadToTarget.mockImplementationOnce(
+			async (
+				_target: unknown,
+				_file: UploadFile,
+				onProgress?: (progress: { loaded: number; total: number }) => void,
+			) => {
+				onProgress?.({ loaded: 1, total: 100 });
+				onProgress?.({ loaded: 2, total: 100 });
+				onProgress?.({ loaded: 3, total: 100 });
+				onProgress?.({ loaded: 7, total: 100 });
+				onProgress?.({ loaded: 100, total: 100 });
+			},
+		);
+		const createUpload = vi.fn(async () => ({
+			id: Video.VideoId.make("video_123"),
+			shareUrl: "https://cap.so/s/video_123",
+			rawFileKey: "user_123/video_123/raw-upload.mov",
+			upload: {
+				type: "put" as const,
+				url: "https://uploads.example/video",
+				headers: {
+					"Content-Type": "video/quicktime",
+				},
+			},
+			cap: {
+				id: Video.VideoId.make("video_123"),
+				shareUrl: "https://cap.so/s/video_123",
+				title: "video",
+				createdAt: "2026-05-18T10:00:00.000Z",
+				updatedAt: "2026-05-18T10:00:00.000Z",
+				ownerName: "Richie",
+				durationSeconds: 12.5,
+				thumbnailUrl: null,
+				folderId: null,
+				public: true,
+				protected: false,
+				viewCount: 0,
+				commentCount: 0,
+				reactionCount: 0,
+				upload: null,
+			},
+		}));
+		const updateUploadProgress = vi.fn(async () => ({
+			success: true as const,
+		}));
+		const completeUpload = vi.fn(async () => ({ success: true as const }));
+		const client = {
+			createUpload,
+			updateUploadProgress,
+			completeUpload,
+		} as unknown as MobileApiClient;
+		const file: UploadFile = {
+			uri: "file:///tmp/video.mov",
+			name: "video.mov",
+			type: "video/quicktime",
+			size: 100,
+			durationSeconds: 12.5,
+			width: 1920,
+			height: 1080,
+		};
+		const onProgress = vi.fn();
+
+		await runMobileUpload({
+			client,
+			file,
+			onProgress,
+		});
+
+		expect(onProgress).toHaveBeenCalledTimes(5);
+		expect(updateUploadProgress).toHaveBeenCalledTimes(3);
+		expect(updateUploadProgress).toHaveBeenNthCalledWith(1, "video_123", {
+			uploaded: 1,
+			total: 100,
+		});
+		expect(updateUploadProgress).toHaveBeenNthCalledWith(2, "video_123", {
+			uploaded: 7,
+			total: 100,
+		});
+		expect(updateUploadProgress).toHaveBeenNthCalledWith(3, "video_123", {
+			uploaded: 100,
+			total: 100,
+		});
+	});
 });

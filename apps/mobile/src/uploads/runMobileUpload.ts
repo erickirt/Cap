@@ -11,6 +11,9 @@ type RunMobileUploadInput = {
 	onProgress?: (progress: number) => void;
 };
 
+const uploadProgressSyncIntervalMs = 1000;
+const uploadProgressSyncMinDelta = 0.05;
+
 const nonNegativeFiniteNumber = (value: number | null | undefined) =>
 	typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
 
@@ -23,6 +26,17 @@ const clampProgress = (progress: number) => {
 	const safeProgress = Number.isFinite(progress) ? progress : 0;
 	return Math.min(1, Math.max(0, safeProgress));
 };
+
+const shouldSyncUploadProgress = (
+	progress: number,
+	now: number,
+	lastSyncedProgress: number | null,
+	lastSyncedAt: number,
+) =>
+	lastSyncedProgress === null ||
+	progress >= 1 ||
+	progress - lastSyncedProgress >= uploadProgressSyncMinDelta ||
+	now - lastSyncedAt >= uploadProgressSyncIntervalMs;
 
 export const runMobileUpload = async ({
 	client,
@@ -46,6 +60,9 @@ export const runMobileUpload = async ({
 	});
 	onCreated?.(created.id, created.rawFileKey);
 
+	let lastSyncedProgress: number | null = null;
+	let lastSyncedAt = 0;
+
 	await uploadToTarget(created.upload, file, ({ loaded, total }) => {
 		const safeLoaded = nonNegativeFiniteNumber(loaded);
 		const safeTotal =
@@ -53,13 +70,26 @@ export const runMobileUpload = async ({
 			positiveFiniteNumber(file.size) ??
 			safeLoaded;
 		const progress = safeTotal > 0 ? safeLoaded / safeTotal : 0;
-		onProgress?.(clampProgress(progress));
-		client
-			.updateUploadProgress(created.id, {
-				uploaded: safeLoaded,
-				total: safeTotal,
-			})
-			.catch(() => {});
+		const clampedProgress = clampProgress(progress);
+		onProgress?.(clampedProgress);
+		const now = Date.now();
+		if (
+			shouldSyncUploadProgress(
+				clampedProgress,
+				now,
+				lastSyncedProgress,
+				lastSyncedAt,
+			)
+		) {
+			lastSyncedProgress = clampedProgress;
+			lastSyncedAt = now;
+			client
+				.updateUploadProgress(created.id, {
+					uploaded: safeLoaded,
+					total: safeTotal,
+				})
+				.catch(() => {});
+		}
 	});
 
 	await client.completeUpload(created.id, {

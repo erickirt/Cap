@@ -6,7 +6,7 @@ export const parseAuthRedirect = (url: string) => {
 	const apiKey = parsed.searchParams.get("api_key");
 	const userId = parsed.searchParams.get("user_id");
 
-	if (!apiKey) return null;
+	if (!apiKey || !userId) return null;
 	return {
 		apiKey,
 		userId,

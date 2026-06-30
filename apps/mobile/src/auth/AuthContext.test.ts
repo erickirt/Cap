@@ -15,6 +15,10 @@ describe("parseAuthRedirect", () => {
 		expect(parseAuthRedirect("cap://auth?user_id=user_123")).toBeNull();
 	});
 
+	it("rejects redirects without a user id", () => {
+		expect(parseAuthRedirect("cap://auth?api_key=key_123")).toBeNull();
+	});
+
 	it("throws a usable message for failed auth callbacks", () => {
 		expect(() =>
 			requireAuthRedirectSession(
@@ -26,6 +30,12 @@ describe("parseAuthRedirect", () => {
 	it("throws when an auth callback omits the mobile API key", () => {
 		expect(() =>
 			requireAuthRedirectSession("cap://auth?user_id=user_123"),
+		).toThrow("Sign in did not return a mobile session.");
+	});
+
+	it("throws when an auth callback omits the user id", () => {
+		expect(() =>
+			requireAuthRedirectSession("cap://auth?api_key=key_123"),
 		).toThrow("Sign in did not return a mobile session.");
 	});
 });

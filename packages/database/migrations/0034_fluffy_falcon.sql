@@ -1,0 +1,1 @@
+ALTER TABLE `auth_api_keys` MODIFY COLUMN `source` varchar(32) NOT NULL DEFAULT 'unknown';
