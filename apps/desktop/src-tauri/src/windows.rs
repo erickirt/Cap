@@ -139,7 +139,9 @@ where
     }
 }
 
-fn hide_recording_windows(app: &AppHandle) {
+fn hide_recording_windows(app: &AppHandle, restore_target_select_overlays: bool) {
+    let focus_manager = app.try_state::<WindowFocusManager>();
+
     for (label, window) in app.webview_windows() {
         if let Ok(id) = CapWindowId::from_str(&label)
             && matches!(
@@ -148,6 +150,12 @@ fn hide_recording_windows(app: &AppHandle) {
             )
         {
             if matches!(id, CapWindowId::TargetSelectOverlay { .. }) {
+                if restore_target_select_overlays
+                    && window.is_visible().unwrap_or(false)
+                    && let Some(focus_manager) = focus_manager.as_ref()
+                {
+                    focus_manager.remember_overlay_for_restore(label);
+                }
                 hide_overlay(&window);
             } else {
                 let _ = window.hide();
@@ -1232,7 +1240,7 @@ impl ShowCapWindow {
         }
 
         if matches!(self, Self::Settings { .. }) {
-            hide_recording_windows(app);
+            hide_recording_windows(app, true);
 
             let is_recording = app
                 .try_state::<ArcLock<App>>()
@@ -1775,7 +1783,7 @@ impl ShowCapWindow {
                 window
             }
             Self::Editor { .. } => {
-                hide_recording_windows(app);
+                hide_recording_windows(app, false);
 
                 let window = self
                     .window_builder(app, "/editor")
@@ -1803,7 +1811,7 @@ impl ShowCapWindow {
                 window
             }
             Self::ScreenshotEditor { path } => {
-                hide_recording_windows(app);
+                hide_recording_windows(app, false);
 
                 let window_label = self.id(app).label();
                 let pending = PendingScreenshotEditorInstances::get(app);
