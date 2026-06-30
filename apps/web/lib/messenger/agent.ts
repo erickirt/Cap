@@ -2,6 +2,12 @@ import "server-only";
 
 import type { MessengerMessageRole } from "@cap/database/schema";
 import { serverEnv } from "@cap/env";
+import type {
+	ChatCompletionAssistantMessageParam,
+	ChatCompletionMessageParam,
+	ChatCompletionMessageToolCall,
+	ChatCompletionTool,
+} from "groq-sdk/resources/chat";
 import { GROQ_MODEL, getGroqClient } from "@/lib/groq-client";
 import { CAP_REFERENCE_GUIDE, MESSENGER_AGENT_PROMPT } from "./constants";
 import { getKnowledgeTag, searchSupermemory } from "./supermemory";
@@ -51,6 +57,11 @@ type AnthropicToolResultBlock = {
 	is_error?: boolean;
 };
 
+type SupportEmailExecutionResult = {
+	content: string;
+	isError?: boolean;
+};
+
 const MESSENGER_ANTHROPIC_MODEL = "claude-sonnet-5";
 const MESSENGER_MAX_TOKENS = 350;
 const MESSENGER_TOOL_DISPATCH_MAX_TOKENS = 512;
@@ -84,6 +95,15 @@ const supportEmailToolDefinition = {
 		additionalProperties: false,
 	},
 } as const;
+
+const openAiCompatibleSupportEmailToolDefinition = {
+	type: "function",
+	function: {
+		name: supportEmailToolDefinition.name,
+		description: supportEmailToolDefinition.description,
+		parameters: supportEmailToolDefinition.input_schema,
+	},
+} satisfies ChatCompletionTool;
 
 const buildSystemPrompt = ({
 	userIdentity,
@@ -202,6 +222,56 @@ const formatSupportEmailToolResult = (result: SupportEmailToolResult) => {
 	return "Support email was not sent because this user has reached the 2 emails per day limit.";
 };
 
+const fallbackReplyFromSupportEmailToolResults = (
+	toolResults: SupportEmailExecutionResult[],
+) => {
+	const firstToolResult = toolResults[0];
+	if (firstToolResult?.content.includes("Support email sent")) {
+		return "Done, I sent that to the team from your account email. We'll follow up with you there.";
+	}
+	if (firstToolResult?.isError) {
+		return "I couldn't send that to the team right now. Please email hello@cap.so directly.";
+	}
+	return "I couldn't send another support email from your account today. You're limited to 2 per day, but you can still email hello@cap.so directly.";
+};
+
+const executeSupportEmailTool = async ({
+	name,
+	input,
+	supportEmailTool,
+}: {
+	name: string;
+	input: unknown;
+	supportEmailTool: SupportEmailTool;
+}): Promise<SupportEmailExecutionResult> => {
+	if (name !== supportEmailToolDefinition.name) {
+		return {
+			content: "Unknown tool.",
+			isError: true,
+		};
+	}
+
+	const parsedInput = readSupportEmailInput(input);
+	if (!parsedInput) {
+		return {
+			content: "Missing subject or message.",
+			isError: true,
+		};
+	}
+
+	try {
+		const result = await supportEmailTool.execute(parsedInput);
+		return {
+			content: formatSupportEmailToolResult(result),
+		};
+	} catch {
+		return {
+			content: "Failed to send support email.",
+			isError: true,
+		};
+	}
+};
+
 const executeSupportEmailToolUse = async ({
 	toolUse,
 	supportEmailTool,
@@ -209,40 +279,17 @@ const executeSupportEmailToolUse = async ({
 	toolUse: AnthropicToolUseBlock;
 	supportEmailTool: SupportEmailTool;
 }): Promise<AnthropicToolResultBlock> => {
-	if (toolUse.name !== supportEmailToolDefinition.name) {
-		return {
-			type: "tool_result",
-			tool_use_id: toolUse.id,
-			content: "Unknown tool.",
-			is_error: true,
-		};
-	}
-
-	const input = readSupportEmailInput(toolUse.input);
-	if (!input) {
-		return {
-			type: "tool_result",
-			tool_use_id: toolUse.id,
-			content: "Missing subject or message.",
-			is_error: true,
-		};
-	}
-
-	try {
-		const result = await supportEmailTool.execute(input);
-		return {
-			type: "tool_result",
-			tool_use_id: toolUse.id,
-			content: formatSupportEmailToolResult(result),
-		};
-	} catch {
-		return {
-			type: "tool_result",
-			tool_use_id: toolUse.id,
-			content: "Failed to send support email.",
-			is_error: true,
-		};
-	}
+	const result = await executeSupportEmailTool({
+		name: toolUse.name,
+		input: toolUse.input,
+		supportEmailTool,
+	});
+	return {
+		type: "tool_result",
+		tool_use_id: toolUse.id,
+		content: result.content,
+		...(result.isError ? { is_error: true } : {}),
+	};
 };
 
 const postAnthropicMessages = async ({
@@ -353,93 +400,256 @@ const callAnthropic = async ({
 				content: toolResults,
 			},
 		],
-	});
+	}).catch(() => null);
 
 	if (final?.text) return final.text;
-	const firstToolResult = toolResults[0];
-	if (firstToolResult?.content.includes("Support email sent")) {
-		return "Done, I sent that to the team from your account email. We'll follow up with you there.";
-	}
-	if (firstToolResult?.is_error) {
-		return "I couldn't send that to the team right now. Please email hello@cap.so directly.";
-	}
-	return "I couldn't send another support email from your account today. You're limited to 2 per day, but you can still email hello@cap.so directly.";
+	return fallbackReplyFromSupportEmailToolResults(
+		toolResults.map((result) => ({
+			content: result.content,
+			isError: result.is_error,
+		})),
+	);
 };
 
-const parseOpenAiContent = (payload: unknown) => {
+const parseOpenAiCompatibleToolCalls = (message: { tool_calls?: unknown }) => {
+	if (!Array.isArray(message.tool_calls)) return [];
+
+	return message.tool_calls.flatMap(
+		(toolCall): ChatCompletionMessageToolCall[] => {
+			if (!toolCall || typeof toolCall !== "object") return [];
+			const id = (toolCall as { id?: unknown }).id;
+			const type = (toolCall as { type?: unknown }).type;
+			const fn = (toolCall as { function?: unknown }).function;
+			if (typeof id !== "string" || type !== "function") return [];
+			if (!fn || typeof fn !== "object") return [];
+			const name = (fn as { name?: unknown }).name;
+			const args = (fn as { arguments?: unknown }).arguments;
+			if (typeof name !== "string" || typeof args !== "string") return [];
+			return [
+				{
+					id,
+					type,
+					function: {
+						name,
+						arguments: args,
+					},
+				},
+			];
+		},
+	);
+};
+
+const parseOpenAiCompatibleMessage = (payload: unknown) => {
 	if (!payload || typeof payload !== "object") return null;
 	const choices = (payload as { choices?: unknown }).choices;
 	if (!Array.isArray(choices) || choices.length === 0) return null;
 	const first = choices[0] as {
 		message?: {
 			content?: unknown;
+			tool_calls?: unknown;
 		};
 	};
-	const content = first.message?.content;
-	if (typeof content === "string") return content.trim();
-	return null;
+	const message = first.message;
+	if (!message) return null;
+	const content =
+		typeof message.content === "string" ? message.content.trim() : "";
+	const toolCalls = parseOpenAiCompatibleToolCalls(message);
+	if (!content && toolCalls.length === 0) return null;
+	return {
+		text: content.length > 0 ? content : null,
+		toolCalls,
+	};
+};
+
+const parseOpenAiToolInput = (args: string) => {
+	try {
+		return JSON.parse(args) as unknown;
+	} catch {
+		return null;
+	}
+};
+
+const executeOpenAiCompatibleToolCalls = async ({
+	toolCalls,
+	supportEmailTool,
+}: {
+	toolCalls: ChatCompletionMessageToolCall[];
+	supportEmailTool: SupportEmailTool;
+}) => {
+	const toolResults: Array<
+		SupportEmailExecutionResult & { toolCall: ChatCompletionMessageToolCall }
+	> = [];
+	let sentEmailToolResult = false;
+
+	for (const toolCall of toolCalls) {
+		if (sentEmailToolResult) {
+			toolResults.push({
+				toolCall,
+				content: "Only one support email can be sent per assistant response.",
+				isError: true,
+			});
+			continue;
+		}
+
+		toolResults.push({
+			toolCall,
+			...(await executeSupportEmailTool({
+				name: toolCall.function.name,
+				input: parseOpenAiToolInput(toolCall.function.arguments),
+				supportEmailTool,
+			})),
+		});
+		sentEmailToolResult = true;
+	}
+
+	return toolResults;
+};
+
+const runOpenAiCompatibleToolLoop = async ({
+	systemPrompt,
+	history,
+	supportEmailTool,
+	createCompletion,
+}: {
+	systemPrompt: string;
+	history: ConversationMessage[];
+	supportEmailTool: SupportEmailTool | null;
+	createCompletion: ({
+		messages,
+		tools,
+		maxTokens,
+	}: {
+		messages: ChatCompletionMessageParam[];
+		tools?: ChatCompletionTool[];
+		maxTokens: number;
+	}) => Promise<ReturnType<typeof parseOpenAiCompatibleMessage>>;
+}) => {
+	const messages: ChatCompletionMessageParam[] = [
+		{ role: "system", content: systemPrompt },
+		...mapHistoryForLlm(history),
+	];
+
+	const initial = await createCompletion({
+		messages,
+		tools: supportEmailTool
+			? [openAiCompatibleSupportEmailToolDefinition]
+			: undefined,
+		maxTokens: supportEmailTool
+			? MESSENGER_TOOL_DISPATCH_MAX_TOKENS
+			: MESSENGER_MAX_TOKENS,
+	});
+
+	if (!initial) return null;
+	if (!supportEmailTool || initial.toolCalls.length === 0) {
+		return initial.text;
+	}
+
+	const toolResults = await executeOpenAiCompatibleToolCalls({
+		toolCalls: initial.toolCalls,
+		supportEmailTool,
+	});
+	const assistantMessage: ChatCompletionAssistantMessageParam = {
+		role: "assistant",
+		content: initial.text,
+		tool_calls: initial.toolCalls,
+	};
+	const final = await createCompletion({
+		messages: [
+			...messages,
+			assistantMessage,
+			...toolResults.map(
+				(result): ChatCompletionMessageParam => ({
+					role: "tool",
+					tool_call_id: result.toolCall.id,
+					content: result.content,
+				}),
+			),
+		],
+		maxTokens: MESSENGER_MAX_TOKENS,
+	}).catch(() => null);
+
+	if (final?.text) return final.text;
+	return fallbackReplyFromSupportEmailToolResults(toolResults);
 };
 
 const callOpenAi = async ({
 	systemPrompt,
 	history,
+	supportEmailTool,
 }: {
 	systemPrompt: string;
 	history: ConversationMessage[];
+	supportEmailTool: SupportEmailTool | null;
 }) => {
 	const key = serverEnv().OPENAI_API_KEY;
 	if (!key) return null;
 
-	const response = await fetch("https://api.openai.com/v1/chat/completions", {
-		method: "POST",
-		headers: {
-			Authorization: `Bearer ${key}`,
-			"Content-Type": "application/json",
+	return runOpenAiCompatibleToolLoop({
+		systemPrompt,
+		history,
+		supportEmailTool,
+		createCompletion: async ({ messages, tools, maxTokens }) => {
+			const response = await fetch(
+				"https://api.openai.com/v1/chat/completions",
+				{
+					method: "POST",
+					headers: {
+						Authorization: `Bearer ${key}`,
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify({
+						model: "gpt-4o-mini",
+						temperature: 0.65,
+						max_tokens: maxTokens,
+						messages,
+						tools,
+						tool_choice: tools ? "auto" : undefined,
+						parallel_tool_calls: tools ? false : undefined,
+					}),
+					signal: AbortSignal.timeout(35000),
+				},
+			);
+
+			if (!response.ok) {
+				const text = await response.text();
+				throw new Error(`OpenAI chat failed: ${response.status} ${text}`);
+			}
+
+			const payload = await response.json();
+			return parseOpenAiCompatibleMessage(payload);
 		},
-		body: JSON.stringify({
-			model: "gpt-4o-mini",
-			temperature: 0.65,
-			max_tokens: MESSENGER_MAX_TOKENS,
-			messages: [
-				{ role: "system", content: systemPrompt },
-				...mapHistoryForLlm(history),
-			],
-		}),
-		signal: AbortSignal.timeout(35000),
 	});
-
-	if (!response.ok) {
-		const text = await response.text();
-		throw new Error(`OpenAI chat failed: ${response.status} ${text}`);
-	}
-
-	const payload = await response.json();
-	return parseOpenAiContent(payload);
 };
 
 const callGroq = async ({
 	systemPrompt,
 	history,
+	supportEmailTool,
 }: {
 	systemPrompt: string;
 	history: ConversationMessage[];
+	supportEmailTool: SupportEmailTool | null;
 }) => {
 	const client = getGroqClient();
 	if (!client) return null;
 
-	const completion = await client.chat.completions.create({
-		model: GROQ_MODEL,
-		temperature: 0.65,
-		max_tokens: MESSENGER_MAX_TOKENS,
-		messages: [
-			{ role: "system", content: systemPrompt },
-			...mapHistoryForLlm(history),
-		],
+	return runOpenAiCompatibleToolLoop({
+		systemPrompt,
+		history,
+		supportEmailTool,
+		createCompletion: async ({ messages, tools, maxTokens }) => {
+			const completion = await client.chat.completions.create({
+				model: GROQ_MODEL,
+				temperature: 0.65,
+				max_tokens: maxTokens,
+				messages,
+				tools,
+				tool_choice: tools ? "auto" : undefined,
+				parallel_tool_calls: tools ? false : undefined,
+			});
+			return parseOpenAiCompatibleMessage(completion);
+		},
 	});
-
-	const content = completion.choices[0]?.message?.content;
-	if (!content) return null;
-	return content.trim();
 };
 
 export const generateMessengerAgentReply = async ({
@@ -479,23 +689,17 @@ export const generateMessengerAgentReply = async ({
 	}).catch(() => null);
 	if (fromAnthropic) return fromAnthropic;
 
-	const fallbackSystemPrompt = supportEmailTool
-		? buildSystemPrompt({
-				userIdentity,
-				context: normalizeContext([...knowledgeContext, ...personalContext]),
-				supportEmailAvailable: false,
-			})
-		: systemPrompt;
-
 	const fromOpenAi = await callOpenAi({
-		systemPrompt: fallbackSystemPrompt,
+		systemPrompt,
 		history,
+		supportEmailTool,
 	}).catch(() => null);
 	if (fromOpenAi) return fromOpenAi;
 
 	const fromGroq = await callGroq({
-		systemPrompt: fallbackSystemPrompt,
+		systemPrompt,
 		history,
+		supportEmailTool,
 	}).catch(() => null);
 	if (fromGroq) return fromGroq;
 
