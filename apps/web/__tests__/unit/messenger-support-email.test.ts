@@ -2,6 +2,7 @@ import { User } from "@cap/web-domain";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const whereMock = vi.hoisted(() => vi.fn());
+const forUpdateMock = vi.hoisted(() => vi.fn());
 const valuesMock = vi.hoisted(() => vi.fn());
 const sendEmailMock = vi.hoisted(() => vi.fn());
 const messengerSupportEmailMock = vi.hoisted(() => vi.fn(() => null));
@@ -10,8 +11,10 @@ const mockDb = vi.hoisted(() => ({
 	select: vi.fn(() => mockDb),
 	from: vi.fn(() => mockDb),
 	where: whereMock,
+	for: forUpdateMock,
 	insert: vi.fn(() => mockDb),
 	values: valuesMock,
+	transaction: vi.fn((callback: (tx: unknown) => unknown) => callback(mockDb)),
 }));
 
 vi.mock("server-only", () => ({}));
@@ -28,6 +31,9 @@ vi.mock("@cap/database/schema", () => ({
 	messengerSupportEmails: {
 		userId: "userId",
 		createdAt: "createdAt",
+	},
+	users: {
+		id: "id",
 	},
 }));
 
@@ -50,11 +56,12 @@ describe("sendMessengerSupportEmail", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		valuesMock.mockResolvedValue(undefined);
+		forUpdateMock.mockResolvedValue([{ id: "user-123" }]);
 		sendEmailMock.mockResolvedValue(undefined);
 	});
 
 	it("sends support email from account context and records the send", async () => {
-		whereMock.mockResolvedValueOnce([{ value: 1 }]);
+		whereMock.mockReturnValueOnce(mockDb).mockResolvedValueOnce([{ value: 1 }]);
 		const { sendMessengerSupportEmail } = await import(
 			"@/lib/messenger/support-email"
 		);
@@ -75,6 +82,7 @@ describe("sendMessengerSupportEmail", () => {
 			status: "sent",
 			remainingToday: 0,
 		});
+		expect(forUpdateMock).toHaveBeenCalledWith("update");
 		expect(messengerSupportEmailMock).toHaveBeenCalledWith({
 			userEmail: "user@example.com",
 			userName: "Test User",
@@ -100,10 +108,16 @@ describe("sendMessengerSupportEmail", () => {
 				createdAt: new Date("2026-06-30T18:00:00.000Z"),
 			}),
 		);
+		const insertCallOrder = valuesMock.mock.invocationCallOrder[0];
+		const sendCallOrder = sendEmailMock.mock.invocationCallOrder[0];
+		if (insertCallOrder === undefined || sendCallOrder === undefined) {
+			throw new Error("Expected insert and send call order");
+		}
+		expect(insertCallOrder).toBeLessThan(sendCallOrder);
 	});
 
 	it("does not send after two support emails in the same UTC day", async () => {
-		whereMock.mockResolvedValueOnce([{ value: 2 }]);
+		whereMock.mockReturnValueOnce(mockDb).mockResolvedValueOnce([{ value: 2 }]);
 		const { sendMessengerSupportEmail } = await import(
 			"@/lib/messenger/support-email"
 		);
@@ -126,5 +140,29 @@ describe("sendMessengerSupportEmail", () => {
 		});
 		expect(sendEmailMock).not.toHaveBeenCalled();
 		expect(valuesMock).not.toHaveBeenCalled();
+	});
+
+	it("does not send when the audit reservation fails", async () => {
+		whereMock.mockReturnValueOnce(mockDb).mockResolvedValueOnce([{ value: 1 }]);
+		valuesMock.mockRejectedValueOnce(new Error("insert failed"));
+		const { sendMessengerSupportEmail } = await import(
+			"@/lib/messenger/support-email"
+		);
+
+		await expect(
+			sendMessengerSupportEmail({
+				user: {
+					id: User.UserId.make("user-123"),
+					email: "user@example.com",
+					name: "Test User",
+				},
+				conversationId: "conversation-123",
+				subject: "Upload issue",
+				message: "Uploads keep failing.",
+				now: new Date("2026-06-30T18:00:00.000Z"),
+			}),
+		).rejects.toThrow("insert failed");
+
+		expect(sendEmailMock).not.toHaveBeenCalled();
 	});
 });

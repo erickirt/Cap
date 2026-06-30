@@ -53,6 +53,7 @@ type AnthropicToolResultBlock = {
 
 const MESSENGER_ANTHROPIC_MODEL = "claude-sonnet-5";
 const MESSENGER_MAX_TOKENS = 350;
+const MESSENGER_TOOL_DISPATCH_MAX_TOKENS = 512;
 
 const normalizeContext = (sections: string[]) =>
 	sections
@@ -227,12 +228,21 @@ const executeSupportEmailToolUse = async ({
 		};
 	}
 
-	const result = await supportEmailTool.execute(input);
-	return {
-		type: "tool_result",
-		tool_use_id: toolUse.id,
-		content: formatSupportEmailToolResult(result),
-	};
+	try {
+		const result = await supportEmailTool.execute(input);
+		return {
+			type: "tool_result",
+			tool_use_id: toolUse.id,
+			content: formatSupportEmailToolResult(result),
+		};
+	} catch {
+		return {
+			type: "tool_result",
+			tool_use_id: toolUse.id,
+			content: "Failed to send support email.",
+			is_error: true,
+		};
+	}
 };
 
 const postAnthropicMessages = async ({
@@ -240,6 +250,7 @@ const postAnthropicMessages = async ({
 	systemPrompt,
 	messages,
 	tools,
+	maxTokens = MESSENGER_MAX_TOKENS,
 }: {
 	key: string;
 	systemPrompt: string;
@@ -248,6 +259,7 @@ const postAnthropicMessages = async ({
 		content: string | AnthropicResponseBlock[] | AnthropicToolResultBlock[];
 	}>;
 	tools?: [typeof supportEmailToolDefinition];
+	maxTokens?: number;
 }) => {
 	const response = await fetch("https://api.anthropic.com/v1/messages", {
 		method: "POST",
@@ -259,7 +271,7 @@ const postAnthropicMessages = async ({
 		body: JSON.stringify({
 			model: MESSENGER_ANTHROPIC_MODEL,
 			temperature: 0.65,
-			max_tokens: MESSENGER_MAX_TOKENS,
+			max_tokens: maxTokens,
 			system: systemPrompt,
 			messages,
 			tools,
@@ -293,11 +305,16 @@ const callAnthropic = async ({
 		systemPrompt,
 		messages: mapHistoryForLlm(history),
 		tools: supportEmailTool ? [supportEmailToolDefinition] : undefined,
+		maxTokens: supportEmailTool
+			? MESSENGER_TOOL_DISPATCH_MAX_TOKENS
+			: MESSENGER_MAX_TOKENS,
 	});
 
 	if (!initial) return null;
 	const toolUses = supportEmailTool
-		? initial.content.filter((block) => block.type === "tool_use")
+		? initial.content.filter(
+				(block): block is AnthropicToolUseBlock => block.type === "tool_use",
+			)
 		: [];
 
 	if (!supportEmailTool || toolUses.length === 0) {
@@ -339,9 +356,12 @@ const callAnthropic = async ({
 	});
 
 	if (final?.text) return final.text;
-	const firstToolResult = toolResults[0]?.content ?? "";
-	if (firstToolResult.includes("Support email sent")) {
+	const firstToolResult = toolResults[0];
+	if (firstToolResult?.content.includes("Support email sent")) {
 		return "Done, I sent that to the team from your account email. We'll follow up with you there.";
+	}
+	if (firstToolResult?.is_error) {
+		return "I couldn't send that to the team right now. Please email hello@cap.so directly.";
 	}
 	return "I couldn't send another support email from your account today. You're limited to 2 per day, but you can still email hello@cap.so directly.";
 };
