@@ -1303,13 +1303,12 @@ const ApiLive = HttpApiBuilder.api(Mobile.MobileApiContract).pipe(
 						withMappedErrors(
 							Effect.gen(function* () {
 								const user = yield* CurrentUser;
-								const [video] = yield* videos.getByIdForViewing(path.id).pipe(
-									Effect.flatten,
-									Effect.catchTag(
-										"NoSuchElementException",
-										() => new Video.NotFoundError(),
-									),
-								);
+								const repo = yield* VideosRepo;
+								const maybeVideo = yield* repo.getById(path.id);
+								if (Option.isNone(maybeVideo)) {
+									return yield* Effect.fail(new HttpApiError.NotFound());
+								}
+								const [video] = maybeVideo.value;
 								if (video.ownerId !== user.id) {
 									return yield* Effect.fail(new HttpApiError.NotFound());
 								}
