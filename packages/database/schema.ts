@@ -603,6 +603,33 @@ export const messengerMessages = mysqlTable(
 	}),
 );
 
+export const messengerSupportEmails = mysqlTable(
+	"messenger_support_emails",
+	{
+		id: nanoId("id").notNull().primaryKey(),
+		conversationId: nanoId("conversationId").notNull(),
+		userId: nanoId("userId").notNull().$type<User.UserId>(),
+		userEmail: varchar("userEmail", { length: 255 }).notNull(),
+		subject: varchar("subject", { length: 255 }).notNull(),
+		message: text("message").notNull(),
+		createdAt: timestamp("createdAt").notNull().defaultNow(),
+	},
+	(table) => ({
+		conversationForeignKey: foreignKey({
+			name: "support_email_conversation_fk",
+			columns: [table.conversationId],
+			foreignColumns: [messengerConversations.id],
+		}).onDelete("cascade"),
+		userCreatedAtIndex: index("support_email_user_created_at_idx").on(
+			table.userId,
+			table.createdAt,
+		),
+		conversationCreatedAtIndex: index(
+			"support_email_conversation_created_at_idx",
+		).on(table.conversationId, table.createdAt),
+	}),
+);
+
 export const s3Buckets = mysqlTable(
 	"s3_buckets",
 	{
@@ -776,6 +803,7 @@ export const messengerConversationsRelations = relations(
 			references: [users.id],
 		}),
 		messages: many(messengerMessages),
+		supportEmails: many(messengerSupportEmails),
 	}),
 );
 
@@ -788,6 +816,20 @@ export const messengerMessagesRelations = relations(
 		}),
 		user: one(users, {
 			fields: [messengerMessages.userId],
+			references: [users.id],
+		}),
+	}),
+);
+
+export const messengerSupportEmailsRelations = relations(
+	messengerSupportEmails,
+	({ one }) => ({
+		conversation: one(messengerConversations, {
+			fields: [messengerSupportEmails.conversationId],
+			references: [messengerConversations.id],
+		}),
+		user: one(users, {
+			fields: [messengerSupportEmails.userId],
 			references: [users.id],
 		}),
 	}),
@@ -806,6 +848,7 @@ export const usersRelations = relations(users, ({ many, one }) => ({
 	spaceMembers: many(spaceMembers),
 	messengerConversations: many(messengerConversations),
 	messengerMessages: many(messengerMessages),
+	messengerSupportEmails: many(messengerSupportEmails),
 }));
 
 export const accountsRelations = relations(accounts, ({ one }) => ({

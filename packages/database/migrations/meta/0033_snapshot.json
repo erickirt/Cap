@@ -1,8 +1,8 @@
 {
 	"version": "5",
 	"dialect": "mysql",
-	"id": "b4154093-c27c-4577-8c76-f0742a29c858",
-	"prevId": "1a41e8a7-f0ec-4bfa-8df0-8a5cbabedf97",
+	"id": "f25ef736-2902-4484-9401-bbec652d5429",
+	"prevId": "b4154093-c27c-4577-8c76-f0742a29c858",
 	"tables": {
 		"accounts": {
 			"name": "accounts",
@@ -153,6 +153,13 @@
 					"type": "varchar(15)",
 					"primaryKey": false,
 					"notNull": true,
+					"autoincrement": false
+				},
+				"source": {
+					"name": "source",
+					"type": "varchar(32)",
+					"primaryKey": false,
+					"notNull": false,
 					"autoincrement": false
 				},
 				"createdAt": {
