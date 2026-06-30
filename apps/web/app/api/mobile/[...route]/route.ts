@@ -874,7 +874,11 @@ const assertCanCreateFeedback = Effect.fn("Mobile.assertCanCreateFeedback")(
 		if (row.ownerId === user.id) return;
 		if (row.sharedOrganizationId) {
 			yield* assertOrganizationAccess(row.sharedOrganizationId).pipe(
-				Effect.catchAll(() => Effect.fail(new HttpApiError.NotFound())),
+				Effect.catchAll((error) =>
+					error instanceof HttpApiError.Forbidden
+						? Effect.fail(new HttpApiError.NotFound())
+						: Effect.fail(error),
+				),
 			);
 			return;
 		}
