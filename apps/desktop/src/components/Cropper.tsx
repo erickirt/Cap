@@ -716,8 +716,12 @@ export function Cropper(
 				// While pointer capture is held the drag is still ours even if the window
 				// loses focus (e.g. another overlay or the camera window grabs it on
 				// Windows). Real pointer loss arrives via pointercancel/lostpointercapture.
+				// Defer the capture check by one microtask so setPointerCapture has time
+				// to finalize before we decide the session is orphaned.
 				blur: () => {
-					if (!target.hasPointerCapture?.(pointerId)) finish();
+					queueMicrotask(() => {
+						if (!target.hasPointerCapture?.(pointerId)) finish();
+					});
 				},
 			});
 			createEventListenerMap(target, {

@@ -234,7 +234,11 @@ function Inner() {
 					<Route path="/mode-select" component={ModeSelectPage} />
 					<Route path="/notifications" component={NotificationsPage} />
 					<Route path="/recordings-overlay" component={RecordingsOverlayPage} />
-					<Route path="/screenshot-editor" component={ScreenshotEditorPage} />
+					<Route
+						path="/screenshot-editor"
+						info={{ AUTO_SHOW_WINDOW: false }}
+						component={ScreenshotEditorPage}
+					/>
 					<Route
 						path="/target-select-overlay"
 						component={TargetSelectOverlayPage}
