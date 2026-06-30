@@ -2347,10 +2347,12 @@ impl ShowCapWindow {
                 }
 
                 #[cfg(windows)]
-                if let Some(bounds) = display.raw_handle().physical_bounds() {
+                if let Some(bounds) = display.raw_handle().logical_bounds() {
                     window_builder = window_builder
                         .inner_size(bounds.size().width(), bounds.size().height())
                         .position(bounds.position().x(), bounds.position().y());
+                } else {
+                    window_builder = window_builder.inner_size(100.0, 100.0).position(0.0, 0.0);
                 }
 
                 #[cfg(target_os = "linux")]
@@ -2375,6 +2377,7 @@ impl ShowCapWindow {
                         bounds.size().height(),
                     ));
                 }
+
 
                 #[cfg(target_os = "macos")]
                 crate::platform::set_window_level(
