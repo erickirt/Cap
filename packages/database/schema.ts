@@ -605,9 +605,7 @@ export const messengerSupportEmails = mysqlTable(
 	"messenger_support_emails",
 	{
 		id: nanoId("id").notNull().primaryKey(),
-		conversationId: nanoId("conversationId")
-			.notNull()
-			.references(() => messengerConversations.id, { onDelete: "cascade" }),
+		conversationId: nanoId("conversationId").notNull(),
 		userId: nanoId("userId").notNull().$type<User.UserId>(),
 		userEmail: varchar("userEmail", { length: 255 }).notNull(),
 		subject: varchar("subject", { length: 255 }).notNull(),
@@ -615,6 +613,11 @@ export const messengerSupportEmails = mysqlTable(
 		createdAt: timestamp("createdAt").notNull().defaultNow(),
 	},
 	(table) => ({
+		conversationForeignKey: foreignKey({
+			name: "support_email_conversation_fk",
+			columns: [table.conversationId],
+			foreignColumns: [messengerConversations.id],
+		}).onDelete("cascade"),
 		userCreatedAtIndex: index("support_email_user_created_at_idx").on(
 			table.userId,
 			table.createdAt,
