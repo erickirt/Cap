@@ -79,7 +79,8 @@ use scap_targets::{Display, DisplayId, WindowId, bounds::LogicalBounds};
 use screenshot_editor::{
     PendingScreenshotEditorInstances, ScreenshotEditorInstances, WindowScreenshotEditorInstance,
     create_screenshot_editor_instance, prewarm_screenshot_background, recognize_screenshot_text,
-    render_screenshot_for_export, render_screenshot_png, update_screenshot_config,
+    render_screenshot_for_export, render_screenshot_png, render_screenshot_project_for_export,
+    update_screenshot_config,
 };
 
 mod gpu_context;
@@ -111,7 +112,7 @@ use tauri_plugin_shell::ShellExt;
 use tauri_specta::Event;
 use tokio::sync::{Mutex, RwLock, oneshot, watch};
 use tracing::*;
-use upload::{create_or_get_video, upload_image, upload_video};
+use upload::{create_or_get_video, upload_screenshot_bytes, upload_screenshot_file, upload_video};
 use web_api::AuthedApiError;
 use web_api::ManagerExt as WebManagerExt;
 use windows::{
@@ -3298,6 +3299,7 @@ async fn upload_exported_video(
             meta.sharing = Some(SharingMeta {
                 link: uploaded_video.link.clone(),
                 id: uploaded_video.id.clone(),
+                content_hash: None,
             });
             meta.save_for_project()
                 .map_err(|e| error!("Failed to save recording meta: {e}"))
@@ -3330,6 +3332,111 @@ async fn upload_exported_video(
     }
 }
 
+fn screenshot_project_path_from_path(path: &std::path::Path) -> Option<PathBuf> {
+    path.ancestors()
+        .find(|ancestor| ancestor.extension().and_then(|s| s.to_str()) == Some("cap"))
+        .map(std::path::Path::to_path_buf)
+}
+
+fn load_screenshot_project_meta(
+    path: &std::path::Path,
+) -> Result<(PathBuf, RecordingMeta), String> {
+    let project_path = screenshot_project_path_from_path(path)
+        .ok_or_else(|| format!("Could not find screenshot project for {}", path.display()))?;
+    let meta = RecordingMeta::load_for_project(&project_path)
+        .map_err(|err| format!("Failed to load screenshot metadata: {err}"))?;
+    Ok((project_path, meta))
+}
+
+fn save_screenshot_sharing(
+    project_path: &std::path::Path,
+    mut meta: RecordingMeta,
+    uploaded: &upload::UploadedItem,
+    content_hash: Option<String>,
+) -> Result<(), String> {
+    meta.sharing = Some(SharingMeta {
+        link: uploaded.link.clone(),
+        id: uploaded.id.clone(),
+        content_hash,
+    });
+    meta.save_for_project()
+        .map_err(|err| format!("Error saving project {}: {err}", project_path.display()))
+}
+
+#[derive(Serialize, Type, Debug)]
+#[serde(rename_all = "camelCase")]
+struct ScreenshotSharingState {
+    link: String,
+    content_hash: Option<String>,
+}
+
+#[derive(Serialize, Type, Debug)]
+#[serde(rename_all = "camelCase")]
+struct ScreenshotProjectShareState {
+    config: ProjectConfiguration,
+    sharing: Option<ScreenshotSharingState>,
+}
+
+async fn copy_screenshot_share_link(
+    clipboard: &MutableState<'_, ClipboardContext>,
+    link: String,
+    app: &AppHandle,
+) -> Result<(), String> {
+    let _ = clipboard.write().await.set_text(link);
+    notifications::send_notification(app, notifications::NotificationType::ShareableLinkCopied);
+    Ok(())
+}
+
+fn screenshot_share_link_for_hash(
+    sharing: Option<&SharingMeta>,
+    content_hash: &str,
+) -> Option<String> {
+    let sharing = sharing?;
+    if sharing.content_hash.as_deref() == Some(content_hash) {
+        return Some(sharing.link.clone());
+    }
+    None
+}
+
+async fn upgrade_required_result(app: &AppHandle) -> UploadResult {
+    let _ = ShowCapWindow::Upgrade.show(app).await;
+    UploadResult::UpgradeRequired
+}
+
+#[tauri::command]
+#[specta::specta]
+fn get_screenshot_project_share_state(
+    path: PathBuf,
+) -> Result<ScreenshotProjectShareState, String> {
+    let (project_path, meta) = load_screenshot_project_meta(&path)?;
+    let config = ProjectConfiguration::load(&project_path)
+        .map_err(|err| format!("Failed to load screenshot config: {err}"))?;
+    let sharing = meta.sharing.map(|sharing| ScreenshotSharingState {
+        link: sharing.link,
+        content_hash: sharing.content_hash,
+    });
+
+    Ok(ScreenshotProjectShareState { config, sharing })
+}
+
+#[tauri::command]
+#[specta::specta]
+#[instrument(skip(app, clipboard))]
+async fn copy_current_screenshot_share_link(
+    app: AppHandle,
+    clipboard: MutableState<'_, ClipboardContext>,
+    project_path: PathBuf,
+    content_hash: String,
+) -> Result<Option<UploadResult>, String> {
+    let (_, meta) = load_screenshot_project_meta(&project_path)?;
+    let Some(link) = screenshot_share_link_for_hash(meta.sharing.as_ref(), &content_hash) else {
+        return Ok(None);
+    };
+
+    copy_screenshot_share_link(&clipboard, link.clone(), &app).await?;
+    Ok(Some(UploadResult::Success(link)))
+}
+
 #[tauri::command]
 #[specta::specta]
 #[instrument(skip(app, clipboard))]
@@ -3344,40 +3451,70 @@ async fn upload_screenshot(
     };
 
     if !auth.is_upgraded() {
-        ShowCapWindow::Upgrade.show(&app).await.ok();
-        return Ok(UploadResult::UpgradeRequired);
+        return Ok(upgrade_required_result(&app).await);
     }
 
     println!("Uploading screenshot: {screenshot_path:?}");
 
-    let screenshot_dir = screenshot_path.parent().unwrap().to_path_buf();
-    let mut meta = RecordingMeta::load_for_project(&screenshot_dir).unwrap();
+    let (project_path, meta) = load_screenshot_project_meta(&screenshot_path)?;
+    if let Some(sharing) = meta.sharing.as_ref() {
+        copy_screenshot_share_link(&clipboard, sharing.link.clone(), &app).await?;
+        return Ok(UploadResult::Success(sharing.link.clone()));
+    }
 
-    let share_link = if let Some(sharing) = meta.sharing.as_ref() {
-        println!("Screenshot already uploaded, using existing link");
-        sharing.link.clone()
-    } else {
-        let uploaded = upload_image(&app, screenshot_path.clone())
-            .await
-            .map_err(|e| e.to_string())?;
+    let uploaded = match upload_screenshot_file(&app, screenshot_path.clone(), None, None).await {
+        Ok(uploaded) => uploaded,
+        Err(AuthedApiError::InvalidAuthentication) => return Ok(UploadResult::NotAuthenticated),
+        Err(AuthedApiError::UpgradeRequired) => return Ok(upgrade_required_result(&app).await),
+        Err(e) => return Err(e.to_string()),
+    };
+    save_screenshot_sharing(&project_path, meta, &uploaded, None)?;
 
-        meta.sharing = Some(SharingMeta {
-            link: uploaded.link.clone(),
-            id: uploaded.id.clone(),
-        });
-        meta.save_for_project()
-            .map_err(|err| format!("Error saving project: {err}"))?;
+    println!("Copying to clipboard: {:?}", uploaded.link);
 
-        uploaded.link
+    copy_screenshot_share_link(&clipboard, uploaded.link.clone(), &app).await?;
+
+    Ok(UploadResult::Success(uploaded.link))
+}
+
+#[tauri::command]
+#[specta::specta]
+#[instrument(skip(app, clipboard, image_bytes))]
+async fn upload_rendered_screenshot(
+    app: AppHandle,
+    clipboard: MutableState<'_, ClipboardContext>,
+    image_bytes: Vec<u8>,
+    content_type: String,
+    project_path: PathBuf,
+    content_hash: Option<String>,
+) -> Result<UploadResult, String> {
+    let Ok(Some(auth)) = AuthStore::get(&app) else {
+        AuthStore::set(&app, None).map_err(|e| e.to_string())?;
+        return Ok(UploadResult::NotAuthenticated);
     };
 
-    println!("Copying to clipboard: {share_link:?}");
+    if !auth.is_upgraded() {
+        return Ok(upgrade_required_result(&app).await);
+    }
 
-    let _ = clipboard.write().await.set_text(share_link.clone());
+    let (project_path, meta) = load_screenshot_project_meta(&project_path)?;
+    let existing_video_id = meta.sharing.as_ref().map(|sharing| sharing.id.clone());
+    let uploaded =
+        match upload_screenshot_bytes(&app, image_bytes, &content_type, existing_video_id, None)
+            .await
+        {
+            Ok(uploaded) => uploaded,
+            Err(AuthedApiError::InvalidAuthentication) => {
+                return Ok(UploadResult::NotAuthenticated);
+            }
+            Err(AuthedApiError::UpgradeRequired) => return Ok(upgrade_required_result(&app).await),
+            Err(e) => return Err(e.to_string()),
+        };
+    save_screenshot_sharing(&project_path, meta, &uploaded, content_hash)?;
 
-    notifications::send_notification(&app, notifications::NotificationType::ShareableLinkCopied);
+    copy_screenshot_share_link(&clipboard, uploaded.link.clone(), &app).await?;
 
-    Ok(UploadResult::Success(share_link))
+    Ok(UploadResult::Success(uploaded.link))
 }
 
 #[tauri::command]
@@ -4407,12 +4544,16 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
             generate_zoom_segments_from_clicks,
             generate_keyboard_segments,
             render_screenshot_for_export,
+            render_screenshot_project_for_export,
+            get_screenshot_project_share_state,
             permissions::open_permission_settings,
             permissions::do_permissions_check,
             permissions::request_permission,
             get_devices_snapshot,
             upload_exported_video,
+            copy_current_screenshot_share_link,
             upload_screenshot,
+            upload_rendered_screenshot,
             create_screenshot_editor_instance,
             update_screenshot_config,
             prewarm_screenshot_background,
@@ -5765,6 +5906,7 @@ async fn resume_uploads(app: AppHandle) -> Result<(), String> {
                                             meta.sharing = Some(SharingMeta {
                                                 link: uploaded_video.link.clone(),
                                                 id: uploaded_video.id.clone(),
+                                                content_hash: None,
                                             });
                                             meta.save_for_project()
                                                 .map_err(|e| error!("Failed to save recording meta: {e}"))
@@ -6208,4 +6350,39 @@ fn open_project_from_path(path: &Path, app: AppHandle) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod screenshot_share_cache_tests {
+    use super::*;
+
+    fn sharing(content_hash: Option<&str>) -> SharingMeta {
+        SharingMeta {
+            id: String::from("video-id"),
+            link: String::from("https://cap.so/s/video-id"),
+            content_hash: content_hash.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn reuses_link_when_content_hash_matches() {
+        let link =
+            screenshot_share_link_for_hash(Some(&sharing(Some("hash-a"))), "hash-a").unwrap();
+
+        assert_eq!(link, "https://cap.so/s/video-id");
+    }
+
+    #[test]
+    fn does_not_reuse_link_when_content_hash_changed() {
+        let link = screenshot_share_link_for_hash(Some(&sharing(Some("hash-a"))), "hash-b");
+
+        assert!(link.is_none());
+    }
+
+    #[test]
+    fn does_not_reuse_legacy_link_without_content_hash() {
+        let link = screenshot_share_link_for_hash(Some(&sharing(None)), "hash-a");
+
+        assert!(link.is_none());
+    }
 }
