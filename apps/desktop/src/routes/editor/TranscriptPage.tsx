@@ -1,5 +1,7 @@
 import { createEventListener } from "@solid-primitives/event-listener";
 import { makePersisted } from "@solid-primitives/storage";
+import { save } from "@tauri-apps/plugin-dialog";
+import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { cx } from "cva";
 import {
 	batch,
@@ -11,6 +13,7 @@ import {
 	Show,
 } from "solid-js";
 import { produce } from "solid-js/store";
+import toast from "solid-toast";
 import { defaultCaptionSettings } from "~/store/captions";
 import { commands } from "~/utils/tauri";
 import {
@@ -20,6 +23,12 @@ import {
 	mapSourceTimeToEdited,
 	syncCaptionWordsWithText,
 } from "./captions";
+import {
+	type CaptionExportFormat,
+	captionExportDefaultPath,
+	createCaptionExportCues,
+	formatCaptionCues,
+} from "./captions-export";
 import { FPS, useEditorContext } from "./context";
 import { rippleDeleteAllTracks } from "./timeline-utils";
 
@@ -57,6 +66,7 @@ export function TranscriptPanel() {
 		project,
 		setProject,
 		editorInstance,
+		meta,
 		totalDuration,
 		previewResolutionBase,
 	} = useEditorContext();
@@ -66,6 +76,16 @@ export function TranscriptPanel() {
 	const [textSizeIndex, setTextSizeIndex] = makePersisted(createSignal(1), {
 		name: "editorTranscriptTextSize",
 	});
+	const [exportingFormat, setExportingFormat] =
+		createSignal<CaptionExportFormat | null>(null);
+
+	const exportableCues = createMemo(() =>
+		createCaptionExportCues(
+			project.captions?.segments ?? [],
+			project.timeline?.segments ?? [],
+			recordingSegments(),
+		),
+	);
 
 	const allWords = createMemo((): FlatWord[] => {
 		const segments = project.captions?.segments ?? [];
@@ -199,6 +219,36 @@ export function TranscriptPanel() {
 		);
 		setEditorState("timeline", "tracks", "caption", true);
 		setEditorState("captions", "isStale", false);
+	};
+
+	const handleExportCaptions = async (format: CaptionExportFormat) => {
+		const cues = exportableCues();
+		if (cues.length === 0) {
+			toast.error("No captions to download");
+			return;
+		}
+
+		setExportingFormat(format);
+		try {
+			const path = await save({
+				defaultPath: captionExportDefaultPath(meta().prettyName, format),
+				filters: [
+					{
+						name: format === "srt" ? "SubRip Subtitle" : "WebVTT",
+						extensions: [format],
+					},
+				],
+			});
+			if (!path) return;
+
+			await writeTextFile(path, formatCaptionCues(cues, format));
+			toast.success(`Captions saved as ${format.toUpperCase()}`);
+		} catch (error) {
+			console.error("Failed to save captions:", error);
+			toast.error("Failed to save captions");
+		} finally {
+			setExportingFormat(null);
+		}
 	};
 
 	const activeWordIndex = createMemo(() => {
@@ -413,7 +463,7 @@ export function TranscriptPanel() {
 	return (
 		<div class="flex flex-col min-h-0 h-full">
 			<div class="px-3 py-2 border-b border-gray-3 flex items-center justify-between shrink-0">
-				<span class="text-xs font-medium text-gray-12">Transcript</span>
+				<span class="text-xs font-medium text-gray-12">Captions</span>
 				<div class="flex items-center gap-1">
 					<button
 						type="button"
@@ -422,6 +472,28 @@ export function TranscriptPanel() {
 					>
 						<IconLucidePlus class="size-3" />
 						Add
+					</button>
+					<button
+						type="button"
+						class="flex items-center gap-1 rounded-sm px-2 h-6 hover:bg-gray-3 text-gray-9 hover:text-gray-12 transition-colors text-xs disabled:opacity-30 disabled:pointer-events-none"
+						disabled={
+							exportableCues().length === 0 || exportingFormat() !== null
+						}
+						onClick={() => void handleExportCaptions("srt")}
+					>
+						<IconCapDownload class="size-3" />
+						SRT
+					</button>
+					<button
+						type="button"
+						class="flex items-center gap-1 rounded-sm px-2 h-6 hover:bg-gray-3 text-gray-9 hover:text-gray-12 transition-colors text-xs disabled:opacity-30 disabled:pointer-events-none"
+						disabled={
+							exportableCues().length === 0 || exportingFormat() !== null
+						}
+						onClick={() => void handleExportCaptions("vtt")}
+					>
+						<IconCapDownload class="size-3" />
+						VTT
 					</button>
 					<button
 						type="button"
@@ -780,7 +852,7 @@ function TranscriptEditor(props: {
 				fallback={
 					<div class="flex flex-col items-center justify-center h-full text-gray-9">
 						<IconCapCaptions class="size-10 mb-3 text-gray-7" />
-						<span class="text-sm">No transcript available</span>
+						<span class="text-sm">No captions available</span>
 						<span class="text-xs mt-1">
 							Generate captions in the editor first
 						</span>
