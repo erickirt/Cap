@@ -266,14 +266,30 @@ impl ScreenshotEditorInstances {
             )
         } else {
             let instance = cap_rendering::create_wgpu_instance().await;
-            let adapter = instance
-                .request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::HighPerformance,
-                    force_fallback_adapter: false,
-                    compatible_surface: None,
-                })
-                .await
-                .map_err(|_| "No GPU adapter found".to_string())?;
+            let force_software_adapter = cap_rendering::force_software_wgpu_adapter();
+            let hardware_adapter = if force_software_adapter {
+                None
+            } else {
+                instance
+                    .request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::HighPerformance,
+                        force_fallback_adapter: false,
+                        compatible_surface: None,
+                    })
+                    .await
+                    .ok()
+            };
+            let adapter = match hardware_adapter {
+                Some(adapter) => adapter,
+                None => instance
+                    .request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::LowPower,
+                        force_fallback_adapter: true,
+                        compatible_surface: None,
+                    })
+                    .await
+                    .map_err(|_| "No GPU adapter found".to_string())?,
+            };
             let adapter_info = adapter.get_info();
             let is_software_adapter = cap_rendering::is_software_wgpu_adapter(&adapter_info);
 
@@ -1505,14 +1521,30 @@ pub async fn render_screenshot_png(instance: &ScreenshotEditorInstance) -> Resul
         )
     } else {
         let instance = cap_rendering::create_wgpu_instance().await;
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                force_fallback_adapter: false,
-                compatible_surface: None,
-            })
-            .await
-            .map_err(|_| "No GPU adapter found".to_string())?;
+        let force_software_adapter = cap_rendering::force_software_wgpu_adapter();
+        let hardware_adapter = if force_software_adapter {
+            None
+        } else {
+            instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    force_fallback_adapter: false,
+                    compatible_surface: None,
+                })
+                .await
+                .ok()
+        };
+        let adapter = match hardware_adapter {
+            Some(adapter) => adapter,
+            None => instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::LowPower,
+                    force_fallback_adapter: true,
+                    compatible_surface: None,
+                })
+                .await
+                .map_err(|_| "No GPU adapter found".to_string())?,
+        };
         let adapter_info = adapter.get_info();
         let is_software_adapter = cap_rendering::is_software_wgpu_adapter(&adapter_info);
         let (device, queue) = adapter
