@@ -35,7 +35,7 @@ export {
 	type ViewerSettingKey,
 	type ViewerSettings,
 } from "./Videos/EffectiveVideoRules.ts";
-export { Videos } from "./Videos/index.ts";
+export { findScreenshotObjectKey, Videos } from "./Videos/index.ts";
 export {
 	buildCanView,
 	VideosPolicy,
