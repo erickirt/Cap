@@ -61,11 +61,8 @@ fn no_args_prints_branded_intro() {
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     assert!(stderr(&output).is_empty(), "stderr: {}", stderr(&output));
     let text = stdout(&output);
-    assert!(text.contains(".----------------------."), "stdout: {text}");
-    assert!(text.contains(".----------."), "stdout: {text}");
-    assert!(text.contains(".------."), "stdout: {text}");
-    assert!(text.contains("(      )"), "stdout: {text}");
-    assert!(text.contains("/ ____|__ _ _ __"), "stdout: {text}");
+    assert!(text.contains("██████████████████"), "stdout: {text}");
+    assert!(text.contains("/ ___|__ _ _ __"), "stdout: {text}");
     assert!(text.contains("cap record start --screen <id> --detach"));
     assert!(text.contains("cap --help"));
 }
