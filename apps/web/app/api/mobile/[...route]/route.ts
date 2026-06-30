@@ -539,12 +539,43 @@ const getRootFolders = Effect.fn("Mobile.getRootFolders")(function* (
 	return rows satisfies MobileFolder[];
 });
 
-const assertOrganizationAccess = Effect.fn("Mobile.assertOrganizationAccess")(
+const hasOrganizationAccess = Effect.fn("Mobile.hasOrganizationAccess")(
 	function* (organizationId: Organisation.OrganisationId) {
 		const user = yield* CurrentUser;
-		const organizations = yield* getAccessibleOrganizations(user.id);
-		const hasAccess = organizations.some((org) => org.id === organizationId);
-		if (!hasAccess) return yield* Effect.fail(new HttpApiError.Forbidden());
+		const database = yield* Database;
+		const [row] = yield* database.use((db) =>
+			db
+				.select({ id: Db.organizations.id })
+				.from(Db.organizations)
+				.leftJoin(
+					Db.organizationMembers,
+					and(
+						eq(Db.organizationMembers.organizationId, Db.organizations.id),
+						eq(Db.organizationMembers.userId, user.id),
+					),
+				)
+				.where(
+					and(
+						eq(Db.organizations.id, organizationId),
+						isNull(Db.organizations.tombstoneAt),
+						or(
+							eq(Db.organizations.ownerId, user.id),
+							eq(Db.organizationMembers.userId, user.id),
+						),
+					),
+				)
+				.limit(1),
+		);
+
+		return Boolean(row);
+	},
+);
+
+const assertOrganizationAccess = Effect.fn("Mobile.assertOrganizationAccess")(
+	function* (organizationId: Organisation.OrganisationId) {
+		if (!(yield* hasOrganizationAccess(organizationId))) {
+			return yield* Effect.fail(new HttpApiError.Forbidden());
+		}
 	},
 );
 
@@ -872,14 +903,10 @@ const assertCanCreateFeedback = Effect.fn("Mobile.assertCanCreateFeedback")(
 
 		if (!row) return yield* Effect.fail(new HttpApiError.NotFound());
 		if (row.ownerId === user.id) return;
-		if (row.sharedOrganizationId) {
-			yield* assertOrganizationAccess(row.sharedOrganizationId).pipe(
-				Effect.catchAll((error) =>
-					error instanceof HttpApiError.Forbidden
-						? Effect.fail(new HttpApiError.NotFound())
-						: Effect.fail(error),
-				),
-			);
+		if (
+			row.sharedOrganizationId &&
+			(yield* hasOrganizationAccess(row.sharedOrganizationId))
+		) {
 			return;
 		}
 

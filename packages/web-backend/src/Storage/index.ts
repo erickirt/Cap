@@ -558,12 +558,14 @@ const makeGoogleDriveAccess = ({
 					},
 					tokenStore,
 				).pipe(mapStorageError);
+				const uploadBody =
+					body instanceof Uint8Array ? new Uint8Array(body).buffer : body;
 				const response = yield* Effect.tryPromise({
 					try: () =>
 						fetch(uploadUrl, {
 							method: "PUT",
 							headers: getGoogleDriveUploadHeaders(contentType, contentLength),
-							body,
+							body: uploadBody,
 						}),
 					catch: (cause) => new StorageDomain.StorageError({ cause }),
 				});

@@ -306,8 +306,9 @@ export async function GET(request: NextRequest) {
 
 	try {
 		const mp4Buffer = await convertRemoteVideoToMp4Buffer(cdnUrl);
+		const body = new Uint8Array(mp4Buffer).buffer;
 
-		return new NextResponse(mp4Buffer, {
+		return new NextResponse(body, {
 			headers: {
 				"Content-Type": "video/mp4",
 				"Content-Disposition": `attachment; filename="${mp4Filename}"`,
