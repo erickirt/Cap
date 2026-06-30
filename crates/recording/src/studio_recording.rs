@@ -105,7 +105,7 @@ impl Actor {
         pipeline: Pipeline,
         segment_start_time: f64,
     ) -> anyhow::Result<(Cursors, u32)> {
-        tracing::info!("pipeline shuting down");
+        tracing::info!("pipeline shutting down");
 
         let mut pipeline = pipeline.stop().await?;
 
