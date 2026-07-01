@@ -443,10 +443,7 @@ export function DrizzleAdapter(db: MySql2Database): Adapter {
 			const normalizedIdentifier = identifier?.toLowerCase() ?? "";
 			const storedIdentifier = row.identifier?.toLowerCase() ?? "";
 			if (normalizedIdentifier !== storedIdentifier) {
-				console.warn("[useVerificationToken] Identifier mismatch", {
-					expected: normalizedIdentifier,
-					stored: storedIdentifier,
-				});
+				console.warn("[useVerificationToken] Identifier mismatch");
 				return null;
 			}
 			await db
