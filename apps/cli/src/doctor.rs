@@ -1,8 +1,5 @@
 use serde::Serialize;
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::path::{Path, PathBuf};
 
 use crate::{OutputFormat, write_json};
 
@@ -456,7 +453,7 @@ fn install_check(install: &Result<cap_cli_install::CliInstallStatus, String>) ->
     }
 }
 
-fn capture_ready(permissions: &Permissions, checks: &[Check]) -> bool {
+fn capture_ready(permissions: &Permissions, _checks: &[Check]) -> bool {
     let permission_ready = match permissions.screen_recording {
         #[cfg(target_os = "macos")]
         PermissionStatus::Granted => true,
