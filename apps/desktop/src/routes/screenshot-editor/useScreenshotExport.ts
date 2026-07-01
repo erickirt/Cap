@@ -180,7 +180,10 @@ export function useScreenshotExport() {
 				toast.loading("Preparing upload", { id: toastId });
 			}
 
-			const needsAlpha = canvasNeedsTransparency(outputCanvas, project);
+			const needsAlpha =
+				destination === "share" || destination === "clipboard"
+					? canvasNeedsTransparency(outputCanvas, project)
+					: false;
 			const blobCanvas =
 				destination === "clipboard" && !needsAlpha
 					? withWhiteBackground(outputCanvas)
