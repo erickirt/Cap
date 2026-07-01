@@ -6,7 +6,7 @@ use specta::Type;
 use std::collections::BTreeMap;
 #[cfg(target_os = "macos")]
 use tauri::Listener;
-use tauri::{AppHandle, Wry};
+use tauri::{AppHandle, Manager, Wry};
 use tauri_plugin_store::StoreExt;
 use tracing::{error, instrument};
 use uuid::Uuid;
@@ -218,6 +218,8 @@ pub struct GeneralSettingsStore {
     pub enable_telemetry: bool,
     #[serde(default)]
     pub out_of_process_muxer: bool,
+    #[serde(default)]
+    pub recordings_path: Option<String>,
 }
 
 fn default_enable_native_camera_preview() -> bool {
@@ -314,6 +316,7 @@ impl Default for GeneralSettingsStore {
             has_completed_onboarding: false,
             enable_telemetry: true,
             out_of_process_muxer: cap_recording::DEFAULT_OUT_OF_PROCESS_MUXER,
+            recordings_path: None,
         }
     }
 }
@@ -328,6 +331,23 @@ pub enum AppTheme {
 }
 
 impl GeneralSettingsStore {
+    pub fn recordings_dir(app: &AppHandle<Wry>) -> std::path::PathBuf {
+        let custom = Self::get(app)
+            .ok()
+            .flatten()
+            .and_then(|s| s.recordings_path)
+            .and_then(|p| {
+                let path = std::path::PathBuf::from(&p);
+                if path.is_absolute() { Some(path) } else { None }
+            });
+
+        let path = custom.unwrap_or_else(|| {
+            app.path().app_data_dir().unwrap().join("recordings")
+        });
+        std::fs::create_dir_all(&path).unwrap_or_default();
+        path
+    }
+
     // The effective value: the native preview is macOS-only; it is not
     // reliable on Windows, so the stored setting is ignored there and the
     // websocket preview is always used.
