@@ -453,7 +453,8 @@ fn install_check(install: &Result<cap_cli_install::CliInstallStatus, String>) ->
     }
 }
 
-fn capture_ready(permissions: &Permissions, _checks: &[Check]) -> bool {
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+fn capture_ready(permissions: &Permissions, checks: &[Check]) -> bool {
     let permission_ready = match permissions.screen_recording {
         #[cfg(target_os = "macos")]
         PermissionStatus::Granted => true,
