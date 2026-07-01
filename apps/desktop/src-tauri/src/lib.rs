@@ -4269,7 +4269,8 @@ async fn pick_recordings_folder(app: AppHandle) -> Result<Option<String>, String
             let _ = tx.send(
                 path.as_ref()
                     .and_then(|p| p.as_path())
-                    .map(|p| p.to_string_lossy().to_string()),
+                    .and_then(|p| p.to_str())
+                    .map(|s| s.to_string()),
             );
         });
 

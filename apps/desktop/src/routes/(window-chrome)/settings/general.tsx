@@ -642,14 +642,22 @@ function Inner(props: { initialStore: GeneralSettingsStore | null }) {
 				<StorageSection
 					recordingsPath={settings.recordingsPath ?? null}
 					onPick={async () => {
-						const path = await commands.pickRecordingsFolder();
-						if (path !== null) {
-							setSettings("recordingsPath", path);
+						try {
+							const path = await commands.pickRecordingsFolder();
+							if (path !== null) {
+								setSettings("recordingsPath", path);
+							}
+						} catch (e) {
+							toast.error(`Failed to choose recordings folder: ${e instanceof Error ? e.message : String(e)}`);
 						}
 					}}
 					onReset={async () => {
-						await commands.resetRecordingsFolder();
-						setSettings("recordingsPath", null);
+						try {
+							await commands.resetRecordingsFolder();
+							setSettings("recordingsPath", null);
+						} catch (e) {
+							toast.error(`Failed to reset recordings folder: ${e instanceof Error ? e.message : String(e)}`);
+						}
 					}}
 				/>
 

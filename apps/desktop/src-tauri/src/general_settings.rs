@@ -333,6 +333,7 @@ pub enum AppTheme {
 impl GeneralSettingsStore {
     pub fn recordings_dir(app: &AppHandle<Wry>) -> std::path::PathBuf {
         let custom = Self::get(app)
+            .map_err(|e| tracing::warn!("Failed to read general settings for recordings_dir: {e}"))
             .ok()
             .flatten()
             .and_then(|s| s.recordings_path)
@@ -344,7 +345,9 @@ impl GeneralSettingsStore {
         let path = custom.unwrap_or_else(|| {
             app.path().app_data_dir().unwrap().join("recordings")
         });
-        std::fs::create_dir_all(&path).unwrap_or_default();
+        if let Err(e) = std::fs::create_dir_all(&path) {
+            tracing::warn!(?path, %e, "Failed to create recordings directory");
+        }
         path
     }
 
