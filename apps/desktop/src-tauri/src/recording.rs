@@ -2372,8 +2372,8 @@ async fn handle_spawn_failure(
 
     // DeviceNotFound errors are surfaced to the user via the frontend toast; skip the
     // blocking native dialog so the overlay stays responsive and the error isn't repeated.
-    let is_device_not_found = message.contains("no longer available")
-        || message.contains("DeviceNotFound");
+    let is_device_not_found =
+        message.contains("no longer available") || message.contains("DeviceNotFound");
 
     if !is_device_not_found {
         let mut dialog = MessageDialogBuilder::new(
