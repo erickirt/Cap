@@ -1749,8 +1749,7 @@ function RecordingControls(props: {
 										capture_system_audio: rawOptions.captureSystemAudio,
 									})
 									.catch((e: unknown) => {
-										const msg =
-											e instanceof Error ? e.message : String(e);
+										const msg = e instanceof Error ? e.message : String(e);
 										if (
 											msg.includes("no longer available") ||
 											msg.includes("DeviceNotFound")
@@ -1759,9 +1758,7 @@ function RecordingControls(props: {
 												"Selected microphone is not available. Please select a different microphone in settings.",
 											);
 										} else {
-											toast.error(
-												`Failed to start recording: ${msg}`,
-											);
+											toast.error(`Failed to start recording: ${msg}`);
 										}
 									});
 							}}
