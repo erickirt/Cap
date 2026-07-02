@@ -85,7 +85,14 @@ pub fn default_studio_recording_quality() -> StudioRecordingQuality {
 impl MainWindowRecordingStartBehaviour {
     pub fn perform(&self, window: &tauri::WebviewWindow) -> tauri::Result<()> {
         match self {
-            Self::Close => window.hide(),
+            Self::Close => {
+                // On Windows, hide() leaves the DirectComposition surface composited on screen as
+                // a white ghost box. minimize() releases the surface without leaving an artifact.
+                #[cfg(windows)]
+                return window.minimize();
+                #[cfg(not(windows))]
+                window.hide()
+            }
             Self::Minimise => window.minimize(),
         }
     }
