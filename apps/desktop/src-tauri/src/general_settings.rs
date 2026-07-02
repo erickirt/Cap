@@ -416,6 +416,17 @@ pub fn init(app: &AppHandle) {
     };
 
     append_missing_default_excluded_windows(&mut store.excluded_windows);
+
+    const REMOVE_TARGET_SELECT_MIGRATION_KEY: &str = "remove_cap_target_select_exclusion_v1";
+    if let Ok(raw_store) = app.store("store")
+        && raw_store.get(REMOVE_TARGET_SELECT_MIGRATION_KEY).is_none()
+    {
+        store.excluded_windows.retain(|w| {
+            w.window_title.as_deref() != Some("Cap Target Select")
+        });
+        raw_store.set(REMOVE_TARGET_SELECT_MIGRATION_KEY, json!(true));
+    }
+
     crate::posthog::set_telemetry_enabled(store.enable_telemetry);
     register_bundled_muxer_binary(app);
 
