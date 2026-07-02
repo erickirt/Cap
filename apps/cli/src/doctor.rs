@@ -1,5 +1,7 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::time::Duration;
 
 use crate::{OutputFormat, write_json};
 
