@@ -2370,18 +2370,25 @@ async fn handle_spawn_failure(
     }
     .emit(app);
 
-    let mut dialog = MessageDialogBuilder::new(
-        app.dialog().clone(),
-        "An error occurred".to_string(),
-        message.clone(),
-    )
-    .kind(tauri_plugin_dialog::MessageDialogKind::Error);
+    // DeviceNotFound errors are surfaced to the user via the frontend toast; skip the
+    // blocking native dialog so the overlay stays responsive and the error isn't repeated.
+    let is_device_not_found = message.contains("no longer available")
+        || message.contains("DeviceNotFound");
 
-    if let Some(window) = CapWindowId::RecordingControls.get(app) {
-        dialog = dialog.parent(&window);
+    if !is_device_not_found {
+        let mut dialog = MessageDialogBuilder::new(
+            app.dialog().clone(),
+            "An error occurred".to_string(),
+            message.clone(),
+        )
+        .kind(tauri_plugin_dialog::MessageDialogKind::Error);
+
+        if let Some(window) = CapWindowId::RecordingControls.get(app) {
+            dialog = dialog.parent(&window);
+        }
+
+        dialog.blocking_show();
     }
-
-    dialog.blocking_show();
 
     let mut state = state_mtx.write().await;
     let _ = handle_recording_end(
