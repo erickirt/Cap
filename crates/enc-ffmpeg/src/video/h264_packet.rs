@@ -207,22 +207,14 @@ impl H264PacketEncoder {
             let rate = tb.denominator() as f64 / tb.numerator() as f64;
             let pts = (timestamp.as_secs_f64() * rate).round() as i64;
             let first_pts = *self.first_pts.get_or_insert(pts);
-            let pts = normalize_input_pts(
-                pts - first_pts,
-                self.last_frame_pts,
-                tb,
-                self.frame_rate,
-            );
+            let pts =
+                normalize_input_pts(pts - first_pts, self.last_frame_pts, tb, self.frame_rate);
             self.last_frame_pts = Some(pts);
             frame.set_pts(Some(pts));
         } else if let Some(pts) = frame.pts() {
             let first_pts = *self.first_pts.get_or_insert(pts);
-            let pts = normalize_input_pts(
-                pts - first_pts,
-                self.last_frame_pts,
-                tb,
-                self.frame_rate,
-            );
+            let pts =
+                normalize_input_pts(pts - first_pts, self.last_frame_pts, tb, self.frame_rate);
             self.last_frame_pts = Some(pts);
             frame.set_pts(Some(pts));
         } else {
