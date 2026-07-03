@@ -42,8 +42,10 @@ impl BufferedResampler {
         };
 
         for buffer in self.buffer.iter().skip(1) {
-            // fill in gap
-            remaining_samples += (buffer.1 - pts) as usize;
+            // Fill in gaps between buffered frames. Non-integer rate ratios
+            // (44.1k -> 48k) can round consecutive pts to overlap by a sample,
+            // making the difference negative; that is an overlap, not a gap.
+            remaining_samples += (buffer.1 - pts).max(0) as usize;
             remaining_samples += buffer.0.samples();
             pts += buffer.0.samples() as i64;
         }
@@ -53,6 +55,10 @@ impl BufferedResampler {
 
     pub fn output(&self) -> resampling::context::Definition {
         *self.resampler.output()
+    }
+
+    pub fn input(&self) -> resampling::context::Definition {
+        *self.resampler.input()
     }
 
     pub fn add_frame(&mut self, mut frame: ffmpeg::frame::Audio) {

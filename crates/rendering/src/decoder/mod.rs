@@ -505,6 +505,10 @@ impl AsyncVideoDecoderHandle {
             ))
             .is_err()
         {
+            tracing::warn!(
+                time = adjusted_time,
+                "decoder thread is gone; frame request dropped"
+            );
             return None;
         }
 

@@ -70,7 +70,6 @@ struct PendingRequest {
 }
 
 const MAX_FRAME_LOOKBACK_TOLERANCE: u32 = 2;
-const MAX_FRAME_FALLBACK_DISTANCE: u32 = 90;
 
 fn extract_yuv_planes(frame: &frame::Video) -> Option<(Vec<u8>, PixelFormat, u32, u32)> {
     let height = frame.height();
@@ -513,12 +512,11 @@ impl FfmpegDecoder {
                             if current_frame > requested_frame && respond.is_some() {
                                 let last_sent_frame_clone = sw_last_sent_frame.borrow().clone();
 
+                                // A frame at-or-before the request is the true content for
+                                // that time in a VFR recording: a pts gap means the frame
+                                // stayed on screen, however long the gap is.
                                 if let Some((respond, last_frame)) = last_sent_frame_clone
-                                    .filter(|l| {
-                                        l.number <= requested_frame
-                                            && requested_frame.saturating_sub(l.number)
-                                                <= MAX_FRAME_FALLBACK_DISTANCE
-                                    })
+                                    .filter(|l| l.number <= requested_frame)
                                     .and_then(|l| Some((respond.take()?, l)))
                                 {
                                     (respond)(last_frame);
@@ -539,13 +537,11 @@ impl FfmpegDecoder {
                         sw_last_active_frame = Some(requested_frame);
 
                         if let Some(respond) = respond.take() {
+                            // The newest cached frame at-or-before the request is always
+                            // a valid VFR hold, regardless of how far back it is.
                             let best_cached = sw_cache
                                 .range(..=requested_frame)
                                 .next_back()
-                                .filter(|(k, _)| {
-                                    requested_frame.saturating_sub(**k)
-                                        <= MAX_FRAME_FALLBACK_DISTANCE
-                                })
                                 .map(|(_, v)| v);
 
                             if let Some(cached) = best_cached {
@@ -824,12 +820,11 @@ impl FfmpegDecoder {
                         if current_frame > requested_frame && respond.is_some() {
                             let last_sent_frame_clone = last_sent_frame.borrow().clone();
 
+                            // A frame at-or-before the request is the true content for
+                            // that time in a VFR recording: a pts gap means the frame
+                            // stayed on screen, however long the gap is.
                             if let Some((respond, last_frame)) = last_sent_frame_clone
-                                .filter(|l| {
-                                    l.number <= requested_frame
-                                        && requested_frame.saturating_sub(l.number)
-                                            <= MAX_FRAME_FALLBACK_DISTANCE
-                                })
+                                .filter(|l| l.number <= requested_frame)
                                 .and_then(|l| Some((respond.take()?, l)))
                             {
                                 (respond)(last_frame);
@@ -850,13 +845,10 @@ impl FfmpegDecoder {
                     last_active_frame = Some(requested_frame);
 
                     if let Some(respond) = respond.take() {
-                        let best_cached = cache
-                            .range(..=requested_frame)
-                            .next_back()
-                            .filter(|(k, _)| {
-                                requested_frame.saturating_sub(**k) <= MAX_FRAME_FALLBACK_DISTANCE
-                            })
-                            .map(|(_, v)| v);
+                        // The newest cached frame at-or-before the request is always a
+                        // valid VFR hold, regardless of how far back it is.
+                        let best_cached =
+                            cache.range(..=requested_frame).next_back().map(|(_, v)| v);
 
                         if let Some(cached) = best_cached {
                             let output = cached.clone().produce(&mut converter);

@@ -761,12 +761,31 @@ impl AVAssetReaderDecoder {
                                         .next_back()
                                         .or_else(|| cache.range(req.frame..).next());
 
+                                    // Always answer with the nearest available frame. A frame
+                                    // at-or-before the request is the true content for that
+                                    // time in a VFR recording (a pts gap means the frame stayed
+                                    // on screen); a later frame is the best remaining answer.
+                                    // Leaving the request unanswered makes the loop keep pulling
+                                    // frames forward, evicting the hold frame from the cache and
+                                    // wedging every later request behind the cache floor.
                                     if let Some((&frame_num, cached)) = nearest {
-                                        let distance = req.frame.abs_diff(frame_num);
-                                        if distance <= req.max_fallback_distance {
-                                            let _ =
-                                                req.sender.send(cached.data().to_decoded_frame());
+                                        if frame_num > req.frame
+                                            && req.frame.abs_diff(frame_num)
+                                                > req.max_fallback_distance
+                                        {
+                                            tracing::debug!(
+                                                req_frame = req.frame,
+                                                nearest_frame = frame_num,
+                                                "serving forward frame across pts gap"
+                                            );
                                         }
+                                        let _ = req.sender.send(cached.data().to_decoded_frame());
+                                    } else {
+                                        tracing::warn!(
+                                            req_frame = req.frame,
+                                            current_frame,
+                                            "dropping overshot request: cache empty"
+                                        );
                                     }
                                 }
                             } else {
@@ -901,20 +920,20 @@ impl AVAssetReaderDecoder {
                         .or_else(|| cache.range(req.frame..).next());
 
                     if let Some((&frame_num, cached)) = nearest {
-                        let distance = req.frame.abs_diff(frame_num);
-                        if distance <= fallback_distance {
-                            let _ = req.sender.send(cached.data().to_decoded_frame());
-                        } else if allow_relaxed_fallback
-                            && let Some(ref last) = *last_sent_frame.borrow()
+                        // Always answer with the nearest available frame: at-or-before
+                        // the request it is the true VFR hold content, after the request
+                        // it is the best remaining answer. Dropping the request instead
+                        // starves the render loop and wedges gap playback/export.
+                        if frame_num > req.frame
+                            && req.frame.abs_diff(frame_num) > fallback_distance
                         {
-                            let _ = req.sender.send(last.to_decoded_frame());
-                        } else if allow_relaxed_fallback
-                            && let Some(ref first) = *first_ever_frame.borrow()
-                        {
-                            let _ = req.sender.send(first.to_decoded_frame());
-                        } else {
-                            unfulfilled_count += 1;
+                            tracing::debug!(
+                                req_frame = req.frame,
+                                nearest_frame = frame_num,
+                                "serving forward frame across pts gap"
+                            );
                         }
+                        let _ = req.sender.send(cached.data().to_decoded_frame());
                     } else if allow_relaxed_fallback
                         && let Some(ref last) = *last_sent_frame.borrow()
                     {
