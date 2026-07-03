@@ -2850,10 +2850,6 @@ async fn create_editor_instance(window: Window) -> Result<SerializedEditorInstan
 
     let editor_instance = EditorInstances::get_or_create(&window, path).await?;
 
-    let meta = editor_instance.meta();
-
-    println!("Pretty name: {}", meta.pretty_name);
-
     Ok(SerializedEditorInstance {
         frames_socket_url: format!("ws://localhost:{}", editor_instance.ws_port),
         recording_duration: editor_instance.recordings.duration(),
@@ -4104,10 +4100,15 @@ async fn get_mic_waveforms(editor_instance: WindowEditorInstance) -> Result<Vec<
     let mut out = Vec::new();
 
     for segment in editor_instance.segment_medias.iter() {
-        if let Some(audio) = &segment.audio {
-            out.push(audio::get_waveform(audio));
-        } else {
-            out.push(Vec::new());
+        // Waits for the background decode; a failed track just renders as an
+        // empty waveform (playback/export surface the actual error).
+        match segment.audio.get().await {
+            Ok(Some(audio)) => out.push(audio::get_waveform(&audio)),
+            Ok(None) => out.push(Vec::new()),
+            Err(error) => {
+                warn!(%error, "Mic audio failed to load; returning empty waveform");
+                out.push(Vec::new());
+            }
         }
     }
 
@@ -4123,10 +4124,13 @@ async fn get_system_audio_waveforms(
     let mut out = Vec::new();
 
     for segment in editor_instance.segment_medias.iter() {
-        if let Some(audio) = &segment.system_audio {
-            out.push(audio::get_waveform(audio));
-        } else {
-            out.push(Vec::new());
+        match segment.system_audio.get().await {
+            Ok(Some(audio)) => out.push(audio::get_waveform(&audio)),
+            Ok(None) => out.push(Vec::new()),
+            Err(error) => {
+                warn!(%error, "System audio failed to load; returning empty waveform");
+                out.push(Vec::new());
+            }
         }
     }
 
@@ -6134,6 +6138,15 @@ async fn create_editor_instance_impl(
             });
         }
     });
+
+    // Render the first frame immediately so the frame websocket already has a
+    // frame to hand the editor UI the moment it connects, instead of waiting
+    // for the UI to request one. Mirrors the frontend's initial request
+    // (frame 0 at FPS/DEFAULT_PREVIEW_QUALITY in editor/context.ts); if the UI
+    // requests different parameters it simply triggers a fresh render.
+    instance
+        .preview_tx
+        .send_modify(|v| *v = Some((0, 60, XY::new(1248, 702))));
 
     Ok((instance, event_id))
 }
