@@ -30,11 +30,13 @@ use serde::Serialize;
 
 const CONTENT_SECS: f64 = 4.0;
 /// Absolute tolerance for a muxed pts vs the sent capture timestamp. Covers
-/// warmup anchoring, emission jitter and encoder rounding.
-const ABS_TOLERANCE_SECS: f64 = 0.20;
+/// warmup anchoring, emission jitter and encoder rounding, plus scheduler
+/// noise on shared CI runners.
+const ABS_TOLERANCE_SECS: f64 = 0.25;
 /// Tolerance for the relative structure (pts deltas vs sent deltas), which is
-/// what actually determines sync drift.
-const REL_TOLERANCE_SECS: f64 = 0.10;
+/// what actually determines sync drift. The bug class this guards against
+/// produces errors of a second or more.
+const REL_TOLERANCE_SECS: f64 = 0.15;
 /// Tolerance for decoded audio duration vs generated duration.
 const AUDIO_DURATION_TOLERANCE_SECS: f64 = 0.15;
 

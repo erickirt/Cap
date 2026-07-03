@@ -61,6 +61,8 @@ jobs:
           node-version: 24
 
       - name: Native dependencies
+        env:
+          RUST_TARGET_TRIPLE: ${{ runner.os == 'Linux' && 'x86_64-unknown-linux-gnu' || '' }}
         run: node scripts/setup.js
 
       - name: Add FFmpeg DLLs to PATH
@@ -94,12 +96,12 @@ jobs:
             if [ -f "$REPORT" ]; then
               echo "| Case | Result | Detail |"
               echo "| --- | --- | --- |"
-              python3 - "$REPORT" << 'PYEOF'
+              PYTHONIOENCODING=utf-8 python3 - "$REPORT" << 'PYEOF'
           import json, sys
           for case in json.load(open(sys.argv[1])):
-              icon = "✅" if case["pass"] else "❌"
+              verdict = "PASS" if case["pass"] else "FAIL"
               detail = case["detail"].replace("|", "\\|")
-              print(f"| {case['name']} | {icon} | {detail} |")
+              print(f"| {case['name']} | {verdict} | {detail} |")
           PYEOF
             else
               echo "No report produced — the matrix crashed before writing results."
