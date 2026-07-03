@@ -38,7 +38,7 @@ jobs:
         runner:
           - macos-latest
           - windows-2022
-          - ubuntu-22.04
+          - ubuntu-24.04
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
@@ -62,7 +62,7 @@ jobs:
 
       - name: Native dependencies
         env:
-          RUST_TARGET_TRIPLE: ${{ runner.os == 'Linux' && 'x86_64-unknown-linux-gnu' || '' }}
+          RUST_TARGET_TRIPLE: ${{ runner.os == 'Linux' && 'x86_64-unknown-linux-gnu' || runner.os == 'Windows' && 'x86_64-pc-windows-msvc' || 'aarch64-apple-darwin' }}
         run: node scripts/setup.js
 
       - name: Add FFmpeg DLLs to PATH
