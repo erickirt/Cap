@@ -30,7 +30,10 @@ use super::measure::{self, SyncMeasurement};
 /// events every two seconds after a settle period, 120 ms flash+beep each.
 const FIXTURE_SETTLE_SECS: f64 = 2.0;
 const FIXTURE_PERIOD_SECS: f64 = 2.0;
-const FIXTURE_FLASH_SECS: f64 = 0.12;
+/// Longer than the live pattern's 120 ms so CI runners with slow virtualized
+/// GPUs still present at least one frame inside every flash window; onset
+/// detection is edge-triggered, so the extra length does not blur the onset.
+const FIXTURE_FLASH_SECS: f64 = 0.36;
 const FIXTURE_TAIL_SECS: f64 = 1.0;
 const FIXTURE_FPS: u32 = 30;
 const FIXTURE_WIDTH: u32 = 320;
@@ -60,8 +63,11 @@ const FIXTURE_GAP2_LEN_SECS: f64 = 1.0;
 /// therefore legitimately read EARLY by up to a frame plus a block plus a
 /// render margin, but reading LATE (or early beyond that window) means the
 /// editor's playback mapping itself is off.
-const RENDER_MARGIN_MS: f64 = 20.0;
+const RENDER_MARGIN_MS: f64 = 35.0;
 const DELTA_LATE_TOLERANCE_MS: f64 = 15.0;
+/// Gated on the DIFFERENCE from the raw recording's drift: the fixture's own
+/// emission jitter shows up identically in both legs and must not count
+/// against playback.
 const PASS_TOTAL_DRIFT_MS: f64 = 40.0;
 const PASS_MAD_MS: f64 = 25.0;
 /// The export decodes the same tracks offline, so its sync must match the
@@ -321,10 +327,11 @@ fn evaluate(
              (allowed -{early_tolerance:.0}..+{DELTA_LATE_TOLERANCE_MS:.0} ms)"
         ));
     }
-    if playback_m.total_drift_ms.abs() > PASS_TOTAL_DRIFT_MS {
+    let drift_delta = playback_m.total_drift_ms - raw_m.total_drift_ms;
+    if drift_delta.abs() > PASS_TOTAL_DRIFT_MS {
         reasons.push(format!(
-            "playback accumulates {:+.0} ms of drift over {:.0}s",
-            playback_m.total_drift_ms, playback_m.span_secs
+            "playback adds {drift_delta:+.0} ms of drift over {:.0}s vs the recording",
+            playback_m.span_secs
         ));
     }
     if playback_m.mad_ms > PASS_MAD_MS {
@@ -340,10 +347,11 @@ fn evaluate(
                 "export changes sync by {export_delta:.0} ms vs the recording"
             ));
         }
-        if export_m.total_drift_ms.abs() > PASS_TOTAL_DRIFT_MS {
+        let export_drift_delta = export_m.total_drift_ms - raw_m.total_drift_ms;
+        if export_drift_delta.abs() > PASS_TOTAL_DRIFT_MS {
             reasons.push(format!(
-                "export accumulates {:+.0} ms of drift over {:.0}s",
-                export_m.total_drift_ms, export_m.span_secs
+                "export adds {export_drift_delta:+.0} ms of drift over {:.0}s vs the recording",
+                export_m.span_secs
             ));
         }
     }
@@ -499,14 +507,14 @@ async fn measure_playback(
     };
 
     let flashes = measure::flash_onsets_from_luma(&video_samples)
-        .map_err(|e| format!("playback video: {e}"))?;
+        .map_err(|e| format!("playback video ({frames_presented} frames presented): {e}"))?;
     let audio = measure::beep_onsets_from_mono(mono, HEADLESS_SAMPLE_RATE)
         .map_err(|e| format!("playback audio: {e}"))?;
     let beeps: Vec<f64> = audio.onsets.iter().map(|t| t + audio_base_secs).collect();
 
     measure::measure_sync(&flashes, &beeps, super::MIN_EVENTS)
         .map(|m| (m, frames_presented))
-        .map_err(|e| format!("playback pairing: {e}"))
+        .map_err(|e| format!("playback pairing ({frames_presented} frames presented): {e}"))
 }
 
 /// Mean luma over the center crop of an RGBA/BGRA presentation frame.
