@@ -7,6 +7,10 @@ use cap_project::{AudioConfiguration, ClipOffsets, ProjectConfiguration, Timelin
 use ffmpeg::{
     ChannelLayout, Dictionary, format as avformat, frame::Audio as FFAudio, software::resampling,
 };
+use ringbuf::{
+    HeapRb,
+    traits::{Consumer, Observer, Producer},
+};
 use std::{
     collections::HashMap,
     sync::{
@@ -517,6 +521,18 @@ impl AudioResampler {
 
         Some(self.current_frame_data())
     }
+
+    fn reset(&mut self) {
+        *self = Self::new(self.output).unwrap();
+    }
+}
+
+fn silent_audio_frame(samples: usize) -> FFAudio {
+    let mut frame = FFAudio::new(AudioData::SAMPLE_FORMAT, samples, ChannelLayout::STEREO);
+    frame.set_rate(AudioData::SAMPLE_RATE);
+    let data_len = samples * usize::from(AudioRenderer::CHANNELS) * f32::BYTE_SIZE;
+    frame.data_mut(0)[..data_len].fill(0);
+    frame
 }
 
 /// Shared state between the background render thread and the audio callback.
@@ -552,6 +568,37 @@ impl ProgressiveTimeline {
     }
 }
 
+const MAX_PROGRESSIVE_BUFFER_BYTES: usize = 512 * 1024 * 1024;
+
+fn output_sample_index(secs: f64, sample_rate: u32, channels: usize, limit: usize) -> usize {
+    if !(secs.is_finite() && secs > 0.0) {
+        return 0;
+    }
+
+    ((secs * f64::from(sample_rate)) as usize)
+        .saturating_mul(channels)
+        .min(limit)
+}
+
+fn progressive_buffer_samples(duration_secs: f64, sample_rate: u32, channels: usize) -> usize {
+    output_sample_index(
+        duration_secs,
+        sample_rate,
+        channels,
+        usize::MAX.saturating_sub(10_000),
+    )
+    .saturating_add(10_000)
+}
+
+fn progressive_buffer_bytes(samples: usize) -> usize {
+    samples.saturating_mul(std::mem::size_of::<u32>())
+}
+
+enum PrerenderedAudioBufferMode<T: FromSampleBytes> {
+    Progressive(ProgressiveAudioBuffer<T>),
+    Streaming(Box<StreamingAudioBuffer<T>>),
+}
+
 /// Plays the timeline mix while it renders on a background thread.
 ///
 /// Rendering the entire timeline up front is O(duration) — it made pressing
@@ -561,6 +608,10 @@ impl ProgressiveTimeline {
 /// faster than realtime, so playback never catches up to it in practice. A
 /// read of a not-yet-rendered region produces silence rather than blocking.
 pub struct PrerenderedAudioBuffer<T: FromSampleBytes> {
+    mode: PrerenderedAudioBufferMode<T>,
+}
+
+struct ProgressiveAudioBuffer<T: FromSampleBytes> {
     timeline: Arc<ProgressiveTimeline>,
     ready_rx: std::sync::mpsc::Receiver<()>,
     read_position: usize,
@@ -569,20 +620,13 @@ pub struct PrerenderedAudioBuffer<T: FromSampleBytes> {
     _format: std::marker::PhantomData<T>,
 }
 
-impl<T: FromSampleBytes> Drop for PrerenderedAudioBuffer<T> {
+impl<T: FromSampleBytes> Drop for ProgressiveAudioBuffer<T> {
     fn drop(&mut self) {
         self.timeline.stop.store(true, Ordering::Release);
     }
 }
 
 impl<T: FromSampleBytes + cpal::FromSample<f32>> PrerenderedAudioBuffer<T> {
-    /// Audio rendered ahead of the start position before the stream is
-    /// considered ready.
-    const READY_WINDOW_SECS: f64 = 0.25;
-    /// Pass 1 starts this far before the playhead so latency compensation and
-    /// small backwards drift corrections stay inside the first rendered pass.
-    const START_PREROLL_SECS: f64 = 1.0;
-
     pub fn new(
         segments: Vec<AudioSegment>,
         music: MusicTracks,
@@ -590,6 +634,109 @@ impl<T: FromSampleBytes + cpal::FromSample<f32>> PrerenderedAudioBuffer<T> {
         output_info: AudioInfo,
         duration_secs: f64,
         start_playhead_secs: f64,
+    ) -> Self {
+        let output_info = output_info.for_ffmpeg_output();
+        let estimated_output_samples = progressive_buffer_samples(
+            duration_secs,
+            output_info.sample_rate,
+            output_info.channels,
+        );
+        let estimated_memory_bytes = progressive_buffer_bytes(estimated_output_samples);
+
+        let mode = if estimated_memory_bytes <= MAX_PROGRESSIVE_BUFFER_BYTES {
+            PrerenderedAudioBufferMode::Progressive(ProgressiveAudioBuffer::new(
+                segments,
+                music,
+                project,
+                output_info,
+                duration_secs,
+                start_playhead_secs,
+                estimated_output_samples,
+            ))
+        } else {
+            info!(
+                duration_secs = duration_secs,
+                estimated_memory_mb = estimated_memory_bytes / (1024 * 1024),
+                max_memory_mb = MAX_PROGRESSIVE_BUFFER_BYTES / (1024 * 1024),
+                "Using bounded streaming audio renderer for long playback"
+            );
+            PrerenderedAudioBufferMode::Streaming(Box::new(StreamingAudioBuffer::new(
+                segments,
+                music,
+                project.clone(),
+                output_info,
+                start_playhead_secs,
+            )))
+        };
+
+        Self { mode }
+    }
+
+    pub fn wait_until_ready(&self, timeout: std::time::Duration) {
+        match &self.mode {
+            PrerenderedAudioBufferMode::Progressive(buffer) => buffer.wait_until_ready(timeout),
+            PrerenderedAudioBufferMode::Streaming(_) => {}
+        }
+    }
+
+    #[cfg(test)]
+    fn wait_until_fully_rendered(&self) {
+        match &self.mode {
+            PrerenderedAudioBufferMode::Progressive(buffer) => buffer.wait_until_fully_rendered(),
+            PrerenderedAudioBufferMode::Streaming(_) => {}
+        }
+    }
+
+    pub fn set_playhead(&mut self, playhead_secs: f64) {
+        match &mut self.mode {
+            PrerenderedAudioBufferMode::Progressive(buffer) => buffer.set_playhead(playhead_secs),
+            PrerenderedAudioBufferMode::Streaming(buffer) => buffer.set_playhead(playhead_secs),
+        }
+    }
+
+    pub fn current_audible_playhead(&self, device_latency_secs: f64) -> f64 {
+        match &self.mode {
+            PrerenderedAudioBufferMode::Progressive(buffer) => {
+                buffer.current_audible_playhead(device_latency_secs)
+            }
+            PrerenderedAudioBufferMode::Streaming(buffer) => {
+                buffer.current_audible_playhead(device_latency_secs)
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn current_playhead_secs(&self) -> f64 {
+        match &self.mode {
+            PrerenderedAudioBufferMode::Progressive(buffer) => buffer.current_playhead_secs(),
+            PrerenderedAudioBufferMode::Streaming(buffer) => buffer.current_playhead_secs(),
+        }
+    }
+
+    pub fn fill(&mut self, buffer: &mut [T]) {
+        match &mut self.mode {
+            PrerenderedAudioBufferMode::Progressive(source) => source.fill(buffer),
+            PrerenderedAudioBufferMode::Streaming(source) => source.fill(buffer),
+        }
+    }
+}
+
+impl<T: FromSampleBytes + cpal::FromSample<f32>> ProgressiveAudioBuffer<T> {
+    /// Audio rendered ahead of the start position before the stream is
+    /// considered ready.
+    const READY_WINDOW_SECS: f64 = 0.25;
+    /// Pass 1 starts this far before the playhead so latency compensation and
+    /// small backwards drift corrections stay inside the first rendered pass.
+    const START_PREROLL_SECS: f64 = 1.0;
+
+    fn new(
+        segments: Vec<AudioSegment>,
+        music: MusicTracks,
+        project: &ProjectConfiguration,
+        output_info: AudioInfo,
+        duration_secs: f64,
+        start_playhead_secs: f64,
+        estimated_output_samples: usize,
     ) -> Self {
         // Clamp output info for FFmpeg compatibility (max 8 channels)
         let output_info = output_info.for_ffmpeg_output();
@@ -609,26 +756,30 @@ impl<T: FromSampleBytes + cpal::FromSample<f32>> PrerenderedAudioBuffer<T> {
             "Starting progressive audio pre-render"
         );
 
-        let estimated_output_samples = (duration_secs * output_info.sample_rate as f64) as usize
-            * output_info.channels
-            + 10_000;
-
         let pass1_start_secs = (start_playhead_secs - Self::START_PREROLL_SECS)
             .max(0.0)
             .min(duration_secs);
-        let primary_start = ((pass1_start_secs * output_info.sample_rate as f64) as usize
-            * output_info.channels)
-            .min(estimated_output_samples);
+        let primary_start = output_sample_index(
+            pass1_start_secs,
+            output_info.sample_rate,
+            output_info.channels,
+            estimated_output_samples,
+        );
         // The ready signal is anchored at the actual start playhead (not the
         // pre-roll start), guaranteeing the samples the stream begins reading
         // exist before playback starts.
-        let start_index = ((start_playhead_secs.max(0.0) * output_info.sample_rate as f64)
-            as usize
-            * output_info.channels)
-            .min(estimated_output_samples);
-        let ready_window_samples = (Self::READY_WINDOW_SECS * output_info.sample_rate as f64)
-            as usize
-            * output_info.channels;
+        let start_index = output_sample_index(
+            start_playhead_secs,
+            output_info.sample_rate,
+            output_info.channels,
+            estimated_output_samples,
+        );
+        let ready_window_samples = output_sample_index(
+            Self::READY_WINDOW_SECS,
+            output_info.sample_rate,
+            output_info.channels,
+            usize::MAX,
+        );
         let ready_at_index = start_index.saturating_add(ready_window_samples);
 
         let timeline = Arc::new(ProgressiveTimeline {
@@ -731,6 +882,131 @@ impl<T: FromSampleBytes + cpal::FromSample<f32>> PrerenderedAudioBuffer<T> {
     }
 }
 
+struct StreamingAudioBuffer<T: FromSampleBytes> {
+    renderer: AudioRenderer,
+    resampler: AudioResampler,
+    resampled_buffer: HeapRb<T>,
+    project: ProjectConfiguration,
+    sample_rate: u32,
+    channels: usize,
+}
+
+impl<T: FromSampleBytes> StreamingAudioBuffer<T> {
+    const PROCESSING_SAMPLES_COUNT: usize = 1024;
+    const READY_WINDOW_SECS: f64 = 0.25;
+    const BUFFER_SECS: usize = 2;
+
+    fn new(
+        segments: Vec<AudioSegment>,
+        music: MusicTracks,
+        project: ProjectConfiguration,
+        output_info: AudioInfo,
+        start_playhead_secs: f64,
+    ) -> Self {
+        let output_info = output_info.for_ffmpeg_output();
+        let capacity = (output_info.sample_rate as usize)
+            .saturating_mul(output_info.channels)
+            .saturating_mul(Self::BUFFER_SECS)
+            .max(Self::PROCESSING_SAMPLES_COUNT * output_info.channels * 4);
+
+        let mut buffer = Self {
+            renderer: AudioRenderer::new(segments).with_music(music),
+            resampler: AudioResampler::new(output_info).unwrap(),
+            resampled_buffer: HeapRb::new(capacity),
+            project,
+            sample_rate: output_info.sample_rate,
+            channels: output_info.channels,
+        };
+        buffer.set_playhead(start_playhead_secs);
+        buffer
+    }
+
+    fn ready_window_samples(&self) -> usize {
+        output_sample_index(
+            Self::READY_WINDOW_SECS,
+            self.sample_rate,
+            self.channels,
+            usize::MAX,
+        )
+    }
+
+    fn set_playhead(&mut self, playhead_secs: f64) {
+        self.resampler.reset();
+        self.resampled_buffer.clear();
+        self.renderer.set_playhead(playhead_secs, &self.project);
+        self.prefill(self.ready_window_samples());
+    }
+
+    fn current_audible_playhead(&self, device_latency_secs: f64) -> f64 {
+        let generated_secs = self.renderer.elapsed_samples_to_playhead();
+        let buffered_frames = self.resampled_buffer.occupied_len() / self.channels;
+        let buffered_secs = buffered_frames as f64 / self.sample_rate as f64;
+        (generated_secs - buffered_secs - device_latency_secs.max(0.0)).max(0.0)
+    }
+
+    #[allow(dead_code)]
+    fn current_playhead_secs(&self) -> f64 {
+        self.renderer.elapsed_samples_to_playhead()
+    }
+
+    fn buffer_reaching_limit(&self) -> bool {
+        self.resampled_buffer.vacant_len() <= 2 * Self::PROCESSING_SAMPLES_COUNT * self.channels
+    }
+
+    fn render_chunk(&mut self) -> bool {
+        if self.buffer_reaching_limit() {
+            return false;
+        }
+
+        let bytes_per_sample = self.resampler.output.sample_size();
+        let rendered = match self
+            .renderer
+            .render_frame(Self::PROCESSING_SAMPLES_COUNT, &self.project)
+        {
+            Some(frame) => self.resampler.queue_and_process_frame(&frame),
+            None => {
+                let frame = silent_audio_frame(Self::PROCESSING_SAMPLES_COUNT);
+                self.resampler.queue_and_process_frame(&frame)
+            }
+        };
+
+        if rendered.is_empty() {
+            return false;
+        }
+
+        let mut typed_data = vec![T::EQUILIBRIUM; rendered.len() / bytes_per_sample];
+        for (src, dest) in std::iter::zip(rendered.chunks(bytes_per_sample), &mut typed_data) {
+            *dest = T::from_bytes(src);
+        }
+        self.resampled_buffer.push_slice(&typed_data);
+        true
+    }
+
+    fn prefill(&mut self, min_samples: usize) {
+        if min_samples == 0 {
+            return;
+        }
+
+        let target = min_samples.min(self.resampled_buffer.capacity().get());
+        while self.resampled_buffer.occupied_len() < target {
+            if !self.render_chunk() {
+                break;
+            }
+        }
+    }
+
+    fn fill(&mut self, playback_buffer: &mut [T]) {
+        if self.resampled_buffer.occupied_len() < playback_buffer.len() {
+            self.prefill(playback_buffer.len());
+        }
+
+        let filled = self.resampled_buffer.pop_slice(playback_buffer);
+        playback_buffer[filled..].fill(T::EQUILIBRIUM);
+
+        self.prefill(self.ready_window_samples().max(playback_buffer.len()));
+    }
+}
+
 /// Writes resampler output (packed f32 bytes) into the shared buffer,
 /// stopping at `limit`. Returns the next write index.
 fn store_progressive_samples(
@@ -767,12 +1043,7 @@ fn spawn_progressive_render(
             let render_start = std::time::Instant::now();
             let mut renderer = AudioRenderer::new(segments).with_music(music);
 
-            let channels = render_info.channels;
-            let output_rate = render_info.sample_rate;
             let chunk_size = 1024usize;
-            let output_chunk_samples = (chunk_size as f64 * output_rate as f64
-                / AudioData::SAMPLE_RATE as f64) as usize
-                * channels;
 
             let total_source_samples = (duration_secs * AudioData::SAMPLE_RATE as f64) as usize;
             let pass1_source_start = (pass1_start_secs * AudioData::SAMPLE_RATE as f64) as usize;
@@ -818,14 +1089,10 @@ fn spawn_progressive_render(
                                 store_progressive_samples(&timeline, resampled, out_idx, out_limit);
                         }
                         None => {
-                            if let Some(flushed) = resampler.flush_frame() {
-                                out_idx = store_progressive_samples(
-                                    &timeline, flushed, out_idx, out_limit,
-                                );
-                            }
-                            // The buffer is zero-initialised, so silence needs
-                            // no stores — advancing the watermark publishes it.
-                            out_idx = (out_idx + output_chunk_samples).min(out_limit);
+                            let frame = silent_audio_frame(chunk_size);
+                            let resampled = resampler.queue_and_process_frame(&frame);
+                            out_idx =
+                                store_progressive_samples(&timeline, resampled, out_idx, out_limit);
                         }
                     }
 
@@ -1076,6 +1343,32 @@ mod tests {
 
         assert!((buffer.current_audible_playhead(0.2) - 0.3).abs() < 0.000_1);
         assert_eq!(buffer.current_audible_playhead(1.0), 0.0);
+    }
+
+    #[test]
+    fn long_prerender_uses_bounded_streaming_buffer() {
+        let _ = ffmpeg::init();
+
+        let output_info = AudioRenderer::info();
+        let bytes_per_second = (output_info.sample_rate as usize)
+            .saturating_mul(output_info.channels)
+            .saturating_mul(std::mem::size_of::<u32>())
+            .max(1);
+        let duration_secs = (MAX_PROGRESSIVE_BUFFER_BYTES / bytes_per_second) as f64 + 2.0;
+
+        let buffer = PrerenderedAudioBuffer::<f32>::new(
+            Vec::new(),
+            MusicTracks::new(),
+            &ProjectConfiguration::default(),
+            output_info,
+            duration_secs,
+            0.0,
+        );
+
+        assert!(matches!(
+            &buffer.mode,
+            PrerenderedAudioBufferMode::Streaming(_)
+        ));
     }
 
     #[test]
