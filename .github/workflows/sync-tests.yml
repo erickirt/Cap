@@ -102,18 +102,25 @@ jobs:
       # audio pipeline) preserves sync. The fixture recording is generated
       # through the real recording pipeline, so no capture hardware is needed;
       # rendering uses the platform's software adapter where no GPU exists.
-      # 15 fps halves the per-frame render budget (shared runners with
-      # virtualized GPUs cannot sustain 30 fps in a debug build; the harness's
-      # tolerance window scales with the playback frame period), and 30s of
-      # pattern stabilizes the drift slope against frame-quantization noise.
-      # Windows is excluded: the WARP software adapter composites blank
-      # frames, and its sync-relevant decoder path (FFmpeg software) is the
-      # same one the Linux job exercises.
+      # 30s of pattern stabilizes the drift slope against frame-quantization
+      # noise. Playback runs at the default 30 fps: lower rates trip the audio
+      # sync policy's drift-correction threshold every few frames and accrue
+      # real (policy-induced) drift that fails the gate. Windows is excluded:
+      # the WARP software adapter composites blank frames, and its
+      # sync-relevant decoder path (FFmpeg software) is the same one the
+      # Linux job exercises.
       - name: Editor playback sync harness
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          cargo run --locked -p cap -- --log-level info selftest playback --duration 30 --fps 15 --json
+          # The macOS runners' paravirtualized VideoToolbox decodes below
+          # real-time (~12 fps observed); the FFmpeg decoder keeps up.
+          # AVAssetReader-specific behavior is covered by local selftest runs
+          # on real hardware.
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            export CAP_EDITOR_FORCE_FFMPEG_DECODER=1
+          fi
+          cargo run --locked -p cap -- --log-level info selftest playback --duration 30 --json
 
       - name: Report findings
         if: always()
