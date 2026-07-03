@@ -139,6 +139,65 @@ use tauri::menu::{
 type FinalizingRecordingsMap =
     std::collections::HashMap<PathBuf, (watch::Sender<bool>, watch::Receiver<bool>)>;
 
+const EDITOR_PREVIEW_FPS: u32 = 60;
+const EDITOR_OUTPUT_SIZE: XY<u32> = XY::new(1920, 1080);
+const DEFAULT_EDITOR_PREVIEW_SCALE_NUMERATOR: u32 = 65;
+const DEFAULT_EDITOR_PREVIEW_SCALE_DENOMINATOR: u32 = 100;
+
+fn default_editor_preview_resolution() -> XY<u32> {
+    scaled_editor_preview_resolution(
+        EDITOR_OUTPUT_SIZE,
+        DEFAULT_EDITOR_PREVIEW_SCALE_NUMERATOR,
+        DEFAULT_EDITOR_PREVIEW_SCALE_DENOMINATOR,
+    )
+}
+
+fn scaled_editor_preview_resolution(
+    output_size: XY<u32>,
+    numerator: u32,
+    denominator: u32,
+) -> XY<u32> {
+    XY::new(
+        scaled_editor_preview_dimension(output_size.x, numerator, denominator, 4, 4),
+        scaled_editor_preview_dimension(output_size.y, numerator, denominator, 2, 2),
+    )
+}
+
+fn scaled_editor_preview_dimension(
+    value: u32,
+    numerator: u32,
+    denominator: u32,
+    minimum: u32,
+    alignment: u32,
+) -> u32 {
+    let denominator = denominator.max(1);
+    let alignment = alignment.max(1);
+    let scaled = ((u64::from(value) * u64::from(numerator)) + (u64::from(denominator) / 2))
+        / u64::from(denominator);
+    let rounded = u32::try_from(scaled).unwrap_or(u32::MAX).max(minimum);
+    let aligned = u64::from(rounded).div_ceil(u64::from(alignment)) * u64::from(alignment);
+
+    u32::try_from(aligned).unwrap_or(u32::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_editor_preview_resolution_matches_frontend_defaults() {
+        assert_eq!(default_editor_preview_resolution(), XY::new(1248, 702));
+    }
+
+    #[test]
+    fn scaled_editor_preview_resolution_rounds_like_frontend() {
+        assert_eq!(
+            scaled_editor_preview_resolution(XY::new(1919, 1079), 65, 100),
+            XY::new(1248, 702)
+        );
+    }
+}
+
 #[derive(Default)]
 pub struct FinalizingRecordings {
     recordings: std::sync::Mutex<FinalizingRecordingsMap>,
@@ -6139,14 +6198,9 @@ async fn create_editor_instance_impl(
         }
     });
 
-    // Render the first frame immediately so the frame websocket already has a
-    // frame to hand the editor UI the moment it connects, instead of waiting
-    // for the UI to request one. Mirrors the frontend's initial request
-    // (frame 0 at FPS/DEFAULT_PREVIEW_QUALITY in editor/context.ts); if the UI
-    // requests different parameters it simply triggers a fresh render.
     instance
         .preview_tx
-        .send_modify(|v| *v = Some((0, 60, XY::new(1248, 702))));
+        .send_modify(|v| *v = Some((0, EDITOR_PREVIEW_FPS, default_editor_preview_resolution())));
 
     Ok((instance, event_id))
 }
