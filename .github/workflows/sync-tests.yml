@@ -105,21 +105,18 @@ jobs:
       # 30s of pattern stabilizes the drift slope against frame-quantization
       # noise. Playback runs at the default 30 fps: lower rates trip the audio
       # sync policy's drift-correction threshold every few frames and accrue
-      # real (policy-induced) drift that fails the gate. Windows is excluded:
-      # the WARP software adapter composites blank frames, and its
-      # sync-relevant decoder path (FFmpeg software) is the same one the
-      # Linux job exercises.
+      # real (policy-induced) drift that fails the gate.
+      #
+      # Linux-only: the Windows WARP adapter composites blank frames and the
+      # macOS runners' paravirtualized Metal collapses to ~2 fps presentation
+      # regardless of decoder, so neither can sustain a wall-clock playback
+      # measurement. The decoder logic under test (FFmpeg gap holds) is fully
+      # exercised here; the macOS AVAssetReader path is covered by running
+      # `cap selftest playback` locally on real hardware.
       - name: Editor playback sync harness
-        if: runner.os != 'Windows'
+        if: runner.os == 'Linux'
         shell: bash
         run: |
-          # The macOS runners' paravirtualized VideoToolbox decodes below
-          # real-time (~12 fps observed); the FFmpeg decoder keeps up.
-          # AVAssetReader-specific behavior is covered by local selftest runs
-          # on real hardware.
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            export CAP_EDITOR_FORCE_FFMPEG_DECODER=1
-          fi
           cargo run --locked -p cap -- --log-level info selftest playback --duration 30 --json
 
       - name: Report findings
