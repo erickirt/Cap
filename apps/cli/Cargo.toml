@@ -28,6 +28,9 @@ image = "0.25.2"
 chrono = "0.4.31"
 tracing.workspace = true
 tracing-subscriber = "0.3.19"
+cpal = { workspace = true }
+winit = "0.30"
+softbuffer = "0.4"
 workspace-hack = { version = "0.1", path = "../../crates/workspace-hack" }
 
 [target.'cfg(unix)'.dependencies]
