@@ -713,9 +713,6 @@ impl AudioLoader {
             let result = AudioData::from_file(&path)
                 .map(|data| Some(Arc::new(data)))
                 .map_err(|e| format!("{label} / {e}"));
-            if let Err(e) = &result {
-                warn!("Failed to load audio: {e}");
-            }
             let _ = tx.send(Some(result));
         });
         Self { rx }
