@@ -104,39 +104,139 @@ struct CaseResult {
     detail: String,
 }
 
-fn make_video_frame(width: u32, height: u32, shade: u8) -> ffmpeg::frame::Video {
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Content {
+    /// Flat color; encodes trivially.
+    Flat,
+    /// Per-frame pseudo-random noise: worst-case encoder load, exercising
+    /// backpressure the way dense real screen content does.
+    Noise,
+    /// A moving bar over a gradient: typical screen-content motion.
+    Motion,
+}
+
+fn make_video_frame(
+    width: u32,
+    height: u32,
+    frame_index: u64,
+    content: Content,
+    rng: &mut Rng,
+) -> ffmpeg::frame::Video {
     let mut frame = ffmpeg::frame::Video::new(ffmpeg::format::Pixel::BGRA, width, height);
-    for byte in frame.data_mut(0).iter_mut() {
-        *byte = shade;
+    let stride = frame.stride(0);
+    let data = frame.data_mut(0);
+    match content {
+        Content::Flat => {
+            let shade = ((frame_index * 7) % 200) as u8;
+            data.fill(shade);
+        }
+        Content::Noise => {
+            // Refresh a pseudo-random buffer per frame so no two frames are
+            // alike and inter prediction gets no free lunch.
+            for chunk in data.chunks_mut(8) {
+                let v = rng.next().to_le_bytes();
+                let n = chunk.len();
+                chunk.copy_from_slice(&v[..n]);
+            }
+        }
+        Content::Motion => {
+            let bar = ((frame_index * 6) % u64::from(width)) as usize;
+            for y in 0..height as usize {
+                let row = &mut data[y * stride..y * stride + width as usize * 4];
+                for (x, px) in row.chunks_mut(4).enumerate() {
+                    let base = ((x * 255) / width as usize) as u8;
+                    let v = if x.abs_diff(bar) < 12 { 255 } else { base };
+                    px[0] = v;
+                    px[1] = v ^ 0x55;
+                    px[2] = base;
+                    px[3] = 255;
+                }
+            }
+        }
     }
     frame
 }
 
-async fn run_video_case(
+/// splitmix64: tiny, dependency-free, deterministic PRNG. Every randomized
+/// case is fully reproducible from the printed seed.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    fn range(&mut self, lo: u64, hi: u64) -> u64 {
+        lo + self.next() % (hi - lo + 1)
+    }
+
+    fn f64(&mut self) -> f64 {
+        (self.next() >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    fn pick<T: Copy>(&mut self, items: &[T]) -> T {
+        items[(self.next() % items.len() as u64) as usize]
+    }
+}
+
+#[derive(Clone)]
+struct VideoCase {
     fps: u32,
-    scenario: VideoScenario,
+    sent: Vec<f64>,
     fragmented: bool,
-) -> Result<String, String> {
+    width: u32,
+    height: u32,
+    content: Content,
+    rng_seed: u64,
+}
+
+impl VideoCase {
+    fn curated(fps: u32, scenario: VideoScenario, fragmented: bool) -> Self {
+        Self {
+            fps,
+            sent: scenario.timestamps(fps),
+            fragmented,
+            width: 160,
+            height: 120,
+            content: Content::Flat,
+            rng_seed: 1,
+        }
+    }
+}
+
+async fn run_video_case(case: VideoCase) -> Result<String, String> {
     let temp = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
-    let out_path = if fragmented {
+    let out_path = if case.fragmented {
         temp.path().join("display")
     } else {
         temp.path().join("display.mp4")
     };
+    let fragmented = case.fragmented;
 
-    let info = VideoInfo::from_raw(cap_media_info::RawVideoFormat::Bgra, 160, 120, fps);
+    let info = VideoInfo::from_raw(
+        cap_media_info::RawVideoFormat::Bgra,
+        case.width,
+        case.height,
+        case.fps,
+    );
     let (tx, rx) = flume::bounded::<FFmpegVideoFrame>(32);
     let timestamps = Timestamps::now();
 
-    let sent = scenario.timestamps(fps);
+    let sent = case.sent.clone();
     let emit = {
         let sent = sent.clone();
         let base = timestamps.instant();
+        let (width, height, content) = (case.width, case.height, case.content);
+        let mut rng = Rng(case.rng_seed);
         tokio::spawn(async move {
-            for &ts in &sent {
+            for (i, &ts) in sent.iter().enumerate() {
                 tokio::time::sleep_until((base + Duration::from_secs_f64(ts)).into()).await;
                 let frame = FFmpegVideoFrame {
-                    inner: make_video_frame(160, 120, ((ts * 40.0) as u8).wrapping_mul(3)),
+                    inner: make_video_frame(width, height, i as u64, content, &mut rng),
                     timestamp: Timestamp::Instant(base + Duration::from_secs_f64(ts)),
                 };
                 if tx.send_async(frame).await.is_err() {
@@ -215,15 +315,14 @@ async fn run_video_case(
         return Err("video_timestamp_span missing".to_string());
     }
 
-    // Gap preservation is the regression that desynced 0.5.4.
-    if matches!(scenario, VideoScenario::Gap) {
-        let mut max_gap: f64 = 0.0;
-        for pair in pts.windows(2) {
-            max_gap = max_gap.max(pair[1] - pair[0]);
-        }
-        if max_gap < 1.8 {
+    // Gap preservation is the regression that desynced 0.5.4: every gap in
+    // the sent timeline must survive into the container.
+    let max_sent_gap = sent.windows(2).map(|w| w[1] - w[0]).fold(0.0, f64::max);
+    if max_sent_gap > 1.0 {
+        let max_pts_gap = pts.windows(2).map(|w| w[1] - w[0]).fold(0.0, f64::max);
+        if max_pts_gap < max_sent_gap * 0.9 {
             return Err(format!(
-                "2s capture gap collapsed to {max_gap:.3}s in the container"
+                "{max_sent_gap:.2}s capture gap collapsed to {max_pts_gap:.3}s in the container"
             ));
         }
     }
@@ -236,7 +335,35 @@ async fn run_video_case(
     ))
 }
 
-async fn run_audio_case(rate: u32, channels: u16) -> Result<String, String> {
+#[derive(Clone, Copy)]
+struct AudioCase {
+    rate: u32,
+    channels: u16,
+    /// Device buffer size in milliseconds; real hardware spans ~3-90ms.
+    chunk_ms: f64,
+    /// Source clock drift factor: samples arrive slightly faster or slower
+    /// than their nominal rate, as real device crystals do.
+    drift: f64,
+}
+
+impl AudioCase {
+    fn curated(rate: u32, channels: u16) -> Self {
+        Self {
+            rate,
+            channels,
+            chunk_ms: 20.0,
+            drift: 1.0,
+        }
+    }
+}
+
+async fn run_audio_case(case: AudioCase) -> Result<String, String> {
+    let AudioCase {
+        rate,
+        channels,
+        chunk_ms,
+        drift,
+    } = case;
     let temp = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
     let out_path = temp.path().join("audio.ogg");
 
@@ -245,8 +372,9 @@ async fn run_audio_case(rate: u32, channels: u16) -> Result<String, String> {
     let (tx, rx) = futures::channel::mpsc::channel::<AudioFrame>(32);
     let timestamps = Timestamps::now();
 
-    let chunk_frames = (rate / 50).max(1) as usize; // 20ms chunks
-    let total_chunks = (CONTENT_SECS * 50.0) as usize;
+    let chunk_frames = ((f64::from(rate) * chunk_ms / 1000.0) as usize).max(16);
+    let chunk_secs = chunk_frames as f64 / f64::from(rate);
+    let total_chunks = (CONTENT_SECS / chunk_secs).ceil() as usize;
 
     let emit = {
         let base = timestamps.instant();
@@ -255,8 +383,9 @@ async fn run_audio_case(rate: u32, channels: u16) -> Result<String, String> {
         tokio::spawn(async move {
             use futures::SinkExt;
             for k in 0..total_chunks {
-                let ts = k as f64 * 0.02;
-                tokio::time::sleep_until((base + Duration::from_secs_f64(ts)).into()).await;
+                let real_t = k as f64 * chunk_secs;
+                let ts = real_t * drift;
+                tokio::time::sleep_until((base + Duration::from_secs_f64(real_t)).into()).await;
                 let mut frame = ffmpeg::frame::Audio::new(
                     ffmpeg::format::Sample::F32(ffmpeg::format::sample::Type::Packed),
                     chunk_frames,
@@ -406,9 +535,115 @@ fn read_audio_stats(path: &Path) -> Result<(f64, u16, f64), String> {
     Ok((samples as f64 / f64::from(rate), channels, rms))
 }
 
+fn record(results: &mut Vec<CaseResult>, name: String, outcome: Result<String, String>) {
+    eprintln!(
+        "{name}: {}",
+        match &outcome {
+            Ok(d) => format!("ok ({d})"),
+            Err(e) => format!("FAIL ({e})"),
+        }
+    );
+    results.push(CaseResult {
+        name,
+        pass: outcome.is_ok(),
+        detail: outcome.unwrap_or_else(|e| e),
+    });
+}
+
+/// A fully random capture shape: arbitrary fps, resolution, encoder-load
+/// content, timestamp jitter, random drops, and 0-2 gaps at random positions
+/// (including inside the first two seconds, where the drift anchor does not
+/// exist yet).
+fn random_video_case(rng: &mut Rng) -> VideoCase {
+    let fps = rng.range(10, 120) as u32;
+    let (width, height) = rng.pick(&[(160u32, 120u32), (320, 240), (640, 360)]);
+    let content = rng.pick(&[Content::Flat, Content::Noise, Content::Motion]);
+    let fragmented = rng.f64() < 0.75;
+
+    let period = 1.0 / f64::from(fps);
+    let jitter = rng.f64() * 0.45;
+    let drop_prob = rng.f64() * 0.25;
+    let gap_count = rng.range(0, 2);
+    let mut gaps: Vec<(f64, f64)> = (0..gap_count)
+        .map(|_| {
+            let at = 0.4 + rng.f64() * (CONTENT_SECS - 1.0);
+            let len = 1.2 + rng.f64() * 2.0;
+            (at, len)
+        })
+        .collect();
+    gaps.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+    let total = (CONTENT_SECS * f64::from(fps)) as u64;
+    let mut sent = Vec::new();
+    for k in 0..total {
+        if rng.f64() < drop_prob {
+            continue;
+        }
+        let base = k as f64 * period;
+        let mut ts = (base + (rng.f64() - 0.5) * period * jitter).max(0.0);
+        for &(at, len) in &gaps {
+            if ts >= at {
+                ts += len;
+            }
+        }
+        sent.push(ts);
+    }
+    sent.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sent.dedup_by(|a, b| (*a - *b).abs() < period * 0.25);
+    // Guarantee at least a handful of frames survive the drop lottery.
+    if sent.len() < 8 {
+        sent = (0..total).map(|k| k as f64 * period).collect();
+    }
+
+    VideoCase {
+        fps,
+        sent,
+        fragmented,
+        width,
+        height,
+        content,
+        rng_seed: rng.next(),
+    }
+}
+
+/// A random audio device shape: any rate from the set real devices negotiate,
+/// 1-8 channels, real-world buffer sizes, and a small crystal drift.
+fn random_audio_case(rng: &mut Rng) -> AudioCase {
+    let rate = rng.pick(&[
+        8_000u32, 11_025, 12_000, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000, 88_200, 96_000,
+        176_400, 192_000,
+    ]);
+    let channels = rng.range(1, 8) as u16;
+    let chunk_ms = 3.0 + rng.f64() * 85.0;
+    let drift = 1.0 + (rng.f64() - 0.5) * 0.002; // +-0.1%
+
+    AudioCase {
+        rate,
+        channels,
+        chunk_ms,
+        drift,
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn synthetic_device_matrix_preserves_sync() {
     let mut results: Vec<CaseResult> = Vec::new();
+
+    // Randomized cases are reproducible: rerun with CAP_SYNC_MATRIX_SEED=<seed>.
+    let seed: u64 = std::env::var("CAP_SYNC_MATRIX_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0x5EED)
+        });
+    let random_cases: usize = std::env::var("CAP_SYNC_MATRIX_RANDOM_CASES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(6);
+    eprintln!("randomized cases: {random_cases}, CAP_SYNC_MATRIX_SEED={seed}");
 
     let video_cases: Vec<(u32, VideoScenario, bool)> = vec![
         (15, VideoScenario::Steady, true),
@@ -432,19 +667,8 @@ async fn synthetic_device_matrix_preserves_sync() {
             scenario.name(),
             if fragmented { "fragmented" } else { "mp4" }
         );
-        let outcome = run_video_case(fps, scenario, fragmented).await;
-        eprintln!(
-            "{name}: {}",
-            match &outcome {
-                Ok(d) => format!("ok ({d})"),
-                Err(e) => format!("FAIL ({e})"),
-            }
-        );
-        results.push(CaseResult {
-            name,
-            pass: outcome.is_ok(),
-            detail: outcome.unwrap_or_else(|e| e),
-        });
+        let outcome = run_video_case(VideoCase::curated(fps, scenario, fragmented)).await;
+        record(&mut results, name, outcome);
     }
 
     let audio_cases: Vec<(u32, u16)> = vec![
@@ -461,23 +685,50 @@ async fn synthetic_device_matrix_preserves_sync() {
 
     for (rate, channels) in audio_cases {
         let name = format!("audio/{rate}hz/{channels}ch");
-        let outcome = run_audio_case(rate, channels).await;
-        eprintln!(
-            "{name}: {}",
-            match &outcome {
-                Ok(d) => format!("ok ({d})"),
-                Err(e) => format!("FAIL ({e})"),
-            }
+        let outcome = run_audio_case(AudioCase::curated(rate, channels)).await;
+        record(&mut results, name, outcome);
+    }
+
+    // Non-predetermined coverage: random device shapes and delivery
+    // pathologies, combined audio+video like a real studio recording.
+    let mut rng = Rng(seed);
+    for i in 0..random_cases {
+        let video = random_video_case(&mut rng);
+        let audio = random_audio_case(&mut rng);
+        let name = format!(
+            "random/{i}/video-{}fps-{}x{}-{:?}-{}ts/audio-{}hz-{}ch-{:.0}ms-drift{:+.2}%",
+            video.fps,
+            video.width,
+            video.height,
+            video.content,
+            video.sent.len(),
+            audio.rate,
+            audio.channels,
+            audio.chunk_ms,
+            (audio.drift - 1.0) * 100.0,
         );
-        results.push(CaseResult {
-            name,
-            pass: outcome.is_ok(),
-            detail: outcome.unwrap_or_else(|e| e),
-        });
+        // Run both legs concurrently, as a real recording does.
+        let (video_outcome, audio_outcome) =
+            tokio::join!(run_video_case(video), run_audio_case(audio));
+        let outcome = match (video_outcome, audio_outcome) {
+            (Ok(v), Ok(a)) => Ok(format!("video: {v}; audio: {a}")),
+            (Err(e), _) => Err(format!("video leg: {e}")),
+            (_, Err(e)) => Err(format!("audio leg: {e}")),
+        };
+        record(&mut results, name, outcome);
     }
 
     if let Ok(report_path) = std::env::var("CAP_SYNC_MATRIX_REPORT") {
-        let json = serde_json::to_string_pretty(&results).expect("serialize report");
+        #[derive(Serialize)]
+        struct Report<'a> {
+            seed: u64,
+            cases: &'a [CaseResult],
+        }
+        let json = serde_json::to_string_pretty(&Report {
+            seed,
+            cases: &results,
+        })
+        .expect("serialize report");
         std::fs::write(&report_path, json).expect("write report");
         eprintln!("report written to {report_path}");
     }

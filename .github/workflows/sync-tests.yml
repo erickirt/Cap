@@ -82,6 +82,7 @@ jobs:
         shell: bash
         env:
           CAP_SYNC_MATRIX_REPORT: ${{ github.workspace }}/sync-matrix-${{ matrix.runner }}.json
+          CAP_SYNC_MATRIX_RANDOM_CASES: ${{ github.event_name == 'schedule' && '40' || '6' }}
         run: |
           cargo test --locked -p cap-recording --test sync_matrix -- --nocapture
 
@@ -94,11 +95,14 @@ jobs:
             echo "## A/V sync matrix — ${{ matrix.runner }}"
             echo ""
             if [ -f "$REPORT" ]; then
-              echo "| Case | Result | Detail |"
-              echo "| --- | --- | --- |"
               PYTHONIOENCODING=utf-8 python3 - "$REPORT" << 'PYEOF'
           import json, sys
-          for case in json.load(open(sys.argv[1])):
+          report = json.load(open(sys.argv[1]))
+          print(f"Randomized seed: `{report.get('seed')}` (rerun with CAP_SYNC_MATRIX_SEED)")
+          print()
+          print("| Case | Result | Detail |")
+          print("| --- | --- | --- |")
+          for case in report.get("cases", []):
               verdict = "PASS" if case["pass"] else "FAIL"
               detail = case["detail"].replace("|", "\\|")
               print(f"| {case['name']} | {verdict} | {detail} |")
