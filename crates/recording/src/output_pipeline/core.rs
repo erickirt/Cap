@@ -620,6 +620,7 @@ fn video_mux_send_error(frame_count: u64, error: anyhow::Error) -> anyhow::Error
 pub(crate) struct AudioTimestampGenerator {
     sample_rate: u32,
     total_samples: u64,
+    clock_samples_advanced: u64,
     master_clock: Option<Arc<MasterClock>>,
 }
 
@@ -631,10 +632,12 @@ impl AudioTimestampGenerator {
         Self {
             sample_rate,
             total_samples: 0,
+            clock_samples_advanced: 0,
             master_clock: None,
         }
     }
 
+    #[cfg(test)]
     fn from_master_clock(master_clock: Arc<MasterClock>) -> Self {
         let rate = master_clock.sample_rate();
         Self::from_master_clock_with_rate(master_clock, rate)
@@ -654,39 +657,44 @@ impl AudioTimestampGenerator {
                 master_clock.sample_rate()
             },
             total_samples: 0,
+            clock_samples_advanced: 0,
             master_clock: Some(master_clock),
         }
     }
 
-    fn advance_clock(&self, samples: u64) {
+    fn advance_clock(&mut self) {
         let Some(clock) = &self.master_clock else {
             return;
         };
-        if samples == 0 {
-            return;
-        }
         // Convert source-rate samples into clock-rate samples so the shared
-        // clock advances by real time regardless of the source's rate.
-        let clock_samples = if clock.sample_rate() == self.sample_rate {
-            samples
+        // clock advances by real time regardless of the source's rate. The
+        // conversion runs on the cumulative total: converting each buffer
+        // independently truncates up to one clock sample per call, which
+        // accumulates into real drift for non-integer ratios (44.1k -> 48k).
+        let target = if clock.sample_rate() == self.sample_rate {
+            self.total_samples
         } else {
-            (samples as u128 * clock.sample_rate() as u128 / u128::from(self.sample_rate.max(1)))
-                as u64
+            (self.total_samples as u128 * clock.sample_rate() as u128
+                / u128::from(self.sample_rate.max(1))) as u64
         };
-        clock.advance_samples(clock_samples);
+        let delta = target.saturating_sub(self.clock_samples_advanced);
+        self.clock_samples_advanced = target;
+        if delta > 0 {
+            clock.advance_samples(delta);
+        }
     }
 
     fn next_timestamp(&mut self, frame_samples: u64) -> Duration {
         let timestamp_nanos = samples_to_nanos(self.total_samples, self.sample_rate);
         self.total_samples += frame_samples;
-        self.advance_clock(frame_samples);
+        self.advance_clock();
         Duration::from_nanos(timestamp_nanos)
     }
 
     fn advance_by_duration(&mut self, duration: Duration) -> u64 {
         let samples = (duration.as_secs_f64() * self.sample_rate as f64).round() as u64;
         self.total_samples += samples;
-        self.advance_clock(samples);
+        self.advance_clock();
         samples
     }
 }
@@ -2052,8 +2060,16 @@ fn spawn_video_encoder<TMutex: VideoMuxer<VideoFrame = TVideo::Frame>, TVideo: V
                         );
                     }
 
+                    // Excise accumulated pause time from the content timeline
+                    // before anomaly tracking. Audio already excises pauses
+                    // (paused frames are dropped and sample counting carries
+                    // on), and wall_clock_elapsed below subtracts pauses too;
+                    // leaving the pause in the video timestamps would make a
+                    // resume look like a wall-clock-confirmed capture gap and
+                    // poison the drift anchor with pause-inflated time.
                     let remapped_ts = Timestamp::Instant(
-                        timestamps.instant() + remap.duration(),
+                        timestamps.instant()
+                            + remap.duration().saturating_sub(total_pause_duration),
                     );
 
                     let raw_duration = match anomaly_tracker.process_timestamp(remapped_ts, timestamps) {
@@ -2149,8 +2165,13 @@ fn spawn_video_encoder<TMutex: VideoMuxer<VideoFrame = TVideo::Frame>, TVideo: V
                                 "Published video start timestamp to encoder-pair gate (drain path)"
                             );
                         }
+                        // Excise pauses exactly like the main loop above, so
+                        // drained tail frames stay on the same content timeline.
                         let remapped_ts = Timestamp::Instant(
-                            timestamps.instant() + remap.duration(),
+                            timestamps.instant()
+                                + remap
+                                    .duration()
+                                    .saturating_sub(shared_pause.total_pause_duration()),
                         );
 
                         let raw_duration =

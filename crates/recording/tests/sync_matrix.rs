@@ -335,6 +335,122 @@ async fn run_video_case(case: VideoCase) -> Result<String, String> {
     ))
 }
 
+/// A mid-recording pause (instant mode): emission continues in real time but
+/// the pipeline drops frames while paused. The pause must be EXCISED from the
+/// output timeline — video pts must stay continuous across it (matching how
+/// audio drops paused samples and how the wall clock subtracts pauses), and
+/// the container must contain only the unpaused content. A regression here
+/// previously poisoned the drift anchor with pause-inflated time whenever the
+/// pause began before the ~2s warmup anchor existed.
+async fn run_video_pause_case() -> Result<String, String> {
+    const PRE_PAUSE_SECS: f64 = 1.0;
+    const PAUSE_SECS: f64 = 2.5;
+    const POST_PAUSE_SECS: f64 = 2.0;
+    const FPS: u32 = 30;
+
+    let temp = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
+    let out_path = temp.path().join("display.mp4");
+
+    let info = VideoInfo::from_raw(cap_media_info::RawVideoFormat::Bgra, 160, 120, FPS);
+    let (tx, rx) = flume::bounded::<FFmpegVideoFrame>(32);
+    let timestamps = Timestamps::now();
+
+    let total_secs = PRE_PAUSE_SECS + PAUSE_SECS + POST_PAUSE_SECS;
+    let emit = {
+        let base = timestamps.instant();
+        let mut rng = Rng(7);
+        tokio::spawn(async move {
+            let period = 1.0 / f64::from(FPS);
+            let count = (total_secs * f64::from(FPS)) as u64;
+            for k in 0..count {
+                let ts = k as f64 * period;
+                tokio::time::sleep_until((base + Duration::from_secs_f64(ts)).into()).await;
+                let frame = FFmpegVideoFrame {
+                    inner: make_video_frame(160, 120, k, Content::Flat, &mut rng),
+                    timestamp: Timestamp::Instant(base + Duration::from_secs_f64(ts)),
+                };
+                if tx.send_async(frame).await.is_err() {
+                    break;
+                }
+            }
+        })
+    };
+
+    let pipeline = OutputPipeline::builder(out_path.clone())
+        .with_video::<ChannelVideoSource<FFmpegVideoFrame>>(ChannelVideoSourceConfig::new(info, rx))
+        .with_timestamps(timestamps)
+        .build::<Mp4Muxer>(())
+        .await
+        .map_err(|e| format!("pipeline build: {e}"))?;
+
+    tokio::time::sleep(Duration::from_secs_f64(PRE_PAUSE_SECS)).await;
+    pipeline.pause();
+    tokio::time::sleep(Duration::from_secs_f64(PAUSE_SECS)).await;
+    pipeline.resume();
+
+    emit.await.map_err(|e| format!("emit join: {e}"))?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    pipeline.stop().await.map_err(|e| format!("stop: {e}"))?;
+
+    let pts = read_video_pts(&out_path)?;
+    if pts.len() < 8 {
+        return Err(format!("only {} frames muxed", pts.len()));
+    }
+
+    // The pause is excised: the muxed span must cover roughly the unpaused
+    // content, not the wall-clock run.
+    let span = pts.last().unwrap() - pts[0];
+    let expected = PRE_PAUSE_SECS + POST_PAUSE_SECS;
+    if (span - expected).abs() > 0.6 {
+        return Err(format!(
+            "muxed span {span:.2}s should be about the unpaused content {expected:.2}s \
+             (pause leaked into the timeline)"
+        ));
+    }
+
+    // And no single pts step may contain the pause.
+    let max_gap = pts.windows(2).map(|w| w[1] - w[0]).fold(0.0, f64::max);
+    if max_gap > PAUSE_SECS * 0.8 {
+        return Err(format!(
+            "pause survived as a {max_gap:.2}s pts gap in the container"
+        ));
+    }
+
+    // Post-resume continuity is the discriminating check: without the pause
+    // excision the anomaly tracker accepts the pause as a confirmed jump and
+    // the drift tracker's wall cap re-pins the post-resume segment ~one
+    // tolerance late (measured +0.13s vs +0.03s with the fix). The median
+    // over the whole segment is immune to per-frame scheduler jitter.
+    let period = 1.0 / f64::from(FPS);
+    let split = pts
+        .windows(2)
+        .position(|w| w[1] - w[0] == max_gap)
+        .unwrap_or(0);
+    let pre_last = pts[split];
+    let mut post_offsets: Vec<f64> = pts[split + 1..]
+        .iter()
+        .enumerate()
+        .map(|(k, &p)| p - (pre_last + (k as f64 + 1.0) * period))
+        .collect();
+    post_offsets.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let continuity = post_offsets
+        .get(post_offsets.len() / 2)
+        .copied()
+        .unwrap_or(0.0);
+    if continuity.abs() > 0.08 {
+        return Err(format!(
+            "post-resume frames resume {continuity:+.3}s off the pre-pause timeline \
+             (pause bled into the drift anchor)"
+        ));
+    }
+
+    Ok(format!(
+        "{} frames, span {span:.2}s (expected ~{expected:.2}s), max pts gap {max_gap:.2}s, \
+         post-resume continuity {continuity:+.3}s",
+        pts.len()
+    ))
+}
+
 #[derive(Clone, Copy)]
 struct AudioCase {
     rate: u32,
@@ -670,6 +786,12 @@ async fn synthetic_device_matrix_preserves_sync() {
         let outcome = run_video_case(VideoCase::curated(fps, scenario, fragmented)).await;
         record(&mut results, name, outcome);
     }
+
+    record(
+        &mut results,
+        "video/30fps/pause-resume/mp4".to_string(),
+        run_video_pause_case().await,
+    );
 
     let audio_cases: Vec<(u32, u16)> = vec![
         (8_000, 2),
