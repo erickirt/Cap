@@ -60,6 +60,13 @@ pub fn video_flash_onsets(path: &Path) -> Result<Vec<f64>, String> {
         take_frame(&decoded);
     }
 
+    flash_onsets_from_luma(&samples)
+}
+
+/// Flash onsets from a time-ordered `(seconds, mean luma)` series, shared by
+/// the file analyzers and the playback harness (which samples luma at the
+/// renderer's presentation boundary).
+pub fn flash_onsets_from_luma(samples: &[(f64, f64)]) -> Result<Vec<f64>, String> {
     if samples.len() < 10 {
         return Err(format!(
             "only {} video frames decoded; recording too short to analyze",
@@ -85,7 +92,7 @@ pub fn video_flash_onsets(path: &Path) -> Result<Vec<f64>, String> {
 
     let mut onsets = Vec::new();
     let mut armed = true;
-    for (t, luma) in &samples {
+    for (t, luma) in samples {
         if *luma >= on && armed {
             onsets.push(*t);
             armed = false;
@@ -178,6 +185,12 @@ pub fn audio_beep_onsets(path: &Path) -> Result<AudioOnsets, String> {
         take_frame(&decoded);
     }
 
+    beep_onsets_from_mono(mono, sample_rate)
+}
+
+/// Beep onsets from a mono sample stream, shared by the file analyzers and
+/// the playback harness (which taps samples at the device handoff).
+pub fn beep_onsets_from_mono(mut mono: Vec<f32>, sample_rate: u32) -> Result<AudioOnsets, String> {
     if sample_rate == 0 || mono.len() < sample_rate as usize {
         return Err("audio track too short to analyze".to_string());
     }

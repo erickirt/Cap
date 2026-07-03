@@ -40,6 +40,8 @@ jobs:
           - windows-2022
           - ubuntu-24.04
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -70,11 +72,18 @@ jobs:
         shell: pwsh
         run: Add-Content -Path $env:GITHUB_PATH -Value "${{ github.workspace }}\\target\\ffmpeg\\bin"
 
+      - name: Install software Vulkan driver (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers libvulkan1
+
       - name: Timestamp pipeline unit + property tests
         shell: bash
         run: |
           cargo test --locked -p cap-timestamp -p cap-enc-ffmpeg
           cargo test --locked -p cap-recording --lib
+          cargo test --locked -p cap-rendering
 
       - name: Synthetic device matrix
         id: matrix
@@ -85,6 +94,15 @@ jobs:
           CAP_SYNC_MATRIX_RANDOM_CASES: ${{ github.event_name == 'schedule' && '40' || '6' }}
         run: |
           cargo test --locked -p cap-recording --test sync_matrix -- --nocapture
+
+      # Verifies the editor's playback machinery (decoders, frame scheduling,
+      # audio pipeline) preserves sync. The fixture recording is generated
+      # through the real recording pipeline, so no capture hardware is needed;
+      # rendering uses the platform's software adapter where no GPU exists.
+      - name: Editor playback sync harness
+        shell: bash
+        run: |
+          cargo run --locked -p cap -- selftest playback --json
 
       - name: Report findings
         if: always()

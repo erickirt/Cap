@@ -446,6 +446,17 @@ fn main() {
         .name("cap-cli-runtime".to_string())
         .stack_size(TOKIO_WORKER_THREAD_STACK_SIZE)
         .spawn(move || -> Result<(), String> {
+            // serve_main_thread blocks the main thread until this shutdown
+            // runs; a drop guard keeps that true on every exit path, including
+            // the runtime failing to build and panics unwinding out of run().
+            struct PatternShutdown;
+            impl Drop for PatternShutdown {
+                fn drop(&mut self) {
+                    selftest::pattern::shutdown_main_thread_runner();
+                }
+            }
+            let _pattern_shutdown = PatternShutdown;
+
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .thread_stack_size(TOKIO_WORKER_THREAD_STACK_SIZE)
@@ -453,7 +464,6 @@ fn main() {
                 .map_err(|e| format!("Failed to build Tokio runtime: {e}"))?;
 
             let result = runtime.block_on(run(cli));
-            selftest::pattern::shutdown_main_thread_runner();
             if exit_after_success && result.is_ok() {
                 // Successful export/preview workers have already written their output by here.
                 // Exiting directly avoids Windows GPU/MediaFoundation teardown crashes in the
@@ -466,6 +476,16 @@ fn main() {
             result
         });
 
+    // A failed spawn means nothing will ever call shutdown_main_thread_runner, so the
+    // pattern server below would block forever — bail out before serving.
+    let runtime_thread = match runtime_thread {
+        Ok(handle) => handle,
+        Err(e) => {
+            eprintln!("error: Failed to spawn CLI runtime thread: {e}");
+            std::process::exit(1);
+        }
+    };
+
     if let Some(rx) = pattern_rx {
         selftest::pattern::serve_main_thread(rx);
     }
@@ -473,13 +493,7 @@ fn main() {
     // Surface failures as a clean, unquoted `error: ...` line on stderr (the default
     // `Result`-returning main prints `Error: "debug-quoted"`, which is noisy for humans and brittle
     // for agents scraping stderr). clap already exits 2 for usage/parse errors before we get here.
-    let outcome = match runtime_thread {
-        Ok(handle) => handle.join(),
-        Err(e) => {
-            eprintln!("error: Failed to spawn CLI runtime thread: {e}");
-            std::process::exit(1);
-        }
-    };
+    let outcome = runtime_thread.join();
 
     match outcome {
         Ok(Ok(())) => {}

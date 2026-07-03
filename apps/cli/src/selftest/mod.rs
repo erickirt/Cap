@@ -5,6 +5,7 @@
 
 pub mod measure;
 pub mod pattern;
+pub mod playback;
 
 use std::{
     path::{Path, PathBuf},
@@ -29,6 +30,7 @@ const PASS_TOTAL_DRIFT_MS: f64 = 20.0;
 const PASS_MAD_MS: f64 = 20.0;
 const WARN_OFFSET_MS: f64 = 120.0;
 const WARN_TOTAL_DRIFT_MS: f64 = 40.0;
+const WARN_MAD_MS: f64 = 40.0;
 const MAX_RAW_EXPORT_DELTA_MS: f64 = 25.0;
 const MIN_BEEP_SNR: f64 = 8.0;
 /// Extra offset budget for the acoustic microphone path: sound flight time
@@ -49,6 +51,9 @@ pub enum SelftestCommands {
     /// Record a test pattern and verify audio/video sync end-to-end
     #[command(name = "av-sync")]
     AvSync(AvSyncArgs),
+    /// Verify the editor playback path preserves audio/video sync
+    #[command(name = "playback")]
+    Playback(playback::PlaybackArgs),
     /// Internal: measure flash/beep onsets in an existing recording or export
     #[command(name = "analyze", hide = true)]
     Analyze(AnalyzeArgs),
@@ -135,6 +140,7 @@ impl SelftestArgs {
     pub async fn run(self, json: bool) -> Result<(), String> {
         match self.command {
             SelftestCommands::AvSync(args) => run_av_sync(args, json).await,
+            SelftestCommands::Playback(args) => playback::run_playback(args, json).await,
             SelftestCommands::Analyze(args) => run_analyze(args),
         }
     }
@@ -174,7 +180,9 @@ async fn run_av_sync(args: AvSyncArgs, json: bool) -> Result<(), String> {
     // the progress output; measurement errors are surfaced through Results.
     ffmpeg::util::log::set_level(ffmpeg::util::log::Level::Quiet);
 
-    let pattern_secs = args.duration.clamp(10, 120);
+    // The floor guarantees enough events for measure_sync's minimum after the
+    // first event is dropped: 14s -> 7 events -> 6 usable pairs.
+    let pattern_secs = args.duration.clamp(14, 120);
     let events = (pattern_secs / EVENT_PERIOD.as_secs()).max(3) as u32;
     let spec = PatternSpec {
         settle: SETTLE,
@@ -550,7 +558,7 @@ fn classify(m: &SyncMeasurement) -> Verdict {
     let drift = m.total_drift_ms.abs();
     if offset <= PASS_OFFSET_MS && drift <= PASS_TOTAL_DRIFT_MS && m.mad_ms <= PASS_MAD_MS {
         Verdict::Pass
-    } else if offset <= WARN_OFFSET_MS && drift <= WARN_TOTAL_DRIFT_MS {
+    } else if offset <= WARN_OFFSET_MS && drift <= WARN_TOTAL_DRIFT_MS && m.mad_ms <= WARN_MAD_MS {
         Verdict::Warn
     } else {
         Verdict::Fail
@@ -569,7 +577,10 @@ fn classify_mic(m: &SyncMeasurement) -> Verdict {
         && m.mad_ms <= PASS_MAD_MS
     {
         Verdict::Pass
-    } else if offset <= WARN_OFFSET_MS + MIC_EXTRA_OFFSET_MS && drift <= WARN_TOTAL_DRIFT_MS {
+    } else if offset <= WARN_OFFSET_MS + MIC_EXTRA_OFFSET_MS
+        && drift <= WARN_TOTAL_DRIFT_MS
+        && m.mad_ms <= WARN_MAD_MS
+    {
         Verdict::Warn
     } else {
         Verdict::Fail
@@ -649,7 +660,7 @@ fn evaluate(
 
     if let Some(export_m) = &export_m {
         let export_verdict = classify(export_m);
-        if export_verdict > verdict && export_verdict == Verdict::Fail {
+        if export_verdict != Verdict::Pass {
             reasons.push(format!(
                 "export offset {:+.0} ms / drift {:+.0} ms over {:.0}s",
                 export_m.median_offset_ms, export_m.total_drift_ms, export_m.span_secs

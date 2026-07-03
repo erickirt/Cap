@@ -43,6 +43,19 @@ impl PatternSpec {
     pub fn total_runtime(&self) -> Duration {
         self.settle + self.period * self.events + Duration::from_millis(500)
     }
+
+    /// Event onsets relative to the pattern epoch. Nominally periodic, with a
+    /// deterministic per-event jitter of up to ±300 ms: a perfectly periodic
+    /// schedule would let an A/V shift of exactly one period pair every flash
+    /// with the wrong beep and alias to a zero measured offset.
+    pub fn event_offsets_secs(&self) -> Vec<f64> {
+        (0..self.events)
+            .map(|k| {
+                let jitter = (u64::from(k).wrapping_mul(2_654_435_761) % 601) as f64 / 1000.0 - 0.3;
+                (f64::from(k) * self.period.as_secs_f64() + jitter).max(0.0)
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug)]
@@ -111,9 +124,8 @@ pub async fn request_pattern(spec: PatternSpec) -> Result<PatternReport, String>
 
 struct BeepState {
     epoch: Instant,
-    period_samples: u64,
-    beep_samples: u64,
-    events: u32,
+    /// Sorted (start, end) sample windows of each beep, relative to epoch.
+    event_windows: Vec<(u64, u64)>,
     sample_rate: u32,
     channels: usize,
     /// Absolute sample index of pattern epoch, fixed on the first callback.
@@ -155,24 +167,37 @@ impl BeepState {
             let rel = abs_sample - epoch_sample;
             let mut value = 0.0f32;
             if rel >= 0 {
-                let event = (rel as u64) / self.period_samples;
-                let within = (rel as u64) % self.period_samples;
-                if event < u64::from(self.events) && within < self.beep_samples {
-                    // 1 kHz tone with a 2 ms fade-in/out to avoid clicks while
-                    // keeping the onset sharp for detection.
-                    let t = within as f32 / self.sample_rate as f32;
-                    let fade_len = 0.002 * self.sample_rate as f32;
-                    let fade_in = (within as f32 / fade_len).min(1.0);
-                    let remaining = (self.beep_samples - within) as f32;
-                    let fade_out = (remaining / fade_len).min(1.0);
-                    value =
-                        0.4 * fade_in * fade_out * (t * 1000.0 * 2.0 * std::f32::consts::PI).sin();
+                let rel = rel as u64;
+                let idx = self
+                    .event_windows
+                    .partition_point(|&(start, _)| start <= rel);
+                if idx > 0 {
+                    let (start, end) = self.event_windows[idx - 1];
+                    if rel < end {
+                        // 1 kHz tone with a 2 ms fade-in/out to avoid clicks while
+                        // keeping the onset sharp for detection.
+                        let within = rel - start;
+                        let t = within as f32 / self.sample_rate as f32;
+                        let fade_len = 0.002 * self.sample_rate as f32;
+                        let fade_in = (within as f32 / fade_len).min(1.0);
+                        let remaining = (end - rel) as f32;
+                        let fade_out = (remaining / fade_len).min(1.0);
+                        value = 0.4
+                            * fade_in
+                            * fade_out
+                            * (t * 1000.0 * 2.0 * std::f32::consts::PI).sin();
 
-                    if within == 0 {
-                        let dac = now
-                            + latency.unwrap_or_default()
-                            + Duration::from_secs_f64(frame_idx as f64 / self.sample_rate as f64);
-                        self.beep_outputs.lock().unwrap().push((event as u32, dac));
+                        if within == 0 {
+                            let dac = now
+                                + latency.unwrap_or_default()
+                                + Duration::from_secs_f64(
+                                    frame_idx as f64 / self.sample_rate as f64,
+                                );
+                            self.beep_outputs
+                                .lock()
+                                .unwrap()
+                                .push(((idx - 1) as u32, dac));
+                        }
                     }
                 }
             }
@@ -199,11 +224,17 @@ fn build_beep_stream(
 
     let sample_rate = config.sample_rate().0;
     let channels = config.channels() as usize;
+    let beep_samples = (spec.flash_len.as_secs_f64() * sample_rate as f64) as u64;
     let state = Arc::new(BeepState {
         epoch,
-        period_samples: (spec.period.as_secs_f64() * sample_rate as f64) as u64,
-        beep_samples: (spec.flash_len.as_secs_f64() * sample_rate as f64) as u64,
-        events: spec.events,
+        event_windows: spec
+            .event_offsets_secs()
+            .into_iter()
+            .map(|offset| {
+                let start = (offset * sample_rate as f64) as u64;
+                (start, start + beep_samples)
+            })
+            .collect(),
         sample_rate,
         channels,
         epoch_sample: Mutex::new(None),
@@ -260,6 +291,8 @@ fn build_beep_stream(
 
 struct PatternApp {
     spec: PatternSpec,
+    /// Event onsets in seconds from epoch, from `PatternSpec::event_offsets_secs`.
+    event_offsets: Vec<f64>,
     run_start: Instant,
     epoch: Instant,
     window: Option<Arc<Window>>,
@@ -278,11 +311,12 @@ impl PatternApp {
         if now < self.epoch {
             return None;
         }
-        let rel = now - self.epoch;
-        let period = self.spec.period.as_secs_f64();
-        let event = (rel.as_secs_f64() / period) as u32;
-        let within = rel.as_secs_f64() - f64::from(event) * period;
-        (event < self.spec.events && within < self.spec.flash_len.as_secs_f64()).then_some(event)
+        let rel = (now - self.epoch).as_secs_f64();
+        let flash = self.spec.flash_len.as_secs_f64();
+        self.event_offsets
+            .iter()
+            .position(|&start| rel >= start && rel < start + flash)
+            .map(|idx| idx as u32)
     }
 
     fn next_transition(&self, now: Instant) -> Instant {
@@ -290,16 +324,18 @@ impl PatternApp {
             return self.epoch;
         }
         let rel = (now - self.epoch).as_secs_f64();
-        let period = self.spec.period.as_secs_f64();
-        let event = (rel / period) as u32;
-        let within = rel - f64::from(event) * period;
         let flash = self.spec.flash_len.as_secs_f64();
-        let next_rel = if within < flash {
-            f64::from(event) * period + flash
+        let next_rel = self
+            .event_offsets
+            .iter()
+            .flat_map(|&start| [start, start + flash])
+            .filter(|&boundary| boundary > rel)
+            .fold(f64::INFINITY, f64::min);
+        if next_rel.is_finite() {
+            self.epoch + Duration::from_secs_f64(next_rel)
         } else {
-            f64::from(event + 1) * period
-        };
-        self.epoch + Duration::from_secs_f64(next_rel)
+            self.done_at()
+        }
     }
 
     fn done_at(&self) -> Instant {
@@ -454,6 +490,7 @@ fn run_pattern(spec: PatternSpec) -> Result<PatternReport, String> {
         .map_err(|e| format!("failed to start audio output: {e}"))?;
 
     let mut app = PatternApp {
+        event_offsets: spec.event_offsets_secs(),
         spec,
         run_start,
         epoch,
