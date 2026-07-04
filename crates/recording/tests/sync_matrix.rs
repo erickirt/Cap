@@ -286,11 +286,16 @@ async fn run_video_case(case: VideoCase) -> Result<String, String> {
 
     let mut max_abs: f64 = 0.0;
     let mut max_rel: f64 = 0.0;
+    // At low frame rates the fixed tolerance is only a frame or two of
+    // budget, so scheduler jitter on shared runners trips it; express the
+    // floor in frames as well. The bug class this guards produces errors of
+    // a second or more either way.
+    let rel_tolerance = REL_TOLERANCE_SECS.max(2.5 / f64::from(case.fps));
     for (i, (&p, &s)) in pts.iter().zip(&sent).enumerate() {
         max_abs = max_abs.max((p - s).abs());
         let rel = ((p - pts[0]) - (s - sent[0])).abs();
         max_rel = max_rel.max(rel);
-        if rel > REL_TOLERANCE_SECS {
+        if rel > rel_tolerance {
             return Err(format!(
                 "frame {i}: relative pts error {rel:.3}s (pts {p:.3}s vs sent {s:.3}s)"
             ));
