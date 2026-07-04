@@ -115,9 +115,11 @@ use tracing::*;
 use upload::{create_or_get_video, upload_screenshot_bytes, upload_screenshot_file, upload_video};
 use web_api::AuthedApiError;
 use web_api::ManagerExt as WebManagerExt;
+#[cfg(target_os = "macos")]
+use windows::hide_overlay;
 use windows::{
     CapWindowId, EditorRecordingTarget, EditorWindowIds, ScreenshotEditorWindowIds, ShowCapWindow,
-    hide_overlay, set_window_transparent, show_overlay,
+    set_window_transparent, show_overlay,
 };
 
 use crate::{recording::start_recording, upload::build_video_meta};

@@ -4481,10 +4481,14 @@ mod tests {
 
         #[test]
         fn returns_timeout_when_thread_does_not_exit_in_time() {
-            let handle = std::thread::spawn(|| {
-                std::thread::sleep(Duration::from_millis(100));
+            // The worker blocks until released, so it can never beat the
+            // timeout however unfairly a loaded machine schedules threads.
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+            let handle = std::thread::spawn(move || {
+                let _ = release_rx.recv();
                 Ok(())
             });
+            let _release_tx = release_tx;
 
             match wait_for_blocking_thread_finish(handle, Duration::from_millis(5), "test-worker") {
                 BlockingThreadFinish::TimedOut(error) => {

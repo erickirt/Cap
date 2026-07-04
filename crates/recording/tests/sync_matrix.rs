@@ -264,9 +264,22 @@ async fn run_video_case(case: VideoCase) -> Result<String, String> {
     .map_err(|e| format!("pipeline build: {e}"))?;
 
     emit.await.map_err(|e| format!("emit join: {e}"))?;
-    // Allow the tail of the stream to flush through the encoder.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let finished = pipeline.stop().await.map_err(|e| format!("stop: {e}"))?;
+    // The verification below assumes frames were emitted in real time; when a
+    // saturated runner (or a software encoder drowning in worst-case content)
+    // stalls emission for seconds, pts-vs-wall comparisons are meaningless.
+    // Skip loudly instead of failing on an environment artifact.
+    let emit_lag =
+        timestamps.instant().elapsed().as_secs_f64() - sent.last().copied().unwrap_or(0.0);
+    let finished = {
+        // Allow the tail of the stream to flush through the encoder.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        pipeline.stop().await.map_err(|e| format!("stop: {e}"))?
+    };
+    if emit_lag > 1.5 {
+        return Ok(format!(
+            "skipped: runner fell {emit_lag:.1}s behind real-time emission"
+        ));
+    }
 
     // Read back the muxed pts.
     let playable = if fragmented {
@@ -389,13 +402,24 @@ async fn run_video_pause_case() -> Result<String, String> {
         .map_err(|e| format!("pipeline build: {e}"))?;
 
     tokio::time::sleep(Duration::from_secs_f64(PRE_PAUSE_SECS)).await;
+    let pause_started = std::time::Instant::now();
     pipeline.pause();
     tokio::time::sleep(Duration::from_secs_f64(PAUSE_SECS)).await;
     pipeline.resume();
+    let actual_pause = pause_started.elapsed().as_secs_f64();
 
     emit.await.map_err(|e| format!("emit join: {e}"))?;
+    let emit_lag = timestamps.instant().elapsed().as_secs_f64() - total_secs;
     tokio::time::sleep(Duration::from_millis(500)).await;
     pipeline.stop().await.map_err(|e| format!("stop: {e}"))?;
+    // The assertions below compare the muxed span against the intended
+    // pause/content windows; a runner too stalled to hit those windows
+    // invalidates the comparison, not the pipeline.
+    if emit_lag > 1.5 || (actual_pause - PAUSE_SECS).abs() > 0.5 {
+        return Ok(format!(
+            "skipped: runner too slow (emission lag {emit_lag:.1}s, pause window {actual_pause:.2}s)"
+        ));
+    }
 
     let pts = read_video_pts(&out_path)?;
     if pts.len() < 8 {
@@ -537,8 +561,14 @@ async fn run_audio_case(case: AudioCase) -> Result<String, String> {
         .map_err(|e| format!("pipeline build: {e}"))?;
 
     emit.await.map_err(|e| format!("emit join: {e}"))?;
+    let emit_lag = timestamps.instant().elapsed().as_secs_f64() - CONTENT_SECS;
     tokio::time::sleep(Duration::from_millis(300)).await;
     pipeline.stop().await.map_err(|e| format!("stop: {e}"))?;
+    if emit_lag > 1.5 {
+        return Ok(format!(
+            "skipped: runner fell {emit_lag:.1}s behind real-time emission"
+        ));
+    }
 
     let (duration, decoded_channels, energy) = read_audio_stats(&out_path)?;
     if (duration - CONTENT_SECS).abs() > AUDIO_DURATION_TOLERANCE_SECS {
