@@ -310,9 +310,9 @@ async fn run_video_case(case: VideoCase) -> Result<String, String> {
     // track's start_time for cross-track alignment. A random case whose
     // leading frames were dropped therefore legitimately muxes pts starting
     // near 0, not at sent[0]; compare against the origin-normalized sent
-    // timeline. The absolute leg can also never be held to a tighter bound
-    // than the relative one, since it contains the same per-frame jitter.
-    let abs_tolerance = ABS_TOLERANCE_SECS.max(rel_tolerance);
+    // timeline. The fixed absolute bound stays valid at any frame rate the
+    // generator produces (fps >= 10 keeps rel_tolerance <= ABS_TOLERANCE):
+    // a constant whole-track offset does not scale with frame period.
     let sent_origin = sent[0];
     for (i, (&p, &s)) in pts.iter().zip(&sent).enumerate() {
         max_abs = max_abs.max((p - (s - sent_origin)).abs());
@@ -324,7 +324,7 @@ async fn run_video_case(case: VideoCase) -> Result<String, String> {
             ));
         }
     }
-    if max_abs > abs_tolerance {
+    if max_abs > ABS_TOLERANCE_SECS {
         return Err(format!(
             "absolute pts error {max_abs:.3}s exceeds tolerance"
         ));
