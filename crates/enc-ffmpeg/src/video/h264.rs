@@ -173,7 +173,6 @@ impl H264EncoderBuilder {
                     output_height,
                     self.bpp,
                     self.crf,
-                    self.is_export,
                 )
             {
                 warn!(
@@ -339,7 +338,6 @@ impl H264EncoderBuilder {
                     output_height,
                     self.bpp,
                     self.crf,
-                    self.is_export,
                 )
             {
                 warn!(
@@ -1150,7 +1148,6 @@ fn get_codec_and_options(
 /// never observed there. Results are cached per (encoder, resolution,
 /// export-mode) so the cost is one-time per process, and
 /// `CAP_DISABLE_ENCODER_SELF_TEST=1` bypasses the check as an escape hatch.
-#[allow(clippy::too_many_arguments)]
 fn cached_hardware_self_test(
     codec: Codec,
     encoder_options: &Dictionary<'static>,
@@ -1159,10 +1156,10 @@ fn cached_hardware_self_test(
     output_height: u32,
     bpp: f32,
     crf: Option<u8>,
-    is_export: bool,
 ) -> Result<(), String> {
     use std::{
         collections::HashMap,
+        fmt::Write,
         sync::{Mutex, OnceLock},
     };
 
@@ -1176,16 +1173,26 @@ fn cached_hardware_self_test(
         return Ok(());
     }
 
-    type Cache = Mutex<HashMap<(String, u32, u32, bool), Result<(), String>>>;
+    type Cache = Mutex<HashMap<String, Result<(), String>>>;
     static CACHE: OnceLock<Cache> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
 
-    let key = (
-        codec.name().to_string(),
+    // The verdict depends on everything that shapes the encoder session:
+    // options (which differ between recording and export), frame rate (the
+    // keyframe interval), and the bitrate inputs — not just name and size.
+    let mut key = format!(
+        "{}|{}x{}|{}/{}|{}|{:?}",
+        codec.name(),
         output_width,
         output_height,
-        is_export,
+        input_config.frame_rate.numerator(),
+        input_config.frame_rate.denominator(),
+        bpp,
+        crf,
     );
+    for (k, v) in encoder_options.iter() {
+        let _ = write!(key, "|{k}={v}");
+    }
     if let Some(result) = cache.lock().unwrap().get(&key) {
         return result.clone();
     }
@@ -1377,8 +1384,15 @@ fn verify_neutral_gray(frame: &frame::Video) -> Result<(), String> {
             plane_mean(frame, 0, width, height),
             plane_mean(frame, 1, width, height.div_ceil(2)),
         ],
-        // Unexpected decode format: nothing meaningful to measure, accept.
-        _ => return Ok(()),
+        // Our encoders are configured for 8-bit 4:2:0; anything else decoding
+        // out of the test stream is itself evidence the session is not doing
+        // what was asked. Fail closed — the cost is falling back to the next
+        // candidate, never accepting output we could not verify.
+        other => {
+            return Err(format!(
+                "decoded self-test frame has unexpected pixel format {other:?}"
+            ));
+        }
     };
 
     for (plane, mean) in means.iter().enumerate() {
