@@ -1145,8 +1145,9 @@ fn get_codec_and_options(
 /// (nvenc/amf/qsv/mf) lives and where zeroed-output reports come from.
 /// VideoToolbox is a single-vendor OS stack, and measured session creation
 /// alone costs ~1.6s — too much to add to recording start for a failure mode
-/// never observed there. Results are cached per (encoder, resolution,
-/// export-mode) so the cost is one-time per process, and
+/// never observed there. Results are cached per everything that shapes the
+/// encode path (encoder, resolution, input pixel format, frame rate, bitrate
+/// inputs, and the full option set) so the cost is one-time per process, and
 /// `CAP_DISABLE_ENCODER_SELF_TEST=1` bypasses the check as an escape hatch.
 fn cached_hardware_self_test(
     codec: Codec,
@@ -1179,12 +1180,14 @@ fn cached_hardware_self_test(
 
     // The verdict depends on everything that shapes the encoder session:
     // options (which differ between recording and export), frame rate (the
-    // keyframe interval), and the bitrate inputs — not just name and size.
+    // keyframe interval), the input pixel format (it selects the negotiated
+    // encode format), and the bitrate inputs — not just name and size.
     let mut key = format!(
-        "{}|{}x{}|{}/{}|{}|{:?}",
+        "{}|{}x{}|{:?}|{}/{}|{}|{:?}",
         codec.name(),
         output_width,
         output_height,
+        input_config.pixel_format,
         input_config.frame_rate.numerator(),
         input_config.frame_rate.denominator(),
         bpp,
@@ -1193,7 +1196,11 @@ fn cached_hardware_self_test(
     for (k, v) in encoder_options.iter() {
         let _ = write!(key, "|{k}={v}");
     }
-    if let Some(result) = cache.lock().unwrap().get(&key) {
+    if let Some(result) = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&key)
+    {
         return result.clone();
     }
 
@@ -1215,7 +1222,10 @@ fn cached_hardware_self_test(
         ok = result.is_ok(),
         "Hardware H264 encoder self-test finished"
     );
-    cache.lock().unwrap().insert(key, result.clone());
+    cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(key, result.clone());
     result
 }
 
