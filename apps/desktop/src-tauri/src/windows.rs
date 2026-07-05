@@ -22,7 +22,7 @@ use tauri::{
 };
 use tauri_specta::Event;
 use tokio::sync::RwLock;
-use tracing::{debug, error, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 #[cfg(target_os = "macos")]
 use crate::panel_manager::{PanelManager, PanelState, PanelWindowType, is_window_handle_valid};
@@ -1783,6 +1783,7 @@ impl ShowCapWindow {
                 window
             }
             Self::Editor { .. } => {
+                let open_started = std::time::Instant::now();
                 hide_recording_windows(app, false);
 
                 let window = match self
@@ -1835,6 +1836,12 @@ impl ShowCapWindow {
                     window.show().ok();
                     window.set_focus().ok();
                 }
+
+                info!(
+                    window_built_and_shown_ms = open_started.elapsed().as_millis() as u64,
+                    shown_from_rust = !transparency_enabled,
+                    "Editor open: window ready"
+                );
 
                 window
             }
