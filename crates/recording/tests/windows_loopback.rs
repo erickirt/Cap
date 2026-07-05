@@ -36,7 +36,10 @@ fn rms_of(data: &cpal::Data) -> Option<f64> {
             if s.is_empty() {
                 return Some(0.0);
             }
-            Some((s.iter().map(|&v| f64::from(v) * f64::from(v)).sum::<f64>() / s.len() as f64).sqrt())
+            Some(
+                (s.iter().map(|&v| f64::from(v) * f64::from(v)).sum::<f64>() / s.len() as f64)
+                    .sqrt(),
+            )
         }
         cpal::SampleFormat::I16 => {
             let s = data.as_slice::<i16>()?;
@@ -170,7 +173,10 @@ fn loopback_delivers_through_silence_and_captures_tone() {
     let first = silence_events.first().unwrap();
     let last = silence_events.last().unwrap();
     let capture_span = last.capture_secs - first.capture_secs;
-    let wall_span = last.arrived_at.duration_since(first.arrived_at).as_secs_f64();
+    let wall_span = last
+        .arrived_at
+        .duration_since(first.arrived_at)
+        .as_secs_f64();
     assert!(
         (capture_span - wall_span).abs() < 0.5,
         "loopback capture timestamps advanced {capture_span:.3}s while wall \
