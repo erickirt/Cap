@@ -64,8 +64,6 @@ import {
 	type CursorAnimationStyle,
 	type CursorType,
 	commands,
-	type FrameConfiguration,
-	type FrameStyle,
 	type KeyboardTrackSegment,
 	type SceneMode,
 	type SceneSegment,
@@ -75,13 +73,8 @@ import {
 	type XY,
 	type ZoomSegment,
 } from "~/utils/tauri";
-import IconLucideAppWindow from "~icons/lucide/app-window";
-import IconLucideAppWindowMac from "~icons/lucide/app-window-mac";
-import IconLucideBan from "~icons/lucide/ban";
 import IconLucideBoxSelect from "~icons/lucide/box-select";
 import IconLucideColumns2 from "~icons/lucide/columns-2";
-import IconLucideGlobe from "~icons/lucide/globe";
-import IconLucideLaptop from "~icons/lucide/laptop";
 import IconLucideEyeOff from "~icons/lucide/eye-off";
 import IconLucideGauge from "~icons/lucide/gauge";
 import IconLucideGrid from "~icons/lucide/grid";
@@ -160,13 +153,6 @@ const BACKGROUND_SOURCES = {
 	gradient: "Gradient",
 	none: "None",
 } satisfies Record<BackgroundSourceTab, string>;
-
-const DEFAULT_FRAME_CONFIG: FrameConfiguration = {
-	style: "none",
-	theme: "dark",
-	url: "Cap.so",
-	title: "",
-};
 
 const BACKGROUND_ICONS = {
 	wallpaper: imageBg,
@@ -2558,110 +2544,6 @@ function BackgroundConfig(props: {
 							setProject("background", "roundingType", value)
 						}
 					/>
-				</div>
-			</Field>
-			<Field name="Frame" icon={<IconLucideAppWindowMac class="size-4" />}>
-				<div class="flex flex-col gap-3">
-					<KTabs
-						value={project.background.frame?.style ?? "none"}
-						onChange={(v) => {
-							const style = v as FrameStyle;
-							setProject("background", "frame", {
-								...(project.background.frame ?? DEFAULT_FRAME_CONFIG),
-								style,
-							});
-						}}
-					>
-						<KTabs.List class="grid grid-cols-2 gap-2">
-							<KTabs.Trigger value="none" class={SCENE_MODE_TRIGGER_CLASS}>
-								<IconLucideBan class="size-3.5" />
-								None
-							</KTabs.Trigger>
-							<KTabs.Trigger value="macOS" class={SCENE_MODE_TRIGGER_CLASS}>
-								<IconLucideAppWindowMac class="size-3.5" />
-								macOS Window
-							</KTabs.Trigger>
-							<KTabs.Trigger value="windows" class={SCENE_MODE_TRIGGER_CLASS}>
-								<IconLucideAppWindow class="size-3.5" />
-								Windows
-							</KTabs.Trigger>
-							<KTabs.Trigger value="browser" class={SCENE_MODE_TRIGGER_CLASS}>
-								<IconLucideGlobe class="size-3.5" />
-								Browser
-							</KTabs.Trigger>
-							<KTabs.Trigger value="macbook" class={SCENE_MODE_TRIGGER_CLASS}>
-								<IconLucideLaptop class="size-3.5" />
-								MacBook
-							</KTabs.Trigger>
-						</KTabs.List>
-					</KTabs>
-					<Show
-						when={
-							(project.background.frame?.style ?? "none") !== "none" &&
-							project.background.frame
-						}
-					>
-						{(frame) => (
-							<>
-								<Subfield name="Theme">
-									<KTabs
-										value={frame().theme}
-										onChange={(v) =>
-											setProject("background", "frame", {
-												...frame(),
-												theme: v as FrameConfiguration["theme"],
-											})
-										}
-									>
-										<KTabs.List class="grid grid-cols-2 gap-2 min-w-44">
-											<KTabs.Trigger
-												value="light"
-												class={SCENE_MODE_TRIGGER_CLASS}
-											>
-												Light
-											</KTabs.Trigger>
-											<KTabs.Trigger
-												value="dark"
-												class={SCENE_MODE_TRIGGER_CLASS}
-											>
-												Dark
-											</KTabs.Trigger>
-										</KTabs.List>
-									</KTabs>
-								</Subfield>
-								<Show when={frame().style === "browser"}>
-									<Subfield name="URL">
-										<TextInput
-											class="w-full max-w-52 px-2.5 py-1.5 text-xs rounded-lg border bg-gray-1 border-gray-3 text-gray-12 focus:border-gray-7 outline-none"
-											value={frame().url}
-											placeholder="cap.so"
-											onInput={(e) =>
-												setProject("background", "frame", {
-													...frame(),
-													url: e.currentTarget.value,
-												})
-											}
-										/>
-									</Subfield>
-								</Show>
-								<Show when={frame().style === "macOS"}>
-									<Subfield name="Title">
-										<TextInput
-											class="w-full max-w-52 px-2.5 py-1.5 text-xs rounded-lg border bg-gray-1 border-gray-3 text-gray-12 focus:border-gray-7 outline-none"
-											value={frame().title}
-											placeholder="Window title (optional)"
-											onInput={(e) =>
-												setProject("background", "frame", {
-													...frame(),
-													title: e.currentTarget.value,
-												})
-											}
-										/>
-									</Subfield>
-								</Show>
-							</>
-						)}
-					</Show>
 				</div>
 			</Field>
 			<Field name="Motion Blur" icon={<IconLucideWind class="size-4" />}>
