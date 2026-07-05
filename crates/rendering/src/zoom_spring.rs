@@ -43,6 +43,13 @@ const STEP_MS: f64 = 8.0;
 /// segment and within this window of its boundaries.
 const INSTANT_SNAP_WINDOW_SECS: f64 = 0.1;
 
+/// While the zoom amount is at (or within a hair of) identity the viewport
+/// covers the whole frame regardless of the center, so the center channel is
+/// free to track its target instantly — this pre-aims upcoming zooms so they
+/// scale straight toward their focus. Any center jump while amount <= this
+/// bound moves the viewport by at most (bound - 1) of the card: sub-pixel.
+const CENTER_PREAIM_MAX_AMOUNT: f32 = 1.0005;
+
 /// Greedy click-cluster bounding-box limits, as a fraction of the visible
 /// zoomed viewport (50% width x 70% height).
 const CLUSTER_WIDTH_RATIO: f64 = 0.5;
@@ -561,6 +568,19 @@ impl ZoomTransformTimeline {
                 .set_position(XY::new(targets.amount, targets.activity));
             state.aux_sim.set_velocity(XY::new(0.0, 0.0));
         } else {
+            // While the amount spring sits at identity the viewport shows the
+            // whole frame no matter where the center is — the center channel
+            // is unobservable, so track its target instantly (free pre-aim).
+            // An incoming zoom then launches already aimed at its focus and
+            // scales straight toward it, instead of zooming about the stale
+            // center and dragging over at high magnification (a huge late pan
+            // that also detonated the motion blur). The epsilon bounds any
+            // theoretical pop to sub-pixel: (amount - 1) * |center jump| of
+            // the card, i.e. < 0.05% of the card size.
+            if state.aux_sim.position.x <= CENTER_PREAIM_MAX_AMOUNT {
+                state.center_sim.set_position(targets.center);
+                state.center_sim.set_velocity(XY::new(0.0, 0.0));
+            }
             state.center_sim.run(STEP_MS as f32);
             state.aux_sim.run(STEP_MS as f32);
         }
@@ -716,17 +736,27 @@ mod tests {
     }
 
     /// Max |value delta| and |slope delta| between adjacent 8ms sample
-    /// intervals across the whole precomputed range, per channel scalar.
+    /// intervals across the whole precomputed range, measured on the VISIBLE
+    /// viewport rect (bounds corners + amount), not the latent channels: the
+    /// center channel deliberately snaps to its target while the amount sits
+    /// at identity (free pre-aim, geometrically invisible), and bounds are
+    /// what the renderer — and the motion-blur velocity analysis — consume.
     fn max_step_discontinuities(timeline: &ZoomTransformTimeline) -> (f64, f64) {
         let step_secs = STEP_MS / 1000.0;
-        let values: Vec<[f64; 3]> = timeline
+        let values: Vec<[f64; 5]> = timeline
             .samples
             .iter()
             .map(|s| {
+                let bounds = SegmentBounds::from_amount_center(
+                    f64::from(s.amount),
+                    XY::new(f64::from(s.center.x), f64::from(s.center.y)),
+                );
                 [
                     f64::from(s.amount),
-                    f64::from(s.center.x),
-                    f64::from(s.center.y),
+                    bounds.top_left.x,
+                    bounds.top_left.y,
+                    bounds.bottom_right.x,
+                    bounds.bottom_right.y,
                 ]
             })
             .collect();
@@ -734,7 +764,7 @@ mod tests {
         let mut max_value_jump = 0.0f64;
         let mut max_slope_jump = 0.0f64;
         for window in values.windows(3) {
-            for channel in 0..3 {
+            for channel in 0..5 {
                 let v0 = window[0][channel];
                 let v1 = window[1][channel];
                 let v2 = window[2][channel];
@@ -1105,6 +1135,55 @@ mod tests {
         assert!((settled.bounds.top_left.y - expected.top_left.y).abs() < 1e-3);
         assert!((settled.bounds.bottom_right.x - expected.bottom_right.x).abs() < 1e-3);
         assert!((settled.bounds.bottom_right.y - expected.bottom_right.y).abs() < 1e-3);
+    }
+
+    #[test]
+    fn manual_corner_zoom_launches_already_aimed() {
+        // A manual zoom to the top-left corner must scale straight into the
+        // corner from the first visible frame — not zoom about the stale
+        // (centered) framing and pan over at high magnification. While the
+        // amount is at identity the center is unobservable, so the timeline
+        // pre-aims it; with a corner-flush target (0,0) the viewport's
+        // top-left then stays pinned to the content's top-left for the whole
+        // ramp.
+        let cursor = CursorEvents::default();
+        let segments = vec![manual_segment(1.0, 5.0, 2.862, 0.0, 0.0)];
+        let mut timeline = timeline_for(&segments, &cursor, 6.0);
+        timeline.precompute();
+
+        for t in [1.05f32, 1.2, 1.5, 2.0, 3.0] {
+            let z = timeline.sample(t);
+            assert!(
+                z.bounds.top_left.x.abs() < 5e-3 && z.bounds.top_left.y.abs() < 5e-3,
+                "viewport must stay corner-anchored during the ramp at t={t}: {:?}",
+                z.bounds
+            );
+        }
+
+        // Guard against the assertion above passing trivially (identity
+        // bounds also have top_left = 0): the zoom must actually engage and
+        // settle on the full manual amount.
+        let settled = timeline.sample(4.5);
+        assert!(
+            (settled.display_amount() - 2.862).abs() < 1e-2,
+            "zoom failed to settle on the manual amount: {}",
+            settled.display_amount()
+        );
+
+        // And the pre-aim must never cause a visible pop: the viewport stays
+        // continuous across the segment start. Thresholds mirror the other
+        // continuity tests — a 2.862x ramp legitimately sweeps ~0.054/step at
+        // peak spring velocity, while a center pop at (say) amount 1.5 would
+        // jump ~0.25 in one step.
+        let (max_value_jump, max_slope_jump) = max_step_discontinuities(&timeline);
+        assert!(
+            max_value_jump < 0.1,
+            "pre-aim introduced a step discontinuity: {max_value_jump}"
+        );
+        assert!(
+            max_slope_jump < 4.0,
+            "pre-aim introduced a velocity discontinuity: {max_slope_jump}/s"
+        );
     }
 
     #[test]
