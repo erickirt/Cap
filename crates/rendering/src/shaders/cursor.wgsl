@@ -21,7 +21,12 @@ var t_cursor: texture_2d<f32>;
 var s_cursor: sampler;
 
 const MAX_ROTATION_RADIANS: f32 = 0.34906584;
-const MAX_CURSOR_BLUR_UV: f32 = 0.24;
+// Smear length ceiling in sprite-UV (1.0 = one cursor-sprite width). A fast
+// flick travels several sprite widths per frame, and the smear length must
+// track it (Screen Studio semantics); this only bounds pathological
+// teleports. The vertex quad expands by the same vector, so the geometry
+// always contains the full streak.
+const MAX_CURSOR_BLUR_UV: f32 = 4.0;
 
 fn cursor_velocity_uv() -> vec2<f32> {
     let motion_vec = uniforms.motion_vector_strength.xy;
@@ -122,6 +127,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         return base_color * opacity;
     }
 
+    // 21-tap box along the motion vector, output fully blurred: the amount
+    // scales the smear LENGTH (baked into velocity_uv on the CPU side), never
+    // a crossfade with the sharp sprite — a sharp copy over a smear reads as
+    // ghosting. Transparent taps shorten the effective alpha, which is what
+    // stretches and fades the sprite along fast motion.
     let kernel_size = 21.0;
     let k = kernel_size - 1.0;
     var color = base_color;
@@ -133,6 +143,5 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     color /= kernel_size;
-    let blur_mix = clamp(blur_strength, 0.0, 1.0);
-    return mix(base_color, color, blur_mix) * opacity;
+    return color * opacity;
 }
