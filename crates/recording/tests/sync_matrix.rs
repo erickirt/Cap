@@ -682,15 +682,19 @@ fn read_audio_envelope(path: &Path, win_secs: f64) -> Result<(Vec<f64>, f64), St
     let mut rate = 0u32;
     let mut frame = ffmpeg::frame::Audio::empty();
     let drain = |decoder: &mut ffmpeg::decoder::Audio,
-                     samples: &mut Vec<f64>,
-                     rate: &mut u32,
-                     frame: &mut ffmpeg::frame::Audio| {
+                 samples: &mut Vec<f64>,
+                 rate: &mut u32,
+                 frame: &mut ffmpeg::frame::Audio| {
         while decoder.receive_frame(frame).is_ok() {
             *rate = frame.rate();
             if let ffmpeg::format::Sample::F32(ffmpeg::format::sample::Type::Planar) =
                 frame.format()
             {
-                samples.extend(frame.plane::<f32>(0)[..frame.samples()].iter().map(|&v| f64::from(v)));
+                samples.extend(
+                    frame.plane::<f32>(0)[..frame.samples()]
+                        .iter()
+                        .map(|&v| f64::from(v)),
+                );
             }
         }
     };
@@ -865,12 +869,8 @@ async fn run_mic_with_system_audio_case() -> Result<String, String> {
     let (sys_tx, sys_rx) = futures::channel::mpsc::channel::<AudioFrame>(32);
 
     // The mic delivers continuously from device-ready at 0.15s to stop.
-    let mic_emit = spawn_burst_emitter(
-        mic_tx,
-        info,
-        timestamps,
-        vec![(MIC_START_SECS, TOTAL_SECS)],
-    );
+    let mic_emit =
+        spawn_burst_emitter(mic_tx, info, timestamps, vec![(MIC_START_SECS, TOTAL_SECS)]);
     let sys_emit = spawn_burst_emitter(sys_tx, info, timestamps, system_bursts.clone());
 
     let mic_pipeline = OutputPipeline::builder(mic_path.clone())

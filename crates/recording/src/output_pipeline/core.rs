@@ -732,7 +732,10 @@ const SILENCE_FRAME_MAX: Duration = Duration::from_secs(1);
 /// (a system-audio track whose last sound came long before stop stayed
 /// short) came from comparing an epoch-relative target against the
 /// track-local timeline.
-fn audio_tail_padding_duration(audio_elapsed: Duration, track_target_elapsed: Duration) -> Duration {
+fn audio_tail_padding_duration(
+    audio_elapsed: Duration,
+    track_target_elapsed: Duration,
+) -> Duration {
     track_target_elapsed.saturating_sub(audio_elapsed)
 }
 
@@ -826,7 +829,9 @@ impl AudioGapTracker {
     /// capture time of the first muxed frame, or zero when the track is
     /// anchored at the epoch itself.
     fn track_start_offset(&self) -> Option<Duration> {
-        let secs = self.first_frame_ts?.signed_duration_since_secs(self.reference);
+        let secs = self
+            .first_frame_ts?
+            .signed_duration_since_secs(self.reference);
         Some(Duration::from_secs_f64(secs.max(0.0)))
     }
 
@@ -2762,7 +2767,9 @@ async fn process_audio_frame<TMutex: AudioMuxer>(
         && !state.gap_tracker.started()
     {
         let epoch_ts = Timestamp::Instant(ctx.timestamps.instant());
-        state.gap_tracker.mark_started(epoch_ts, ctx.timestamps.instant());
+        state
+            .gap_tracker
+            .mark_started(epoch_ts, ctx.timestamps.instant());
 
         let head_secs = frame.timestamp.signed_duration_since_secs(ctx.timestamps);
         let head = Duration::from_secs_f64(head_secs.max(0.0))
@@ -2812,13 +2819,12 @@ async fn process_audio_frame<TMutex: AudioMuxer>(
     }
 
     if let Some(first_tx) = state.first_tx.take() {
-        let anchor_ts = if ctx.anchor == AudioAnchor::PipelineEpoch
-            && ctx.video_start_gate.is_none()
-        {
-            Timestamp::Instant(ctx.timestamps.instant())
-        } else {
-            frame.timestamp
-        };
+        let anchor_ts =
+            if ctx.anchor == AudioAnchor::PipelineEpoch && ctx.video_start_gate.is_none() {
+                Timestamp::Instant(ctx.timestamps.instant())
+            } else {
+                frame.timestamp
+            };
         let _ = first_tx.send(anchor_ts);
     }
 
@@ -5681,7 +5687,9 @@ mod tests {
 
             let first_frame_at = Duration::from_millis(2_500);
             assert!(matches!(
-                harness.process_at(first_frame_at, first_frame_at, 960).await,
+                harness
+                    .process_at(first_frame_at, first_frame_at, 960)
+                    .await,
                 AudioFrameOutcome::Sent
             ));
 
@@ -5786,7 +5794,9 @@ mod tests {
 
             let first_frame_at = Duration::from_millis(2_500);
             assert!(matches!(
-                harness.process_at(first_frame_at, first_frame_at, 960).await,
+                harness
+                    .process_at(first_frame_at, first_frame_at, 960)
+                    .await,
                 AudioFrameOutcome::Sent
             ));
 
