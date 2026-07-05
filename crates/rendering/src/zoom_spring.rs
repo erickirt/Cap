@@ -49,13 +49,6 @@ const INSTANT_SNAP_WINDOW_SECS: f64 = 0.1;
 const CLUSTER_WIDTH_RATIO: f64 = 0.5;
 const CLUSTER_HEIGHT_RATIO: f64 = 0.7;
 
-/// Clicks separated by more than this gap start a new cluster.
-const CLUSTER_MERGE_GAP_MS: f64 = 2_500.0;
-
-/// Cursor samples further apart than this are treated as an idle gap rather
-/// than interpolated across.
-const CURSOR_IDLE_GAP_MS: f64 = 66.67;
-
 /// Fallback focus when a segment has no usable cursor data.
 const FALLBACK_FOCUS: (f64, f64) = (0.5, 0.5);
 
@@ -103,50 +96,13 @@ impl ClickCluster {
     }
 }
 
-fn cursor_position_at(moves: &[cap_project::CursorMoveEvent], time_ms: f64) -> Option<(f64, f64)> {
-    if moves.is_empty() {
-        return None;
-    }
-
-    if time_ms <= moves[0].time_ms {
-        return Some((moves[0].x, moves[0].y));
-    }
-
-    if let Some(last) = moves.last()
-        && time_ms >= last.time_ms
-    {
-        return Some((last.x, last.y));
-    }
-
-    let idx = moves.partition_point(|m| m.time_ms <= time_ms);
-    if idx == 0 {
-        return Some((moves[0].x, moves[0].y));
-    }
-
-    let prev = &moves[idx - 1];
-    let next = &moves[idx.min(moves.len() - 1)];
-    let dt = next.time_ms - prev.time_ms;
-
-    if dt > CURSOR_IDLE_GAP_MS {
-        return Some((prev.x, prev.y));
-    }
-
-    let t = if dt > 1e-9 {
-        ((time_ms - prev.time_ms) / dt).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-
-    Some((
-        prev.x + (next.x - prev.x) * t,
-        prev.y + (next.y - prev.y) * t,
-    ))
-}
-
-/// Greedily clusters the mouse events inside a segment's RECORDING-time range
-/// into bounding boxes limited to a fraction of the visible zoomed viewport.
-/// Clicks are preferred; when a range has none, movement positions are
-/// clustered instead so unclicked zoom ranges still aim somewhere sensible.
+/// Greedily clusters ALL mouse movement inside a segment's RECORDING-time
+/// range into bounding boxes limited to a fraction of the visible zoomed
+/// viewport. Every move participates — not just clicks — so the camera
+/// re-aims whenever the cursor travels outside the current cluster's
+/// dead-zone box (hovering into a corner pans the view there even without a
+/// click). Click positions are inherently part of the move stream, so they
+/// need no separate pass.
 pub(crate) fn build_clusters(
     cursor_events: &CursorEvents,
     segment_start_secs: f64,
@@ -157,36 +113,6 @@ pub(crate) fn build_clusters(
     let end_ms = segment_end_secs * 1000.0;
     let cluster_w = CLUSTER_WIDTH_RATIO / zoom_amount.max(1.0);
     let cluster_h = CLUSTER_HEIGHT_RATIO / zoom_amount.max(1.0);
-
-    let click_positions: Vec<(f64, f64, f64)> = cursor_events
-        .clicks
-        .iter()
-        .filter(|click| click.down && click.time_ms >= start_ms && click.time_ms <= end_ms)
-        .filter_map(|click| {
-            cursor_position_at(&cursor_events.moves, click.time_ms)
-                .map(|(x, y)| (click.time_ms, x, y))
-        })
-        .collect();
-
-    if !click_positions.is_empty() {
-        let mut clusters = Vec::new();
-        let (first_time, first_x, first_y) = click_positions[0];
-        let mut current = ClickCluster::new(first_x, first_y, first_time);
-
-        for &(time_ms, x, y) in &click_positions[1..] {
-            if time_ms - current.last_time_ms <= CLUSTER_MERGE_GAP_MS
-                && current.can_add(x, y, cluster_w, cluster_h)
-            {
-                current.add(x, y, time_ms);
-            } else {
-                clusters.push(current);
-                current = ClickCluster::new(x, y, time_ms);
-            }
-        }
-
-        clusters.push(current);
-        return clusters;
-    }
 
     let events_in_range: Vec<&cap_project::CursorMoveEvent> = cursor_events
         .moves
@@ -610,7 +536,6 @@ impl ZoomTransformTimeline {
                             .unwrap_or(FALLBACK_FOCUS);
                         SegmentBounds::calculate_follow_center(
                             (focus.0.clamp(0.0, 1.0), focus.1.clamp(0.0, 1.0)),
-                            amount,
                             segment.edge_snap_ratio,
                         )
                     }
@@ -937,6 +862,73 @@ mod tests {
         );
     }
 
+    /// Raw-UV viewport of a sampled zoom: (left, top, size).
+    fn visible_viewport(zoom: &InterpolatedZoom) -> (f64, f64, f64) {
+        let amount = zoom.display_amount();
+        (
+            -zoom.bounds.top_left.x / amount,
+            -zoom.bounds.top_left.y / amount,
+            1.0 / amount,
+        )
+    }
+
+    #[test]
+    fn hovering_into_a_corner_re_aims_without_a_click() {
+        // Regression for the real-recording report: clicks early near the
+        // center, then the cursor HOVERS (no click) into the bottom-right
+        // corner mid-segment. All movement participates in clustering, so
+        // leaving the dead-zone box must re-aim the camera and bring the
+        // hovered corner into the settled viewport.
+        let corner = (0.95, 0.9);
+        let mut moves = Vec::new();
+        for i in 0..50 {
+            moves.push(move_event(i as f64 * 100.0, 0.5, 0.5));
+        }
+        for i in 0..=20 {
+            let t = i as f64 / 20.0;
+            moves.push(move_event(
+                5000.0 + t * 1000.0,
+                0.5 + (corner.0 - 0.5) * t,
+                0.5 + (corner.1 - 0.5) * t,
+            ));
+        }
+        for i in 1..=30 {
+            moves.push(move_event(6000.0 + i as f64 * 200.0, corner.0, corner.1));
+        }
+        let cursor = CursorEvents {
+            moves,
+            clicks: vec![click_event(1500.0), click_event(2000.0)],
+        };
+        let segments = vec![auto_segment(1.0, 15.1, 2.0)];
+        let mut timeline = timeline_for(&segments, &cursor, 16.0);
+        timeline.precompute();
+
+        // Two seconds after arriving in the corner the spring has settled.
+        let settled = timeline.sample(8.0);
+        let (left, top, size) = visible_viewport(&settled);
+        assert!(
+            corner.0 >= left && corner.0 <= left + size,
+            "hovered corner x {} outside viewport [{left}, {}]",
+            corner.0,
+            left + size
+        );
+        assert!(
+            corner.1 >= top && corner.1 <= top + size,
+            "hovered corner y {} outside viewport [{top}, {}]",
+            corner.1,
+            top + size
+        );
+
+        // And the framing genuinely moved from the early click-cluster view.
+        let early = timeline.sample(4.0);
+        let (early_left, early_top, _) = visible_viewport(&early);
+        assert!(
+            (left - early_left).abs() > 0.1 || (top - early_top).abs() > 0.1,
+            "camera never re-aimed toward the hovered corner"
+        );
+        assert_viewport_in_bounds(&settled, "corner hover settle");
+    }
+
     #[test]
     fn empty_cursor_events_fall_back_to_centered_focus() {
         let cursor = CursorEvents::default();
@@ -949,8 +941,8 @@ mod tests {
         let expected = SegmentBounds::from_amount_center(
             2.0,
             XY::new(
-                SegmentBounds::calculate_follow_center(FALLBACK_FOCUS, 2.0, 0.25).0,
-                SegmentBounds::calculate_follow_center(FALLBACK_FOCUS, 2.0, 0.25).1,
+                SegmentBounds::calculate_follow_center(FALLBACK_FOCUS, 0.25).0,
+                SegmentBounds::calculate_follow_center(FALLBACK_FOCUS, 0.25).1,
             ),
         );
         assert!((settled.bounds.top_left.x - expected.top_left.x).abs() < 1e-3);
@@ -1150,8 +1142,8 @@ mod tests {
         let toward_bottom_right = SegmentBounds::from_amount_center(
             2.0,
             XY::new(
-                SegmentBounds::calculate_follow_center((0.9, 0.9), 2.0, 0.25).0,
-                SegmentBounds::calculate_follow_center((0.9, 0.9), 2.0, 0.25).1,
+                SegmentBounds::calculate_follow_center((0.9, 0.9), 0.25).0,
+                SegmentBounds::calculate_follow_center((0.9, 0.9), 0.25).1,
             ),
         );
         assert!(
