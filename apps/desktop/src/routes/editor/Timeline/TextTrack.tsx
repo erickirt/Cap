@@ -4,7 +4,7 @@ import { createMemo, createRoot, createSignal, For, Show } from "solid-js";
 import { produce } from "solid-js/store";
 
 import { useEditorContext } from "../context";
-import { defaultTextSegment } from "../text";
+import { autoTextColorAt, defaultTextSegment } from "../text";
 import { getSegmentTrack, sortTrackSegments } from "../timelineTracks";
 import { useTimelineContext } from "./context";
 import {
@@ -36,6 +36,7 @@ export function TextTrack(props: {
 		totalDuration,
 		projectHistory,
 		projectActions,
+		canvasControls,
 	} = useEditorContext();
 	const { secsPerPixel, timelineBounds } = useTimelineContext();
 	const [draggingSegment, setDraggingSegment] = createSignal(false);
@@ -119,10 +120,10 @@ export function TextTrack(props: {
 
 	const addSegmentAt = (time: number) => {
 		const length = Math.min(minDuration(), totalDuration());
-		if (length <= 0) return;
+		if (length <= 0) return false;
 
 		const placement = findPlacement(time, length);
-		if (!placement) return;
+		if (!placement) return false;
 
 		setProject(
 			"timeline",
@@ -131,6 +132,7 @@ export function TextTrack(props: {
 				segments ??= [];
 				segments.push({
 					...defaultTextSegment(placement.start, placement.end),
+					color: autoTextColorAt(canvasControls()),
 					track: props.laneIndex,
 				});
 				sortTrackSegments(segments);
@@ -150,6 +152,8 @@ export function TextTrack(props: {
 				indices: [newIndex],
 			});
 		}
+
+		return true;
 	};
 
 	const newSegmentDetails = createMemo(() => {
@@ -175,7 +179,13 @@ export function TextTrack(props: {
 			editorState.previewTime ??
 			editorState.playbackTime ??
 			secsPerPixel() * (e.clientX - (timelineBounds.left ?? 0));
-		addSegmentAt(timelineTime);
+		if (!addSegmentAt(timelineTime)) return;
+		// This click created and selected a segment — stop it reaching the
+		// timeline container, whose mouseup handler would immediately clear
+		// the selection again. Take over its playhead update instead.
+		e.stopPropagation();
+		setEditorState("timeline", "audioPicker", null);
+		props.handleUpdatePlayhead(e);
 	};
 
 	function createMouseDownDrag<T>(
