@@ -1175,7 +1175,7 @@ dependencies = [
  "cidre",
  "clap",
  "clap_complete",
- "cpal 0.15.3 (git+https://github.com/CapSoftware/cpal?rev=3cc779a7b4ca)",
+ "cpal 0.15.3 (git+https://github.com/CapSoftware/cpal?rev=6013cb5f8bd3)",
  "dirs 6.0.0",
  "ffmpeg-next",
  "flume",
@@ -1214,7 +1214,7 @@ name = "cap-audio"
 version = "0.1.0"
 dependencies = [
  "cidre",
- "cpal 0.15.3 (git+https://github.com/CapSoftware/cpal?rev=3cc779a7b4ca)",
+ "cpal 0.15.3 (git+https://github.com/CapSoftware/cpal?rev=6013cb5f8bd3)",
  "ffmpeg-next",
  "serde",
  "serde_json",
@@ -1354,7 +1354,7 @@ dependencies = [
 name = "cap-cpal-ffmpeg"
 version = "0.1.0"
 dependencies = [
- "cpal 0.15.3 (git+https://github.com/CapSoftware/cpal?rev=3cc779a7b4ca)",
+ "cpal 0.15.3 (git+https://github.com/CapSoftware/cpal?rev=6013cb5f8bd3)",
  "ffmpeg-next",
  "workspace-hack",
 ]
@@ -1427,7 +1427,7 @@ dependencies = [
  "cocoa",
  "core-foundation 0.10.1",
  "core-graphics 0.24.0",
- "cpal 0.15.3 (git+https://github.com/CapSoftware/cpal?rev=3cc779a7b4ca)",
+ "cpal 0.15.3 (git+https://github.com/CapSoftware/cpal?rev=6013cb5f8bd3)",
  "device_query",
  "dirs 6.0.0",
  "dotenvy_macro",
@@ -1525,7 +1525,7 @@ dependencies = [
  "cap-media-info",
  "cap-project",
  "cap-rendering",
- "cpal 0.15.3 (git+https://github.com/CapSoftware/cpal?rev=3cc779a7b4ca)",
+ "cpal 0.15.3 (git+https://github.com/CapSoftware/cpal?rev=6013cb5f8bd3)",
  "ffmpeg-next",
  "flume",
  "futures",
@@ -1698,7 +1698,7 @@ dependencies = [
 name = "cap-media-info"
 version = "0.1.0"
 dependencies = [
- "cpal 0.15.3 (git+https://github.com/CapSoftware/cpal?rev=3cc779a7b4ca)",
+ "cpal 0.15.3 (git+https://github.com/CapSoftware/cpal?rev=6013cb5f8bd3)",
  "ffmpeg-next",
  "thiserror 1.0.69",
  "workspace-hack",
@@ -1803,7 +1803,7 @@ dependencies = [
  "core-foundation 0.10.1",
  "core-graphics 0.24.0",
  "coreaudio-rs",
- "cpal 0.15.3 (git+https://github.com/CapSoftware/cpal?rev=3cc779a7b4ca)",
+ "cpal 0.15.3 (git+https://github.com/CapSoftware/cpal?rev=6013cb5f8bd3)",
  "device_query",
  "dhat",
  "either",
@@ -1926,7 +1926,7 @@ dependencies = [
  "cidre",
  "clap",
  "colored",
- "cpal 0.15.3 (git+https://github.com/CapSoftware/cpal?rev=3cc779a7b4ca)",
+ "cpal 0.15.3 (git+https://github.com/CapSoftware/cpal?rev=6013cb5f8bd3)",
  "ffmpeg-next",
  "flume",
  "indicatif",
@@ -1953,7 +1953,7 @@ name = "cap-timestamp"
 version = "0.1.0"
 dependencies = [
  "cidre",
- "cpal 0.15.3 (git+https://github.com/CapSoftware/cpal?rev=3cc779a7b4ca)",
+ "cpal 0.15.3 (git+https://github.com/CapSoftware/cpal?rev=6013cb5f8bd3)",
  "windows 0.60.0",
  "workspace-hack",
 ]
@@ -2630,7 +2630,7 @@ dependencies = [
 [[package]]
 name = "cpal"
 version = "0.15.3"
-source = "git+https://github.com/CapSoftware/cpal?rev=3cc779a7b4ca#3cc779a7b4ca51770211f1b7dc19f107978af707"
+source = "git+https://github.com/CapSoftware/cpal?rev=6013cb5f8bd3#6013cb5f8bd34ddfbf7b215b9540fd211ce829fc"
 dependencies = [
  "alsa",
  "core-foundation-sys",
@@ -8828,8 +8828,9 @@ dependencies = [
 name = "scap-cpal"
 version = "0.1.0"
 dependencies = [
- "cpal 0.15.3 (git+https://github.com/CapSoftware/cpal?rev=3cc779a7b4ca)",
+ "cpal 0.15.3 (git+https://github.com/CapSoftware/cpal?rev=6013cb5f8bd3)",
  "thiserror 1.0.69",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -8852,7 +8853,7 @@ name = "scap-ffmpeg"
 version = "0.1.0"
 dependencies = [
  "cidre",
- "cpal 0.15.3 (git+https://github.com/CapSoftware/cpal?rev=3cc779a7b4ca)",
+ "cpal 0.15.3 (git+https://github.com/CapSoftware/cpal?rev=6013cb5f8bd3)",
  "ffmpeg-next",
  "futures",
  "scap-cpal",

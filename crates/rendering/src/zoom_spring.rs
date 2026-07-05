@@ -237,8 +237,7 @@ fn map_timeline_to_recording_secs(map: &[TimeMapSegment], timeline_secs: f64) ->
 
 /// One precomputed step. Sample times are implicit: `samples[i]` is the state
 /// at `i * STEP_MS`, so lookup is pure index math.
-#[derive(Clone, Copy)]
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 struct TimelineSample {
     amount: f32,
     center: XY<f32>,

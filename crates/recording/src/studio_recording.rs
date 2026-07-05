@@ -15,7 +15,8 @@ use crate::{
     feeds::{camera::CameraFeedLock, microphone::MicrophoneFeedLock},
     ffmpeg::{FragmentedAudioMuxer, FragmentedAudioMuxerConfig, OggMuxer},
     output_pipeline::{
-        AudioGapSummary, DoneFut, FinishedOutputPipeline, OutputPipeline, PipelineDoneError,
+        AudioAnchor, AudioGapSummary, DoneFut, FinishedOutputPipeline, OutputPipeline,
+        PipelineDoneError,
     },
     screen_capture::ScreenCaptureConfig,
     sources::{self, screen_capture},
@@ -1660,11 +1661,17 @@ async fn create_segment_pipeline(
     };
 
     let system_audio = if let Some(system_audio_source) = system_audio {
+        // System audio is intermittent (WASAPI loopback only delivers while
+        // sound plays), so its first packet is not a "source ready" marker:
+        // anchor the track at the recording epoch. This keeps a late first
+        // sound from becoming the latest start_time and cutting the head off
+        // the display/mic/camera tracks at playback.
         let pipeline = if segment_fragmented {
             let output_path = dir.join("system_audio.m4a");
             OutputPipeline::builder(output_path)
                 .with_audio_source::<screen_capture::SystemAudioSource>(system_audio_source)
                 .with_timestamps(start_time)
+                .with_audio_anchor(AudioAnchor::PipelineEpoch)
                 .build::<FragmentedAudioMuxer>(FragmentedAudioMuxerConfig {
                     shared_pause_state: shared_pause_state.clone(),
                 })
@@ -1674,6 +1681,7 @@ async fn create_segment_pipeline(
             OutputPipeline::builder(dir.join("system_audio.ogg"))
                 .with_audio_source::<screen_capture::SystemAudioSource>(system_audio_source)
                 .with_timestamps(start_time)
+                .with_audio_anchor(AudioAnchor::PipelineEpoch)
                 .build::<OggMuxer>(())
                 .instrument(error_span!("system-audio-out"))
                 .await
