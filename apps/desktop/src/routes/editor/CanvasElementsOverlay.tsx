@@ -178,11 +178,28 @@ export function CanvasElementsOverlay(props: { size: Size }) {
 		project.timeline?.sceneSegments?.find((s) => t >= s.start && t < s.end)
 			?.mode ?? "default";
 
-	const zoomActive = () => {
+	const activeZoomIndex = () => {
 		const t = time();
-		return (project.timeline?.zoomSegments ?? []).some(
+		const index = (project.timeline?.zoomSegments ?? []).findIndex(
 			(s) => t >= s.start && t < s.end,
 		);
+		return index === -1 ? null : index;
+	};
+	const zoomActive = () => activeZoomIndex() !== null;
+
+	// Jumping to the zoom segment is the clearest answer to "why is this
+	// locked?" — the segment highlights in the timeline and its settings open
+	// in the sidebar, where the zoom can be adjusted or deleted.
+	const selectActiveZoom = () => {
+		const index = activeZoomIndex();
+		if (index === null) return;
+		batch(() => {
+			setEditorState("canvasSelection", null);
+			setEditorState("timeline", "selection", {
+				type: "zoom",
+				indices: [index],
+			});
+		});
 	};
 
 	// Optimistic rects follow the pointer at input rate during a drag; the
@@ -624,7 +641,15 @@ export function CanvasElementsOverlay(props: { size: Size }) {
 							selected={selection()?.type === "display"}
 							draggable={displayDraggable()}
 							resizable={displayDraggable()}
-							lockedHint="Screen position is locked while a zoom is active"
+							locked={
+								displayDraggable()
+									? null
+									: {
+											message: "Screen is locked while a zoom is active",
+											actionLabel: "Edit zoom",
+											onAction: selectActiveZoom,
+										}
+							}
 							onMouseDown={(e) => {
 								if (e.button !== 0) return;
 								if (selection()?.type !== "display") select("display");
@@ -643,7 +668,15 @@ export function CanvasElementsOverlay(props: { size: Size }) {
 							selected={selection()?.type === "camera"}
 							draggable
 							resizable={cameraResizable()}
-							lockedHint="Camera size is controlled by the zoom settings while a zoom is active"
+							locked={
+								cameraResizable()
+									? null
+									: {
+											message: "Camera size follows the zoom — drag to move",
+											actionLabel: "Edit zoom",
+											onAction: selectActiveZoom,
+										}
+							}
 							onMouseDown={(e) => {
 								if (e.button !== 0) return;
 								if (selection()?.type !== "camera") select("camera");
@@ -665,7 +698,11 @@ function ElementBox(props: {
 	selected: boolean;
 	draggable: boolean;
 	resizable: boolean;
-	lockedHint: string;
+	locked?: {
+		message: string;
+		actionLabel: string;
+		onAction: () => void;
+	} | null;
 	onMouseDown: (e: MouseEvent) => void;
 	resizeHandler: (dirX: 1 | -1, dirY: 1 | -1) => (e: MouseEvent) => void;
 }) {
@@ -680,6 +717,17 @@ function ElementBox(props: {
 			top: topPx >= 28 ? "-24px" : `${Math.max(6, 6 - topPx)}px`,
 		};
 	};
+
+	// The lock banner pins to the top-center of the CANVAS, not the box: small
+	// boxes (camera) can't fit the text, and edge-hugging boxes would push it
+	// into the letterbox clip. Coordinates convert canvas space to box-local
+	// space. Reaching it from a small box means leaving the box, so it also
+	// shows while the element is selected — attempting to drag/resize selects,
+	// which pins the banner until the user clicks elsewhere.
+	const lockedBannerStyle = () => ({
+		left: `${props.size.width / 2 - props.rect.x * props.size.width}px`,
+		top: `${10 - props.rect.y * props.size.height}px`,
+	});
 
 	const flush = () => ({
 		left: props.rect.x * props.size.width <= 6,
@@ -751,7 +799,6 @@ function ElementBox(props: {
 				width: `${props.rect.w * props.size.width}px`,
 				height: `${props.rect.h * props.size.height}px`,
 			}}
-			title={props.draggable && props.resizable ? undefined : props.lockedHint}
 			onMouseDown={props.onMouseDown}
 			onMouseEnter={() => setHovered(true)}
 			onMouseLeave={() => setHovered(false)}
@@ -768,12 +815,33 @@ function ElementBox(props: {
 			/>
 			<Show when={props.selected || hovered()}>
 				<div
-					class="absolute px-1.5 py-0.5 text-[11px] font-medium text-white bg-blue-9 rounded pointer-events-none select-none"
+					class="absolute flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium text-white bg-blue-9 rounded pointer-events-none select-none"
 					style={labelStyle()}
 				>
 					{props.label}
-					{!props.resizable && " (locked during zoom)"}
+					<Show when={props.locked}>
+						<IconLucideLock class="size-2.5" />
+					</Show>
 				</div>
+			</Show>
+			<Show when={props.selected || hovered() ? props.locked : null}>
+				{(locked) => (
+					<div
+						class="absolute z-10 flex -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-lg bg-black/80 py-1.5 pr-1.5 pl-3 text-xs text-white shadow-md pointer-events-auto select-none"
+						style={lockedBannerStyle()}
+						onMouseDown={(e) => e.stopPropagation()}
+					>
+						<IconLucideLock class="size-3 shrink-0 opacity-80" />
+						<span>{locked().message}</span>
+						<button
+							type="button"
+							class="rounded-md bg-white/15 px-2 py-0.5 font-semibold transition-colors hover:bg-white/25 active:bg-white/30"
+							onClick={locked().onAction}
+						>
+							{locked().actionLabel}
+						</button>
+					</div>
+				)}
 			</Show>
 			<Show when={showHandles()}>
 				<For each={corners()}>
