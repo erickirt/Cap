@@ -173,6 +173,17 @@ export function TextOverlay(props: TextOverlayProps) {
 
 	const hasTextSelection = () => selectedTextIndex() !== null;
 
+	// A pending inline-edit request (set when the Add-track picker creates a
+	// text segment) only survives while that segment stays selected; the
+	// segment's overlay consumes it on mount.
+	createEffect(() => {
+		const pending = editorState.timeline.pendingTextEdit;
+		if (pending === null) return;
+		if (selectedTextIndex() !== pending) {
+			setEditorState("timeline", "pendingTextEdit", null);
+		}
+	});
+
 	// Arrow-key nudge for the selected text (1px, Shift = 10px), Escape
 	// deselects. Held keys repeat.
 	createEventListener(document, "keydown", (e: KeyboardEvent) => {
@@ -295,8 +306,14 @@ function TextSegmentOverlay(props: {
 	) => (downEvent: MouseEvent) => void;
 }) {
 	const segment = createMemo(() => normalizeSegment(props.segment));
-	const { setProject, setSnapGuides, projectHistory, projectActions } =
-		useEditorContext();
+	const {
+		setProject,
+		setSnapGuides,
+		projectHistory,
+		projectActions,
+		editorState,
+		setEditorState,
+	} = useEditorContext();
 	const snapTargetsFor = useCanvasSnapTargets();
 
 	let measureRef: HTMLDivElement | undefined;
@@ -608,6 +625,16 @@ function TextSegmentOverlay(props: {
 	onCleanup(() => {
 		endEditing?.();
 		setResizing(false);
+	});
+
+	// Consume a pending inline-edit request from the Add-track picker: the
+	// freshly created segment mounts already selected with its editor open, so
+	// the user can type straight away.
+	createEffect(() => {
+		if (editorState.timeline.pendingTextEdit !== props.index) return;
+		if (!props.isSelected) return;
+		setEditorState("timeline", "pendingTextEdit", null);
+		startEditing();
 	});
 
 	// Invisible strips along the border: dragging an edge scales the text,
