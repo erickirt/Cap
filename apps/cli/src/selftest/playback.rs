@@ -722,7 +722,6 @@ mod fixture {
             let total_secs = pattern.total_secs;
             let base = timestamps.instant();
             let mut tx = mic_tx;
-            let beep_chunk = beep_chunk.clone();
             tokio::spawn(async move {
                 use futures::SinkExt;
                 let first_chunk = (FIXTURE_MIC_START_SECS / AUDIO_CHUNK_SECS).ceil() as usize;
@@ -748,7 +747,6 @@ mod fixture {
             let events = pattern.events.clone();
             let base = timestamps.instant();
             let mut tx = sys_tx;
-            let beep_chunk = beep_chunk.clone();
             tokio::spawn(async move {
                 use futures::SinkExt;
                 for &event in &events {
@@ -912,11 +910,7 @@ mod fixture {
                 keyboard_segments: Vec::new(),
                 audio_segments: Vec::new(),
             }),
-            clips: vec![ClipConfiguration {
-                index: 0,
-                offsets,
-                ..Default::default()
-            }],
+            clips: vec![ClipConfiguration { index: 0, offsets }],
             ..Default::default()
         };
         project_config

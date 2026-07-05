@@ -1133,7 +1133,6 @@ async fn stop_recording(
                 .map(|(i, segment)| ClipConfiguration {
                     index: i as u32,
                     offsets: segment.calculate_audio_offsets(),
-                    ..Default::default()
                 })
                 .collect::<Vec<_>>()
         });
