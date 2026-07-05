@@ -636,7 +636,9 @@ impl Default for CursorConfiguration {
             mass: 3.0,
             friction: 70.0,
             raw: false,
-            motion_blur: 0.5,
+            // Matches default_screen_motion_blur (the editor drives both
+            // fields with one slider, and load() re-couples them).
+            motion_blur: 1.0,
             use_svg: true,
             rotation_amount: Self::default_rotation_amount(),
             base_rotation: 0.0,
@@ -1455,7 +1457,10 @@ impl Default for ProjectConfiguration {
 
 impl ProjectConfiguration {
     fn default_screen_motion_blur() -> f32 {
-        0.5
+        // Screen Studio's default blur amount is 1.0; with length-based blur
+        // semantics (amount scales the smear length, output fully blurred)
+        // 1.0 reproduces its out-of-the-box look.
+        1.0
     }
 
     pub fn validate(&self) -> Result<(), AnnotationValidationError> {
@@ -1604,11 +1609,14 @@ mod tests {
     }
 
     #[test]
-    fn default_motion_blur_is_half() {
+    fn default_motion_blur_is_full() {
+        // 1.0 matches Screen Studio's default amount under length-based blur
+        // semantics; the two fields must agree because the editor drives them
+        // with one slider and load() re-couples them.
         let config = ProjectConfiguration::default();
 
-        assert_eq!(config.cursor.motion_blur, 0.5);
-        assert_eq!(config.screen_motion_blur, 0.5);
+        assert_eq!(config.cursor.motion_blur, 1.0);
+        assert_eq!(config.screen_motion_blur, 1.0);
     }
 
     #[test]
