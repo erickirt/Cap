@@ -4109,7 +4109,7 @@ mod tests {
     }
 
     #[test]
-    fn merges_clicks_with_screen_studio_gap() {
+    fn merges_clicks_with_three_second_gap() {
         let clicks = vec![click_event(1_200.0), click_event(4_200.0)];
         let moves = vec![
             move_event(1_500.0, 0.10, 0.12),

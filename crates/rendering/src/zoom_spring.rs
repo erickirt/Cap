@@ -11,8 +11,7 @@
 //! step-function targets, retargeted every 8 ms step with velocity always
 //! carried across retargets. There are no fixed animation durations and no
 //! boundary special-cases: segment starts/ends/re-aims are just target changes
-//! the spring smooths through, which is what makes the motion feel like
-//! Screen Studio's.
+//! the spring smooths through for continuous motion.
 //!
 //! The timeline lives in TIMELINE time. Cursor events are in RECORDING time,
 //! so click-cluster construction and the "active cluster at time t" lookup map
@@ -45,7 +44,7 @@ const STEP_MS: f64 = 8.0;
 const INSTANT_SNAP_WINDOW_SECS: f64 = 0.1;
 
 /// Greedy click-cluster bounding-box limits, as a fraction of the visible
-/// zoomed viewport (Screen Studio: 50% width x 70% height).
+/// zoomed viewport (50% width x 70% height).
 const CLUSTER_WIDTH_RATIO: f64 = 0.5;
 const CLUSTER_HEIGHT_RATIO: f64 = 0.7;
 
