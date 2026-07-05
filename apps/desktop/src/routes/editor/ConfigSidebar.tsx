@@ -64,6 +64,8 @@ import {
 	type CursorAnimationStyle,
 	type CursorType,
 	commands,
+	type FrameConfiguration,
+	type FrameStyle,
 	type KeyboardTrackSegment,
 	type SceneMode,
 	type SceneSegment,
@@ -73,8 +75,13 @@ import {
 	type XY,
 	type ZoomSegment,
 } from "~/utils/tauri";
+import IconLucideAppWindow from "~icons/lucide/app-window";
+import IconLucideAppWindowMac from "~icons/lucide/app-window-mac";
+import IconLucideBan from "~icons/lucide/ban";
 import IconLucideBoxSelect from "~icons/lucide/box-select";
 import IconLucideColumns2 from "~icons/lucide/columns-2";
+import IconLucideGlobe from "~icons/lucide/globe";
+import IconLucideLaptop from "~icons/lucide/laptop";
 import IconLucideEyeOff from "~icons/lucide/eye-off";
 import IconLucideGauge from "~icons/lucide/gauge";
 import IconLucideGrid from "~icons/lucide/grid";
@@ -116,7 +123,11 @@ import {
 } from "./projectConfig";
 import ShadowSettings from "./ShadowSettings";
 import { TextInput } from "./TextInput";
-import type { TextSegment } from "./text";
+import {
+	TEXT_FONT_SIZE_MAX,
+	TEXT_FONT_SIZE_MIN,
+	type TextSegment,
+} from "./text";
 import {
 	ComingSoonTooltip,
 	EditorButton,
@@ -149,6 +160,13 @@ const BACKGROUND_SOURCES = {
 	gradient: "Gradient",
 	none: "None",
 } satisfies Record<BackgroundSourceTab, string>;
+
+const DEFAULT_FRAME_CONFIG: FrameConfiguration = {
+	style: "none",
+	theme: "dark",
+	url: "Cap.so",
+	title: "",
+};
 
 const BACKGROUND_ICONS = {
 	wallpaper: imageBg,
@@ -2542,6 +2560,110 @@ function BackgroundConfig(props: {
 					/>
 				</div>
 			</Field>
+			<Field name="Frame" icon={<IconLucideAppWindowMac class="size-4" />}>
+				<div class="flex flex-col gap-3">
+					<KTabs
+						value={project.background.frame?.style ?? "none"}
+						onChange={(v) => {
+							const style = v as FrameStyle;
+							setProject("background", "frame", {
+								...(project.background.frame ?? DEFAULT_FRAME_CONFIG),
+								style,
+							});
+						}}
+					>
+						<KTabs.List class="grid grid-cols-2 gap-2">
+							<KTabs.Trigger value="none" class={SCENE_MODE_TRIGGER_CLASS}>
+								<IconLucideBan class="size-3.5" />
+								None
+							</KTabs.Trigger>
+							<KTabs.Trigger value="macOS" class={SCENE_MODE_TRIGGER_CLASS}>
+								<IconLucideAppWindowMac class="size-3.5" />
+								macOS Window
+							</KTabs.Trigger>
+							<KTabs.Trigger value="windows" class={SCENE_MODE_TRIGGER_CLASS}>
+								<IconLucideAppWindow class="size-3.5" />
+								Windows
+							</KTabs.Trigger>
+							<KTabs.Trigger value="browser" class={SCENE_MODE_TRIGGER_CLASS}>
+								<IconLucideGlobe class="size-3.5" />
+								Browser
+							</KTabs.Trigger>
+							<KTabs.Trigger value="macbook" class={SCENE_MODE_TRIGGER_CLASS}>
+								<IconLucideLaptop class="size-3.5" />
+								MacBook
+							</KTabs.Trigger>
+						</KTabs.List>
+					</KTabs>
+					<Show
+						when={
+							(project.background.frame?.style ?? "none") !== "none" &&
+							project.background.frame
+						}
+					>
+						{(frame) => (
+							<>
+								<Subfield name="Theme">
+									<KTabs
+										value={frame().theme}
+										onChange={(v) =>
+											setProject("background", "frame", {
+												...frame(),
+												theme: v as FrameConfiguration["theme"],
+											})
+										}
+									>
+										<KTabs.List class="grid grid-cols-2 gap-2 min-w-44">
+											<KTabs.Trigger
+												value="light"
+												class={SCENE_MODE_TRIGGER_CLASS}
+											>
+												Light
+											</KTabs.Trigger>
+											<KTabs.Trigger
+												value="dark"
+												class={SCENE_MODE_TRIGGER_CLASS}
+											>
+												Dark
+											</KTabs.Trigger>
+										</KTabs.List>
+									</KTabs>
+								</Subfield>
+								<Show when={frame().style === "browser"}>
+									<Subfield name="URL">
+										<TextInput
+											class="w-full max-w-52 px-2.5 py-1.5 text-xs rounded-lg border bg-gray-1 border-gray-3 text-gray-12 focus:border-gray-7 outline-none"
+											value={frame().url}
+											placeholder="cap.so"
+											onInput={(e) =>
+												setProject("background", "frame", {
+													...frame(),
+													url: e.currentTarget.value,
+												})
+											}
+										/>
+									</Subfield>
+								</Show>
+								<Show when={frame().style === "macOS"}>
+									<Subfield name="Title">
+										<TextInput
+											class="w-full max-w-52 px-2.5 py-1.5 text-xs rounded-lg border bg-gray-1 border-gray-3 text-gray-12 focus:border-gray-7 outline-none"
+											value={frame().title}
+											placeholder="Window title (optional)"
+											onInput={(e) =>
+												setProject("background", "frame", {
+													...frame(),
+													title: e.currentTarget.value,
+												})
+											}
+										/>
+									</Subfield>
+								</Show>
+							</>
+						)}
+					</Show>
+				</div>
+			</Field>
 			<Field name="Motion Blur" icon={<IconLucideWind class="size-4" />}>
 				<Slider
 					value={[
@@ -3241,7 +3363,7 @@ function TextSegmentConfig(props: {
 }) {
 	const { setProject } = useEditorContext();
 	const clampNumber = (value: number, min: number, max: number) =>
-		Math.min(Math.max(Number.isFinite(value) ? value : min), max);
+		Math.min(Math.max(Number.isFinite(value) ? value : min, min), max);
 
 	const updateSegment = (fn: (segment: TextSegment) => void) => {
 		setProject(
@@ -3286,28 +3408,39 @@ function TextSegmentConfig(props: {
 			</Field>
 			<Field name="Size" icon={<IconCapEnlarge class="size-4" />}>
 				<Slider
-					value={[clampNumber(props.segment.fontSize, 8, 200)]}
+					value={[
+						clampNumber(
+							props.segment.fontSize,
+							TEXT_FONT_SIZE_MIN,
+							TEXT_FONT_SIZE_MAX,
+						),
+					]}
 					onChange={([value]) =>
 						updateSegment((segment) => {
-							const newFontSize = clampNumber(value, 8, 200);
+							const newFontSize = clampNumber(
+								value,
+								TEXT_FONT_SIZE_MIN,
+								TEXT_FONT_SIZE_MAX,
+							);
 							const oldFontSize = segment.fontSize || 48;
 							const scale = newFontSize / oldFontSize;
 
 							segment.fontSize = newFontSize;
 
-							if (
-								segment.size &&
-								segment.size.x > 0.025 &&
-								segment.size.y > 0.025
-							) {
-								const maxSize = 0.95;
-								segment.size.x = Math.min(segment.size.x * scale, maxSize);
-								segment.size.y = Math.min(segment.size.y * scale, maxSize);
+							// Scale the box with the font so line wrapping is
+							// preserved; keep the top edge fixed since the renderer
+							// anchors text at the top of the box (the canvas overlay
+							// re-hugs the box to the exact glyph bounds when visible).
+							if (segment.size && segment.center) {
+								const topEdge = segment.center.y - segment.size.y / 2;
+								segment.size.x = Math.min(segment.size.x * scale, 1);
+								segment.size.y = segment.size.y * scale;
+								segment.center.y = topEdge + segment.size.y / 2;
 							}
 						})
 					}
-					minValue={8}
-					maxValue={200}
+					minValue={TEXT_FONT_SIZE_MIN}
+					maxValue={TEXT_FONT_SIZE_MAX}
 					step={1}
 				/>
 			</Field>
@@ -4362,6 +4495,8 @@ function ClipSegmentConfig(props: {
 	const clipConfig = () =>
 		project.clips?.find((c) => c.index === props.segmentIndex);
 	const offsets = () => clipConfig()?.offsets || {};
+	const offsetsAutoCalculated = () =>
+		clipConfig()?.offsetsAutoCalculated === true;
 
 	function setOffset(type: keyof ClipOffsets, offset: number) {
 		if (Number.isNaN(offset)) return;
@@ -4379,6 +4514,7 @@ function ClipSegmentConfig(props: {
 				}
 
 				clip.offsets[type] = offset / 1000;
+				clip.offsetsAutoCalculated = false;
 			}),
 		);
 	}
@@ -4445,12 +4581,19 @@ function ClipSegmentConfig(props: {
 				<p class="text-gray-11">
 					These settings apply to all segments for the current clip
 				</p>
+				<Show when={offsetsAutoCalculated()}>
+					<p class="text-gray-11">
+						Cap calculated these offsets automatically to keep audio in sync
+						with the video. Adjust them if anything still sounds off.
+					</p>
+				</Show>
 			</div>
 
 			{meta().hasSystemAudio && (
 				<SourceOffsetField
 					name="System Audio Offset"
 					value={offsets().system_audio}
+					autoCalculated={offsetsAutoCalculated()}
 					onChange={(offset) => {
 						setOffset("system_audio", offset);
 					}}
@@ -4460,6 +4603,7 @@ function ClipSegmentConfig(props: {
 				<SourceOffsetField
 					name="Microphone Offset"
 					value={offsets().mic}
+					autoCalculated={offsetsAutoCalculated()}
 					onChange={(offset) => {
 						setOffset("mic", offset);
 					}}
@@ -4469,6 +4613,7 @@ function ClipSegmentConfig(props: {
 				<SourceOffsetField
 					name="Camera Offset"
 					value={offsets().camera}
+					autoCalculated={offsetsAutoCalculated()}
 					onChange={(offset) => {
 						setOffset("camera", offset);
 					}}
@@ -4493,6 +4638,7 @@ function SourceOffsetField(props: {
 	name: string;
 	// seconds
 	value?: number;
+	autoCalculated?: boolean;
 	onChange: (value: number) => void;
 }) {
 	const rawValue = () => Math.round((props.value ?? 0) * 1000);
@@ -4500,7 +4646,10 @@ function SourceOffsetField(props: {
 	const [value, setValue] = createSignal(rawValue().toString());
 
 	return (
-		<Field name={props.name}>
+		<Field
+			name={props.name}
+			badge={props.autoCalculated ? "Auto-synced" : undefined}
+		>
 			<div class="flex flex-row justify-between items-center -mt-2 w-full">
 				<div class="flex flex-row items-end space-x-1">
 					<NumberField.Root

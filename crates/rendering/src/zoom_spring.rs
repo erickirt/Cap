@@ -27,8 +27,8 @@
 //! export matches playback by construction.
 
 use cap_project::{
-    CursorEvents, ProjectConfiguration, ScreenMovementSpring, TimelineConfiguration, XY, ZoomMode,
-    ZoomSegment,
+    Crop, CursorEvents, ProjectConfiguration, ScreenMovementSpring, TimelineConfiguration, XY,
+    ZoomMode, ZoomSegment,
 };
 
 use crate::{
@@ -51,6 +51,59 @@ const CLUSTER_HEIGHT_RATIO: f64 = 0.7;
 
 /// Fallback focus when a segment has no usable cursor data.
 const FALLBACK_FOCUS: (f64, f64) = (0.5, 0.5);
+
+/// Maps raw display-UV cursor coordinates into cropped-content UV space.
+///
+/// Cursor events are normalized to the FULL recorded display, but zoom
+/// centers ([`SegmentBounds::from_amount_center`]) are proportions of the
+/// rendered (cropped) content. Without this remap a cropped recording aims
+/// its auto zoom at the wrong spot — and clustering dead-zone distances are
+/// measured in the wrong scale. Identity when the recording is uncropped.
+#[derive(Clone, Copy, Debug)]
+pub struct CursorCropMap {
+    /// Crop top-left in raw display UV.
+    offset: XY<f64>,
+    /// Crop size in raw display UV.
+    scale: XY<f64>,
+}
+
+impl CursorCropMap {
+    /// `None` when the crop covers the whole screen (identity) or when the
+    /// inputs are degenerate.
+    pub fn from_crop(crop: &Crop, screen_size: XY<u32>) -> Option<Self> {
+        if screen_size.x == 0 || screen_size.y == 0 || crop.size.x == 0 || crop.size.y == 0 {
+            return None;
+        }
+        if crop.position.x == 0
+            && crop.position.y == 0
+            && crop.size.x >= screen_size.x
+            && crop.size.y >= screen_size.y
+        {
+            return None;
+        }
+        let screen = XY::new(f64::from(screen_size.x), f64::from(screen_size.y));
+        Some(Self {
+            offset: XY::new(
+                f64::from(crop.position.x) / screen.x,
+                f64::from(crop.position.y) / screen.y,
+            ),
+            scale: XY::new(
+                f64::from(crop.size.x) / screen.x,
+                f64::from(crop.size.y) / screen.y,
+            ),
+        })
+    }
+
+    /// Raw display UV -> content UV. Positions outside the crop map outside
+    /// [0, 1]; consumers clamp at the point of use so movement into a
+    /// cropped-away strip still aims the camera at that content edge.
+    fn map(&self, x: f64, y: f64) -> (f64, f64) {
+        (
+            (x - self.offset.x) / self.scale.x,
+            (y - self.offset.y) / self.scale.y,
+        )
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct ClickCluster {
@@ -108,11 +161,16 @@ pub(crate) fn build_clusters(
     segment_start_secs: f64,
     segment_end_secs: f64,
     zoom_amount: f64,
+    crop: Option<CursorCropMap>,
 ) -> Vec<ClickCluster> {
     let start_ms = segment_start_secs * 1000.0;
     let end_ms = segment_end_secs * 1000.0;
     let cluster_w = CLUSTER_WIDTH_RATIO / zoom_amount.max(1.0);
     let cluster_h = CLUSTER_HEIGHT_RATIO / zoom_amount.max(1.0);
+    // Clustering happens in CONTENT UV space: dead-zone box limits are
+    // fractions of the visible (cropped) viewport, so raw display UVs must be
+    // remapped before distances mean what the constants say they mean.
+    let map_uv = |x: f64, y: f64| crop.map_or((x, y), |c| c.map(x, y));
 
     // Non-finite coordinates (corrupted files, synthetic event generators)
     // must never reach the cluster math: NaN propagates through min/max and
@@ -144,21 +202,24 @@ pub(crate) fn build_clusters(
             });
 
         if let Some(evt) = fallback {
-            return vec![ClickCluster::new(evt.x, evt.y, evt.time_ms)];
+            let (x, y) = map_uv(evt.x, evt.y);
+            return vec![ClickCluster::new(x, y, evt.time_ms)];
         }
         return vec![];
     }
 
     let mut clusters = Vec::new();
     let first = events_in_range[0];
-    let mut current = ClickCluster::new(first.x, first.y, first.time_ms);
+    let (first_x, first_y) = map_uv(first.x, first.y);
+    let mut current = ClickCluster::new(first_x, first_y, first.time_ms);
 
     for evt in &events_in_range[1..] {
-        if current.can_add(evt.x, evt.y, cluster_w, cluster_h) {
-            current.add(evt.x, evt.y, evt.time_ms);
+        let (x, y) = map_uv(evt.x, evt.y);
+        if current.can_add(x, y, cluster_w, cluster_h) {
+            current.add(x, y, evt.time_ms);
         } else {
             clusters.push(current);
-            current = ClickCluster::new(evt.x, evt.y, evt.time_ms);
+            current = ClickCluster::new(x, y, evt.time_ms);
         }
     }
     clusters.push(current);
@@ -288,6 +349,7 @@ impl ZoomTransformTimeline {
         cursor_events: &CursorEvents,
         spring: ScreenMovementSpring,
         duration_secs: f64,
+        crop: Option<CursorCropMap>,
     ) -> Self {
         let mut zoom_segments = zoom_segments.to_vec();
         zoom_segments.sort_by(|a, b| a.start.total_cmp(&b.start).then(a.end.total_cmp(&b.end)));
@@ -305,6 +367,7 @@ impl ZoomTransformTimeline {
                         recording_start,
                         recording_end,
                         segment.amount,
+                        crop,
                     ))
                 }
                 ZoomMode::Manual { .. } => None,
@@ -365,13 +428,22 @@ impl ZoomTransformTimeline {
         timeline
     }
 
-    /// Convenience constructor pulling zoom segments, edit mapping and spring
-    /// config out of a [`ProjectConfiguration`].
+    /// Convenience constructor pulling zoom segments, edit mapping, spring
+    /// config and crop mapping out of a [`ProjectConfiguration`].
+    /// `screen_size` is the raw recorded display size in px
+    /// (`RenderOptions::screen_size`), needed to normalize the project's
+    /// pixel-space crop into cursor UV space.
     pub fn from_project(
         project: &ProjectConfiguration,
         cursor_events: &CursorEvents,
         duration_secs: f64,
+        screen_size: XY<u32>,
     ) -> Self {
+        let crop = project
+            .background
+            .crop
+            .as_ref()
+            .and_then(|crop| CursorCropMap::from_crop(crop, screen_size));
         Self::new(
             project
                 .timeline
@@ -382,6 +454,7 @@ impl ZoomTransformTimeline {
             cursor_events,
             project.screen_movement_spring,
             duration_secs,
+            crop,
         )
     }
 
@@ -639,6 +712,7 @@ mod tests {
             cursor,
             ScreenMovementSpring::default(),
             duration,
+            None,
         )
     }
 
@@ -1201,6 +1275,7 @@ mod tests {
             &cursor,
             ScreenMovementSpring::default(),
             10.0,
+            None,
         );
         timeline.precompute();
 
@@ -1217,6 +1292,106 @@ mod tests {
             (settled.bounds.top_left.x - toward_bottom_right.top_left.x).abs() < 1e-2,
             "expected framing near {:?}, got {:?}",
             toward_bottom_right,
+            settled.bounds
+        );
+    }
+
+    #[test]
+    fn crop_map_identity_cases() {
+        let screen = XY::new(1000u32, 1000u32);
+        // Full-screen crop is the identity: no map.
+        let full = Crop {
+            position: XY::new(0, 0),
+            size: XY::new(1000, 1000),
+        };
+        assert!(CursorCropMap::from_crop(&full, screen).is_none());
+        // Degenerate inputs never produce a map.
+        let degenerate = Crop {
+            position: XY::new(0, 0),
+            size: XY::new(0, 500),
+        };
+        assert!(CursorCropMap::from_crop(&degenerate, screen).is_none());
+        assert!(CursorCropMap::from_crop(&full, XY::new(0, 0)).is_none());
+    }
+
+    #[test]
+    fn crop_remaps_auto_zoom_focus_into_content_space() {
+        // Screen 1000x1000 cropped to the bottom half: content = y 500..1000.
+        let crop = Crop {
+            position: XY::new(0, 500),
+            size: XY::new(1000, 500),
+        };
+        let map = CursorCropMap::from_crop(&crop, XY::new(1000, 1000)).unwrap();
+
+        // Cursor parked at raw (0.5, 0.75) = the exact CENTER of the visible
+        // content. Uncropped this raw y would edge-snap to a bottom-flush
+        // framing; content-space it must settle centered.
+        let cursor = CursorEvents {
+            moves: vec![move_event(0.0, 0.5, 0.75), move_event(8_000.0, 0.5, 0.75)],
+            clicks: vec![],
+        };
+        let segments = vec![auto_segment(0.5, 8.0, 2.0)];
+        let mut with_crop = ZoomTransformTimeline::new(
+            &segments,
+            None,
+            &cursor,
+            ScreenMovementSpring::default(),
+            10.0,
+            Some(map),
+        );
+        with_crop.precompute();
+
+        let settled = with_crop.sample(6.0);
+        let centered = SegmentBounds::from_amount_center(2.0, XY::new(0.5, 0.5));
+        assert!(
+            (settled.bounds.top_left.y - centered.top_left.y).abs() < 1e-2,
+            "expected centered framing {:?}, got {:?}",
+            centered,
+            settled.bounds
+        );
+
+        let mut without_crop = timeline_for(&segments, &cursor, 10.0);
+        without_crop.precompute();
+        let raw_settled = without_crop.sample(6.0);
+        assert!(
+            (raw_settled.bounds.top_left.y - centered.top_left.y).abs() > 0.2,
+            "control: uncropped framing should NOT be centered, got {:?}",
+            raw_settled.bounds
+        );
+    }
+
+    #[test]
+    fn cursor_in_cropped_away_region_aims_at_content_edge() {
+        // Bottom-half crop; the cursor hovers in the removed TOP strip
+        // (raw y = 0.05 -> content y < 0). The framing must clamp to a
+        // top-flush viewport, not wander or blow up.
+        let crop = Crop {
+            position: XY::new(0, 500),
+            size: XY::new(1000, 500),
+        };
+        let map = CursorCropMap::from_crop(&crop, XY::new(1000, 1000)).unwrap();
+
+        let cursor = CursorEvents {
+            moves: vec![move_event(0.0, 0.5, 0.05), move_event(8_000.0, 0.5, 0.05)],
+            clicks: vec![],
+        };
+        let segments = vec![auto_segment(0.5, 8.0, 2.0)];
+        let mut timeline = ZoomTransformTimeline::new(
+            &segments,
+            None,
+            &cursor,
+            ScreenMovementSpring::default(),
+            10.0,
+            Some(map),
+        );
+        timeline.precompute();
+
+        let settled = timeline.sample(6.0);
+        let top_flush = SegmentBounds::from_amount_center(2.0, XY::new(0.5, 0.0));
+        assert!(
+            (settled.bounds.top_left.y - top_flush.top_left.y).abs() < 1e-2,
+            "expected top-flush framing {:?}, got {:?}",
+            top_flush,
             settled.bounds
         );
     }

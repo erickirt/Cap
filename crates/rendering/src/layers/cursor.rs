@@ -367,8 +367,13 @@ impl CursorLayer {
             return;
         };
 
+        // Out-of-band positions (cursor in a cropped-away region, spring
+        // overshoot past a display edge) still render: the shader's
+        // screen_bounds clip confines the sprite to the display card, so it
+        // slides off the card edge and back instead of popping in and out.
+        // Only non-finite data hides it outright.
         let cursor_uv = &interpolated_cursor.position.coord;
-        if !(0.0..=1.0).contains(&cursor_uv.x) || !(0.0..=1.0).contains(&cursor_uv.y) {
+        if !cursor_uv.x.is_finite() || !cursor_uv.y.is_finite() {
             self.bind_group = None;
             return;
         }

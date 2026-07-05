@@ -910,7 +910,11 @@ mod fixture {
                 keyboard_segments: Vec::new(),
                 audio_segments: Vec::new(),
             }),
-            clips: vec![ClipConfiguration { index: 0, offsets }],
+            clips: vec![ClipConfiguration {
+                index: 0,
+                offsets,
+                offsets_auto_calculated: true,
+            }],
             ..Default::default()
         };
         project_config

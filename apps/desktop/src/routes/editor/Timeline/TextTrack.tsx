@@ -136,6 +136,20 @@ export function TextTrack(props: {
 				sortTrackSegments(segments);
 			}),
 		);
+
+		// Select the new segment right away so its canvas box and config
+		// sidebar appear without an extra click.
+		const newIndex = (project.timeline?.textSegments ?? []).findIndex(
+			(segment) =>
+				segment.start === placement.start &&
+				getSegmentTrack(segment) === props.laneIndex,
+		);
+		if (newIndex !== -1) {
+			setEditorState("timeline", "selection", {
+				type: "text",
+				indices: [newIndex],
+			});
+		}
 	};
 
 	const newSegmentDetails = createMemo(() => {

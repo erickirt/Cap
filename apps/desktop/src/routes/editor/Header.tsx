@@ -125,22 +125,6 @@ export function Header() {
 					<span class="text-sm text-gray-11">.cap</span>
 				</div>
 				<div data-tauri-drag-region class="flex-1 h-full" />
-				<EditorButton
-					onClick={() => {
-						if (clearTimelineSelection()) return;
-					}}
-					tooltipText="Captions"
-					leftIcon={<IconCapCaptions class="w-5" />}
-					comingSoon={true}
-				/>
-				<EditorButton
-					onClick={() => {
-						if (clearTimelineSelection()) return;
-					}}
-					tooltipText="Performance"
-					leftIcon={<IconCapGauge class="w-[18px]" />}
-					comingSoon={true}
-				/>
 			</div>
 
 			<div

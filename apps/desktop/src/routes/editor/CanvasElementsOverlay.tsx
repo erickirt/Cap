@@ -118,8 +118,12 @@ export function useCanvasSnapTargets() {
 			});
 		});
 
+		// The classic camera-inset margin lines only make sense for the camera
+		// and display; for text/mask boxes they just cause spurious re-snaps
+		// right next to the frame-edge lines.
+		const wantsMargin = exclude === "camera" || exclude === "display";
 		return buildSnapTargets(rects, {
-			margin: layout ? classicMargin(layout) : undefined,
+			margin: layout && wantsMargin ? classicMargin(layout) : undefined,
 		});
 	};
 }
@@ -488,19 +492,27 @@ export function CanvasElementsOverlay(props: { size: Size }) {
 				const frameAspect = W / H;
 				// Normalized display width at padding 0 (aspect-fit).
 				const maxWidth = Math.min(1, contentAspect / frameAspect);
-				const padding0 = project.background.padding;
-				// Two-point linear model width(padding); only affects pointer
-				// gain — the box re-anchors to the real rect every frame.
-				const gain =
-					padding0 > 0 && rect.w < maxWidth
-						? (1 - rect.w / maxWidth) / padding0
-						: 0.0044;
+				// Mirror of the renderer's sizing law (get_base_size /
+				// display_base_offset in crates/rendering):
+				//   width = maxWidth / (1 + paddingScale * padding)
+				// with padding in [0, 100] and paddingScale = 2k * 0.4 / 100
+				// (0.4 = SCREEN_MAX_PADDING). Without a fixed aspect ratio the
+				// padded base keeps the content aspect (k = 1); with one,
+				// padding is measured against the crop's larger dimension
+				// while the fit is constrained by a single axis, so k rescales
+				// that basis onto the constrained axis.
+				const k = !project.aspectRatio
+					? 1
+					: contentAspect <= frameAspect
+						? Math.max(1, contentAspect)
+						: Math.max(1, 1 / contentAspect);
+				const paddingScale = (2 * k * 0.4) / 100;
 
 				return {
 					rect,
 					targets: snapTargetsFor("display"),
 					maxWidth,
-					gain,
+					paddingScale,
 					moved: false,
 				};
 			},
@@ -511,18 +523,19 @@ export function CanvasElementsOverlay(props: { size: Size }) {
 				};
 				const scale = resolveScale(e, state, initialMouse, dirX, dirY, anchor);
 
-				const newWidth = clamp(
-					state.rect.w * scale,
-					state.maxWidth * Math.max(1 - state.gain * 100, 0.05),
-					state.maxWidth,
-				);
+				// Invert the renderer's law for the dragged width, then re-derive
+				// the outline from the clamped padding so the outline always lands
+				// exactly where the renderer will draw the display — including at
+				// the minimum size (padding 100).
+				const targetWidth = Math.max(state.rect.w * scale, 1e-6);
 				const newPadding = clamp(
-					(1 - newWidth / state.maxWidth) / state.gain,
+					(state.maxWidth / targetWidth - 1) / state.paddingScale,
 					0,
 					100,
 				);
 				setProject("background", "padding", newPadding);
 
+				const newWidth = state.maxWidth / (1 + state.paddingScale * newPadding);
 				const applied = newWidth / state.rect.w;
 				const w = state.rect.w * applied;
 				const h = state.rect.h * applied;
@@ -765,15 +778,14 @@ function ElementBox(props: {
 			<Show when={showHandles()}>
 				<For each={corners()}>
 					{(corner) => (
+						// The hit target must not change size on hover — the grow
+						// effect lives on an inner, pointer-events-none span,
+						// otherwise the handle scales out from under the cursor and
+						// hover flickers in a mouseenter/leave loop.
 						<div
 							class={cx(
-								"absolute w-3 h-3 rounded-full border border-white shadow-xs",
-								props.resizable
-									? cx(
-											"bg-blue-9 transition-transform hover:scale-125",
-											corner.cursor,
-										)
-									: "bg-gray-8 cursor-not-allowed opacity-60",
+								"absolute w-3 h-3 group/handle",
+								props.resizable ? corner.cursor : "cursor-not-allowed",
 								corner.class,
 							)}
 							onMouseDown={(e) => {
@@ -784,7 +796,16 @@ function ElementBox(props: {
 								}
 								props.resizeHandler(corner.dirX, corner.dirY)(e);
 							}}
-						/>
+						>
+							<span
+								class={cx(
+									"block size-full rounded-full border border-white shadow-xs pointer-events-none",
+									props.resizable
+										? "bg-blue-9 transition-transform group-hover/handle:scale-125"
+										: "bg-gray-8 opacity-60",
+								)}
+							/>
+						</div>
 					)}
 				</For>
 			</Show>

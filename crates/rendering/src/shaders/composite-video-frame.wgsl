@@ -22,6 +22,10 @@ struct Uniforms {
     _padding1b: f32,
     _padding1c: f32,
     border_color: vec4<f32>,
+    // Per-corner multipliers on rounding_px: (tl, tr, bl, br). All 1s keeps
+    // the uniform rounding; the display squares its top corners against
+    // decorative frame chrome with (0, 0, 1, 1).
+    corner_radii: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -60,6 +64,16 @@ fn rounded_corner_norm(p: vec2<f32>, rounding_type: f32) -> f32 {
 
     let power = 4.0;
     return superellipse_norm(p, power);
+}
+
+// Radius for the corner of the quadrant `p` (center-relative) falls in.
+fn corner_radius_for(p: vec2<f32>) -> f32 {
+    let multiplier = select(
+        select(uniforms.corner_radii.w, uniforms.corner_radii.z, p.x < 0.0),
+        select(uniforms.corner_radii.y, uniforms.corner_radii.x, p.x < 0.0),
+        p.y < 0.0
+    );
+    return uniforms.rounding_px * multiplier;
 }
 
 fn sdf_rounded_rect(p: vec2<f32>, b: vec2<f32>, r: f32, rounding_type: f32) -> f32 {
@@ -127,7 +141,7 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
     let center = (uniforms.target_bounds.xy + uniforms.target_bounds.zw) * 0.5;
     let size = (uniforms.target_bounds.zw - uniforms.target_bounds.xy) * 0.5;
     
-    let dist = sdf_rounded_rect(p - center, size, uniforms.rounding_px, uniforms.rounding_type);
+    let dist = sdf_rounded_rect(p - center, size, corner_radius_for(p - center), uniforms.rounding_type);
 
     let min_frame_size = min(size.x, size.y);
     let shadow_enabled = uniforms.shadow > 0.0;
@@ -177,13 +191,13 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
         let border_outer_coverage = rounded_rect_coverage(
             p - center,
             size + vec2<f32>(uniforms.border_width),
-            uniforms.rounding_px + uniforms.border_width,
+            corner_radius_for(p - center) + uniforms.border_width,
             uniforms.rounding_type
         );
         let border_inner_coverage = rounded_rect_coverage(
             p - center,
             size,
-            uniforms.rounding_px,
+            corner_radius_for(p - center),
             uniforms.rounding_type
         );
         let border_coverage = clamp(border_outer_coverage - border_inner_coverage, 0.0, 1.0);
@@ -200,7 +214,7 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
     let shape_coverage = rounded_rect_coverage(
         p - center,
         size,
-        uniforms.rounding_px,
+        corner_radius_for(p - center),
         uniforms.rounding_type
     );
     
@@ -393,7 +407,7 @@ fn apply_rounded_corners(current_color: vec4<f32>, target_uv: vec2<f32>) -> vec4
     let coverage = rounded_rect_coverage(
         centered_uv,
         half_size,
-        uniforms.rounding_px,
+        corner_radius_for(centered_uv),
         uniforms.rounding_type
     );
 
