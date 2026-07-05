@@ -1968,9 +1968,14 @@ struct MotionAnalysis {
     movement_px: XY<f32>,
     movement_uv: XY<f32>,
     movement_magnitude: f32,
+    /// Length of the per-frame (width, height) size delta in px. Compared
+    /// against the center delta to decide zoom-vs-move dominance.
+    size_delta_px: f32,
     zoom_center_uv: XY<f32>,
     zoom_magnitude: f32,
-    zooming_out: bool,
+    /// Forces the zoom (radial) branch regardless of dominance — used by
+    /// scene transitions that inject synthetic zoom blur.
+    prefer_zoom: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2000,12 +2005,20 @@ fn analyze_motion(current: &MotionBounds, previous: &MotionBounds) -> MotionAnal
 
     let current_size = current.size();
     let previous_size = previous.size();
-    let min_current = current_size.x.min(current_size.y);
-    let min_previous = previous_size.x.min(previous_size.y);
-    let base_span = min_current.max(min_previous).max(1.0) as f32;
 
-    let movement_uv = XY::new(movement_px.x / base_span, movement_px.y / base_span);
+    // Normalize per axis (the shader converts UV back to px by multiplying
+    // each axis by its own target size); a shared min-span divisor would
+    // stretch the smear on the longer axis of a non-square card.
+    let span_x = (current_size.x.max(previous_size.x)).max(1.0) as f32;
+    let span_y = (current_size.y.max(previous_size.y)).max(1.0) as f32;
+    let movement_uv = XY::new(movement_px.x / span_x, movement_px.y / span_y);
     let movement_magnitude = (movement_uv.x * movement_uv.x + movement_uv.y * movement_uv.y).sqrt();
+
+    let size_delta = XY::new(
+        (current_size.x - previous_size.x) as f32,
+        (current_size.y - previous_size.y) as f32,
+    );
+    let size_delta_px = (size_delta.x * size_delta.x + size_delta.y * size_delta.y).sqrt();
 
     let prev_diag = previous.diagonal();
     let curr_diag = current.diagonal();
@@ -2024,8 +2037,8 @@ fn analyze_motion(current: &MotionBounds, previous: &MotionBounds) -> MotionAnal
     analysis.movement_px = movement_px;
     analysis.movement_uv = movement_uv;
     analysis.movement_magnitude = movement_magnitude;
+    analysis.size_delta_px = size_delta_px;
     analysis.zoom_magnitude = zoom_magnitude;
-    analysis.zooming_out = curr_diag < prev_diag;
     let clamp_uv = |v: f32| {
         if v.is_finite() {
             v.clamp(0.0, 1.0)
@@ -2036,18 +2049,6 @@ fn analyze_motion(current: &MotionBounds, previous: &MotionBounds) -> MotionAnal
     let zoom_center_uv = current.point_to_uv(zoom_center_point);
     analysis.zoom_center_uv = XY::new(clamp_uv(zoom_center_uv.x), clamp_uv(zoom_center_uv.y));
     analysis
-}
-
-fn smooth_motion_response(amount: f32, start: f32, full: f32) -> f32 {
-    if amount <= start {
-        return 0.0;
-    }
-    if amount >= full {
-        return 1.0;
-    }
-
-    let t = ((amount - start) / (full - start)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 fn zoom_vanishing_point(current: &MotionBounds, previous: &MotionBounds) -> Option<XY<f64>> {
@@ -2089,6 +2090,14 @@ fn clamp_vector(vec: XY<f32>, max_len: f32) -> XY<f32> {
     }
 }
 
+/// Screen Studio blur semantics: the user amount scales the LENGTH of the
+/// smear (linear in the per-frame delta, no response curve) and the shader
+/// outputs the fully blurred result — strength is a pure on/off gate, never a
+/// crossfade with the sharp frame. Per frame the dominant delta wins: a size
+/// change larger than the center shift renders radial zoom blur, anything
+/// else a directional smear. Both fade out naturally because a zero-length
+/// kernel is the identity, so no threshold ramp is needed — just a ~1px
+/// activation floor to skip imperceptible work.
 fn resolve_motion_descriptor(
     analysis: &MotionAnalysis,
     base_amount: f32,
@@ -2099,50 +2108,38 @@ fn resolve_motion_descriptor(
         return MotionBlurDescriptor::none();
     }
 
-    let zoom_metric = analysis.zoom_magnitude;
-    let move_metric = analysis.movement_magnitude;
-    let zoom_response = smooth_motion_response(
-        zoom_metric,
-        ZOOM_MOTION_START_THRESHOLD,
-        ZOOM_MOTION_FULL_THRESHOLD,
-    );
-    let move_response = smooth_motion_response(
-        move_metric,
-        MOVE_MOTION_START_THRESHOLD,
-        MOVE_MOTION_FULL_THRESHOLD,
-    );
-    let zoom_strength = base_amount * zoom_multiplier;
-    let move_strength = base_amount * move_multiplier;
+    let move_px = (analysis.movement_px.x * analysis.movement_px.x
+        + analysis.movement_px.y * analysis.movement_px.y)
+        .sqrt();
+    let zoom_dominant = analysis.prefer_zoom || analysis.size_delta_px > move_px;
 
-    if zoom_response > 0.0 && zoom_strength > 0.0 {
-        let zoom_multiplier = if analysis.zooming_out {
-            ZOOM_OUT_BLUR_MULTIPLIER
+    if zoom_dominant {
+        let zoom_strength = base_amount * zoom_multiplier;
+        if zoom_strength <= 0.0
+            || (analysis.size_delta_px < MOTION_ACTIVATION_PX && !analysis.prefer_zoom)
+        {
+            return MotionBlurDescriptor::none();
+        }
+        let zoom_cap = if analysis.prefer_zoom {
+            TRANSITION_ZOOM_CAP
         } else {
-            ZOOM_IN_BLUR_MULTIPLIER
+            MAX_ZOOM_BLUR_AMOUNT
         };
-        let max_zoom_amount = if analysis.zooming_out {
-            MAX_ZOOM_OUT_AMOUNT
-        } else {
-            MAX_ZOOM_IN_AMOUNT
-        };
-        let zoom_amount =
-            (zoom_metric * zoom_strength * zoom_response * zoom_multiplier).min(max_zoom_amount);
-        MotionBlurDescriptor::zoom(
-            analysis.zoom_center_uv,
-            zoom_amount,
-            (zoom_strength * zoom_response).min(1.0),
-        )
-    } else if move_response > 0.0 && move_strength > 0.0 {
-        let vector = XY::new(
-            analysis.movement_uv.x * move_strength * move_response,
-            analysis.movement_uv.y * move_strength * move_response,
-        );
-        MotionBlurDescriptor::movement(
-            clamp_vector(vector, MOTION_VECTOR_CAP),
-            (move_strength * move_response).min(1.0),
-        )
+        let zoom_amount = (analysis.zoom_magnitude * zoom_strength).min(zoom_cap);
+        if zoom_amount <= f32::EPSILON {
+            return MotionBlurDescriptor::none();
+        }
+        MotionBlurDescriptor::zoom(analysis.zoom_center_uv, zoom_amount, 1.0)
     } else {
-        MotionBlurDescriptor::none()
+        let move_strength = base_amount * move_multiplier;
+        if move_strength <= 0.0 || move_px < MOTION_ACTIVATION_PX {
+            return MotionBlurDescriptor::none();
+        }
+        let vector = XY::new(
+            analysis.movement_uv.x * move_strength,
+            analysis.movement_uv.y * move_strength,
+        );
+        MotionBlurDescriptor::movement(clamp_vector(vector, MOTION_VECTOR_CAP), 1.0)
     }
 }
 
@@ -2181,20 +2178,28 @@ const FLOATING_ROUNDING_FRAC: f32 = 0.028;
 const SCREEN_MAX_PADDING: f64 = 0.4;
 
 const MOTION_BLUR_BASELINE_FPS: f32 = 60.0;
-const DISPLAY_MOTION_SAMPLE_FRAMES: u32 = 3;
-const MOVE_MOTION_START_THRESHOLD: f32 = 0.001;
-const MOVE_MOTION_FULL_THRESHOLD: f32 = 0.028;
-const ZOOM_MOTION_START_THRESHOLD: f32 = 0.0005;
-const ZOOM_MOTION_FULL_THRESHOLD: f32 = 0.045;
-const MOTION_VECTOR_CAP: f32 = 0.045;
-const MAX_ZOOM_IN_AMOUNT: f32 = 0.08;
-const MAX_ZOOM_OUT_AMOUNT: f32 = 0.014;
-const ZOOM_IN_BLUR_MULTIPLIER: f32 = 0.65;
-const ZOOM_OUT_BLUR_MULTIPLIER: f32 = 0.06;
+/// Velocity is measured strictly against the previous frame (Screen Studio
+/// samples frame f vs f-1); averaging over more frames lags peaks and lets
+/// blur linger after motion stops.
+const DISPLAY_MOTION_SAMPLE_FRAMES: u32 = 1;
+/// Skip blur when the per-frame delta is under ~1px — a sub-pixel kernel is
+/// visually the identity, so there is no pop at the boundary.
+const MOTION_ACTIVATION_PX: f32 = 1.0;
+/// Safety ceiling on the smear length (in display-card UV, 1.0 = the card's
+/// smaller axis). Real spring motion peaks around 0.05-0.10; this only guards
+/// pathological single-frame teleports.
+const MOTION_VECTOR_CAP: f32 = 0.15;
+/// Safety ceiling on the radial zoom strength (|1 - diag ratio| per frame,
+/// scaled by the user amount). Real zoom springs peak around 0.05-0.06.
+const MAX_ZOOM_BLUR_AMOUNT: f32 = 0.5;
 const DISPLAY_MOVE_MULTIPLIER: f32 = 1.0;
 const DISPLAY_ZOOM_MULTIPLIER: f32 = 1.0;
 const CAMERA_MULTIPLIER: f32 = 1.0;
 const CAMERA_ONLY_MULTIPLIER: f32 = 0.45;
+/// Ceiling for synthetic transition blur (scene morphs, camera-only
+/// entrances). These are art-directed effects that predate the proportional
+/// model and are tuned to their own visual scale, not to real velocity.
+const TRANSITION_ZOOM_CAP: f32 = 0.08;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MotionBlurMode {
@@ -2570,9 +2575,14 @@ impl ProjectUniforms {
         analysis.movement_px = analysis.movement_px / frame_span;
         analysis.movement_uv = analysis.movement_uv / frame_span;
         analysis.movement_magnitude /= frame_span;
+        analysis.size_delta_px /= frame_span;
         analysis.zoom_magnitude /= frame_span;
         if extra_zoom > 0.0 {
+            // Scene transitions inject synthetic radial blur; they also move
+            // the bounds a lot, so force the zoom branch past the dominance
+            // check or the pan delta would win and hide it.
             analysis.zoom_magnitude = (analysis.zoom_magnitude + extra_zoom).min(3.0);
+            analysis.prefer_zoom = true;
         }
 
         let descriptor = resolve_motion_descriptor(
@@ -2581,7 +2591,10 @@ impl ProjectUniforms {
             DISPLAY_MOVE_MULTIPLIER,
             DISPLAY_ZOOM_MULTIPLIER,
         );
-        let parent_vector = if analysis.movement_magnitude > MOVE_MOTION_START_THRESHOLD {
+        let move_px = (analysis.movement_px.x * analysis.movement_px.x
+            + analysis.movement_px.y * analysis.movement_px.y)
+            .sqrt();
+        let parent_vector = if move_px >= MOTION_ACTIVATION_PX {
             analysis.movement_px
         } else {
             XY::new(0.0, 0.0)
@@ -3516,10 +3529,14 @@ impl ProjectUniforms {
                 let camera_only_descriptor = if camera_only_blur <= f32::EPSILON {
                     MotionBlurDescriptor::none()
                 } else {
+                    // Synthetic transition blur (not velocity-derived): keep
+                    // its ray length on the old visual scale — the shader no
+                    // longer softens via a sharp/blur crossfade, so the
+                    // amount alone sets the look.
                     MotionBlurDescriptor::zoom(
                         XY::new(0.5, 0.5),
-                        (camera_only_blur * 0.75).min(MAX_ZOOM_IN_AMOUNT),
-                        camera_only_blur,
+                        (camera_only_blur * 0.75).min(TRANSITION_ZOOM_CAP),
+                        1.0,
                     )
                 };
 
@@ -3898,31 +3915,34 @@ mod tests {
     }
 
     #[test]
-    fn display_zoom_out_motion_blur_is_subtle() {
-        let previous = motion_bounds(XY::new(-960.0, -540.0), XY::new(2880.0, 1620.0));
-        let current = motion_bounds(XY::new(0.0, 0.0), XY::new(1920.0, 1080.0));
+    fn display_zoom_blur_is_symmetric_in_and_out() {
+        // Screen Studio treats zoom-in and zoom-out identically: the radial
+        // amount is |1 - diag ratio| either way.
+        let small = motion_bounds(XY::new(0.0, 0.0), XY::new(1920.0, 1080.0));
+        let large = motion_bounds(XY::new(-960.0, -540.0), XY::new(2880.0, 1620.0));
 
-        let blur =
-            ProjectUniforms::compute_display_motion_blur(current, previous, true, 1.0, 0.0, 1.0);
+        let zoom_in =
+            ProjectUniforms::compute_display_motion_blur(large, small, true, 1.0, 0.0, 1.0);
+        let zoom_out =
+            ProjectUniforms::compute_display_motion_blur(small, large, true, 1.0, 0.0, 1.0);
 
-        assert_eq!(blur.descriptor.mode, MotionBlurMode::Zoom);
-        assert!(blur.descriptor.zoom_amount <= 0.014);
+        assert_eq!(zoom_in.descriptor.mode, MotionBlurMode::Zoom);
+        assert_eq!(zoom_out.descriptor.mode, MotionBlurMode::Zoom);
+        // in: diag 2200->4400 => |1 - 2| = 1 (capped); out: |1 - 0.5| = 0.5.
+        // Both must land in the same order of magnitude — no 10x asymmetry.
+        assert!(zoom_in.descriptor.zoom_amount > 0.0);
+        assert!(zoom_out.descriptor.zoom_amount > 0.0);
+        assert!(zoom_in.descriptor.zoom_amount <= MAX_ZOOM_BLUR_AMOUNT);
+        assert!(zoom_out.descriptor.zoom_amount <= MAX_ZOOM_BLUR_AMOUNT);
+        assert_eq!(zoom_in.descriptor.strength, 1.0);
+        assert_eq!(zoom_out.descriptor.strength, 1.0);
     }
 
     #[test]
-    fn display_zoom_in_motion_blur_is_subtle() {
-        let previous = motion_bounds(XY::new(0.0, 0.0), XY::new(1920.0, 1080.0));
-        let current = motion_bounds(XY::new(-960.0, -540.0), XY::new(2880.0, 1620.0));
-
-        let blur =
-            ProjectUniforms::compute_display_motion_blur(current, previous, true, 1.0, 0.0, 1.0);
-
-        assert_eq!(blur.descriptor.mode, MotionBlurMode::Zoom);
-        assert!(blur.descriptor.zoom_amount <= 0.08);
-    }
-
-    #[test]
-    fn display_movement_motion_blur_ramps_with_velocity() {
+    fn display_movement_blur_length_is_linear_in_velocity() {
+        // The smear length must track the per-frame delta linearly (Screen
+        // Studio semantics) — no response curve shortening medium speeds and
+        // no crossfade: strength is a pure gate pinned at 1.
         let base = motion_bounds(XY::new(0.0, 0.0), XY::new(1920.0, 1080.0));
         let slow = motion_bounds(XY::new(0.5, 0.0), XY::new(1920.5, 1080.0));
         let medium = motion_bounds(XY::new(12.0, 0.0), XY::new(1932.0, 1080.0));
@@ -3935,11 +3955,39 @@ mod tests {
         let fast_blur =
             ProjectUniforms::compute_display_motion_blur(fast, base, true, 1.0, 0.0, 1.0);
 
+        // Sub-pixel motion stays off (identity kernel, no visible pop).
         assert_eq!(slow_blur.descriptor.mode, MotionBlurMode::None);
         assert_eq!(medium_blur.descriptor.mode, MotionBlurMode::Movement);
-        assert!(medium_blur.descriptor.strength > 0.0);
-        assert!(medium_blur.descriptor.strength < fast_blur.descriptor.strength);
+        assert_eq!(medium_blur.descriptor.strength, 1.0);
         assert_eq!(fast_blur.descriptor.strength, 1.0);
+
+        // 12px and 48px x-deltas normalize against the card's own x span
+        // (1920): lengths are exact and scale 4x.
+        let len = |d: &MotionBlurDescriptor| {
+            (d.movement_vector_uv[0].powi(2) + d.movement_vector_uv[1].powi(2)).sqrt()
+        };
+        let medium_len = len(&medium_blur.descriptor);
+        let fast_len = len(&fast_blur.descriptor);
+        assert!((medium_len - 12.0 / 1920.0).abs() < 1e-6);
+        assert!((fast_len - 4.0 * medium_len).abs() < 1e-6);
+    }
+
+    #[test]
+    fn display_movement_blur_scales_with_user_amount() {
+        let base = motion_bounds(XY::new(0.0, 0.0), XY::new(1920.0, 1080.0));
+        let moved = motion_bounds(XY::new(24.0, 0.0), XY::new(1944.0, 1080.0));
+
+        let half = ProjectUniforms::compute_display_motion_blur(moved, base, true, 0.5, 0.0, 1.0);
+        let full = ProjectUniforms::compute_display_motion_blur(moved, base, true, 1.0, 0.0, 1.0);
+
+        // The amount scales the smear LENGTH, not an opacity mix.
+        assert!(
+            (half.descriptor.movement_vector_uv[0] * 2.0 - full.descriptor.movement_vector_uv[0])
+                .abs()
+                < 1e-6
+        );
+        assert_eq!(half.descriptor.strength, 1.0);
+        assert_eq!(full.descriptor.strength, 1.0);
     }
 
     #[test]
@@ -3957,40 +4005,37 @@ mod tests {
     }
 
     #[test]
-    fn display_scale_change_prefers_stable_zoom_blur_over_pan_blur() {
+    fn display_dominant_delta_picks_blur_mode() {
+        // Size change dominating the center shift => radial zoom blur.
         let previous = motion_bounds(XY::new(-800.0, -700.0), XY::new(3040.0, 1460.0));
         let current = motion_bounds(XY::new(0.0, 0.0), XY::new(1920.0, 1080.0));
-
         let blur =
             ProjectUniforms::compute_display_motion_blur(current, previous, true, 1.0, 0.0, 1.0);
-
         assert_eq!(blur.descriptor.mode, MotionBlurMode::Zoom);
+
+        // Center shift dominating a tiny size ripple => directional smear,
+        // even though the size did change (the old zoom-priority rule turned
+        // fast re-aim pans into weak radial blur instead of a streak).
+        let previous = motion_bounds(XY::new(0.0, 0.0), XY::new(3840.0, 2160.0));
+        let current = motion_bounds(XY::new(-40.0, -22.0), XY::new(3802.0, 2139.0));
+        let blur =
+            ProjectUniforms::compute_display_motion_blur(current, previous, true, 1.0, 0.0, 1.0);
+        assert_eq!(blur.descriptor.mode, MotionBlurMode::Movement);
     }
 
     #[test]
-    fn display_zoom_out_remains_visible_with_stabilized_sampling() {
-        let previous = motion_bounds(XY::new(-960.0, -540.0), XY::new(2880.0, 1620.0));
-        let current = motion_bounds(XY::new(-480.0, -270.0), XY::new(2400.0, 1350.0));
+    fn display_scene_transition_forces_zoom_blur() {
+        // Scene morphs inject synthetic radial blur; the pan delta must not
+        // win the dominance vote, and the amount stays on the transition's
+        // own visual scale.
+        let previous = motion_bounds(XY::new(0.0, 0.0), XY::new(1920.0, 1080.0));
+        let current = motion_bounds(XY::new(200.0, 0.0), XY::new(2120.0, 1080.0));
 
         let blur =
-            ProjectUniforms::compute_display_motion_blur(current, previous, true, 1.0, 0.0, 3.0);
+            ProjectUniforms::compute_display_motion_blur(current, previous, true, 1.0, 0.8, 1.0);
 
         assert_eq!(blur.descriptor.mode, MotionBlurMode::Zoom);
-        assert!(blur.descriptor.zoom_amount > 0.003);
-        assert!(blur.descriptor.zoom_amount <= MAX_ZOOM_OUT_AMOUNT);
-    }
-
-    #[test]
-    fn display_motion_sample_span_normalizes_blur_velocity() {
-        let base = motion_bounds(XY::new(0.0, 0.0), XY::new(1920.0, 1080.0));
-        let moved = motion_bounds(XY::new(48.0, 0.0), XY::new(1968.0, 1080.0));
-
-        let one_frame =
-            ProjectUniforms::compute_display_motion_blur(moved, base, true, 1.0, 0.0, 1.0);
-        let three_frame =
-            ProjectUniforms::compute_display_motion_blur(moved, base, true, 1.0, 0.0, 3.0);
-
-        assert!(three_frame.descriptor.strength < one_frame.descriptor.strength);
+        assert!(blur.descriptor.zoom_amount <= TRANSITION_ZOOM_CAP + f32::EPSILON);
     }
 }
 
