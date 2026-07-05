@@ -33,9 +33,15 @@ import {
 	transcribeEditorCaptions,
 } from "../captions";
 import { FPS, type TimelineTrackType, useEditorContext } from "../context";
-import type { MaskSegment } from "../masks";
-import type { TextSegment } from "../text";
-import { getTrackRowsWithCount, getUsedTrackCount } from "../timelineTracks";
+import { defaultMaskSegment, type MaskSegment } from "../masks";
+import { autoTextColorAt, defaultTextSegment, type TextSegment } from "../text";
+import {
+	getSegmentTrack,
+	getTrackRowsWithCount,
+	getUsedTrackCount,
+	placeSegmentAtTime,
+	sortTrackSegments,
+} from "../timelineTracks";
 import { formatTime } from "../utils";
 import { type AudioSegmentDragState, AudioTrack } from "./AudioTrack";
 import { type CaptionSegmentDragState, CaptionsTrack } from "./CaptionsTrack";
@@ -154,6 +160,7 @@ export function Timeline(props: {
 		projectActions,
 		meta,
 		previewResolutionBase,
+		canvasControls,
 	} = useEditorContext();
 
 	const duration = () => editorInstance.recordingDuration;
@@ -338,20 +345,122 @@ export function Timeline(props: {
 		}
 	}
 
+	// Adding from the picker drops a ready-to-edit segment at the playhead
+	// rather than an empty lane the user then has to click into: the first
+	// existing lane with room at the playhead is reused, otherwise a new lane
+	// is stacked on. Same 1s / 80px sizing as the tracks' click-to-add.
 	function handleAddTrack(type: TimelineTrackType) {
-		if (type === "text") {
-			setEditorState("timeline", "tracks", "text", trackState().text + 1);
-			return;
-		}
-
-		if (type === "mask") {
-			setEditorState("timeline", "tracks", "mask", trackState().mask + 1);
-			return;
-		}
-
 		if (type === "audio") {
-			setEditorState("timeline", "tracks", "audio", trackState().audio + 1);
+			const segments = project.timeline?.audioSegments ?? [];
+			const laneCount = Math.max(
+				trackState().audio,
+				getUsedTrackCount(segments),
+			);
+			let lane = laneCount;
+			for (let i = 0; i < laneCount; i++) {
+				if (!segments.some((segment) => getSegmentTrack(segment) === i)) {
+					lane = i;
+					break;
+				}
+			}
+			batch(() => {
+				setEditorState(
+					"timeline",
+					"tracks",
+					"audio",
+					Math.max(laneCount, lane + 1),
+				);
+				openAudioPicker(lane);
+			});
+			return;
 		}
+
+		if (type !== "text" && type !== "mask") return;
+
+		const segments: Array<{ start: number; end: number; track?: number }> =
+			(type === "text"
+				? project.timeline?.textSegments
+				: project.timeline?.maskSegments) ?? [];
+		const length = Math.min(Math.max(1, secsPerPixel() * 80), totalDuration());
+		const time = editorState.playbackTime ?? 0;
+		const laneCount = Math.max(trackState()[type], getUsedTrackCount(segments));
+
+		let lane = laneCount;
+		let placement: { start: number; end: number } | null = null;
+		for (let i = 0; i < laneCount; i++) {
+			const candidate = placeSegmentAtTime(
+				segments.filter((segment) => getSegmentTrack(segment) === i),
+				time,
+				length,
+				totalDuration(),
+			);
+			if (candidate) {
+				lane = i;
+				placement = candidate;
+				break;
+			}
+		}
+		placement ??= placeSegmentAtTime([], time, length, totalDuration());
+		if (!placement) {
+			setEditorState("timeline", "tracks", type, trackState()[type] + 1);
+			return;
+		}
+		const { start, end } = placement;
+
+		batch(() => {
+			setEditorState("timeline", "tracks", type, Math.max(laneCount, lane + 1));
+			if (type === "text") {
+				setProject(
+					"timeline",
+					"textSegments",
+					produce((segments) => {
+						segments ??= [];
+						segments.push({
+							...defaultTextSegment(start, end),
+							color: autoTextColorAt(canvasControls()),
+							track: lane,
+						});
+						sortTrackSegments(segments);
+					}),
+				);
+			} else {
+				setProject(
+					"timeline",
+					"maskSegments",
+					produce((segments) => {
+						segments ??= [];
+						segments.push({ ...defaultMaskSegment(start, end), track: lane });
+						sortTrackSegments(segments);
+					}),
+				);
+			}
+
+			const updated: Array<{ start: number; end: number; track?: number }> =
+				(type === "text"
+					? project.timeline?.textSegments
+					: project.timeline?.maskSegments) ?? [];
+			const newIndex = updated.findIndex(
+				(segment) =>
+					segment.start === start && getSegmentTrack(segment) === lane,
+			);
+			if (newIndex === -1) return;
+
+			// Select right away so the canvas overlay and config sidebar are
+			// ready to use; text additionally opens its inline editor.
+			setEditorState("timeline", "selection", { type, indices: [newIndex] });
+			if (type === "text") {
+				setEditorState("timeline", "pendingTextEdit", newIndex);
+			}
+
+			// Keep the playhead inside the new segment (past any fade-in) so
+			// the preview actually shows what was just added. Clear any stale
+			// hover-scrub time — overlay visibility keys off previewTime first,
+			// and a leftover value could hide the segment we just selected.
+			const pad = Math.min(0.15, length / 4);
+			const target = Math.min(Math.max(time, start + pad), end - pad);
+			if (target !== time) setEditorState("playbackTime", target);
+			setEditorState("previewTime", null);
+		});
 	}
 
 	function handleDeleteTrackLane(
