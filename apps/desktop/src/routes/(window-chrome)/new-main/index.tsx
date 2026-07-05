@@ -2084,8 +2084,7 @@ function Page() {
 		}
 	};
 
-	createEffect(() => {
-		if (!isRecording()) return;
+	const closeAllMenuPanels = () => {
 		setDisplayMenuOpen(false);
 		setWindowMenuOpen(false);
 		setRecordingsMenuOpen(false);
@@ -2097,6 +2096,11 @@ function Page() {
 		setMicrophoneInitialSettings(null);
 		setOpenCameraSettingsWhenReady(false);
 		setOpenMicrophoneSettingsWhenReady(false);
+	};
+
+	createEffect(() => {
+		if (!isRecording()) return;
+		closeAllMenuPanels();
 	});
 
 	const setMicInput = createMutation(() => ({
@@ -2198,6 +2202,9 @@ function Page() {
 					// Rust clears the target mode when it shows the main window
 					// itself (e.g. tray "Open Main Window"), so this dismissal may
 					// reveal — matching the window Rust just made visible anyway.
+					// Closing the window only hides it, so panel state from the
+					// previous session survives — reset to the main screen.
+					closeAllMenuPanels();
 					setOptions({
 						targetMode: newTargetMode,
 						targetModeDismissal: "cancelled",
