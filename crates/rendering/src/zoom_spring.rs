@@ -114,9 +114,17 @@ pub(crate) fn build_clusters(
     let cluster_w = CLUSTER_WIDTH_RATIO / zoom_amount.max(1.0);
     let cluster_h = CLUSTER_HEIGHT_RATIO / zoom_amount.max(1.0);
 
+    // Non-finite coordinates (corrupted files, synthetic event generators)
+    // must never reach the cluster math: NaN propagates through min/max and
+    // clamp, which would poison the spring targets for the whole timeline.
+    let finite = |m: &&cap_project::CursorMoveEvent| {
+        m.x.is_finite() && m.y.is_finite() && m.time_ms.is_finite()
+    };
+
     let events_in_range: Vec<&cap_project::CursorMoveEvent> = cursor_events
         .moves
         .iter()
+        .filter(finite)
         .filter(|m| m.time_ms >= start_ms && m.time_ms <= end_ms)
         .collect();
 
@@ -124,9 +132,16 @@ pub(crate) fn build_clusters(
         let fallback = cursor_events
             .moves
             .iter()
+            .filter(finite)
             .rev()
             .find(|m| m.time_ms <= start_ms)
-            .or_else(|| cursor_events.moves.iter().find(|m| m.time_ms >= start_ms));
+            .or_else(|| {
+                cursor_events
+                    .moves
+                    .iter()
+                    .filter(finite)
+                    .find(|m| m.time_ms >= start_ms)
+            });
 
         if let Some(evt) = fallback {
             return vec![ClickCluster::new(evt.x, evt.y, evt.time_ms)];
@@ -223,6 +238,7 @@ fn map_timeline_to_recording_secs(map: &[TimeMapSegment], timeline_secs: f64) ->
 /// One precomputed step. Sample times are implicit: `samples[i]` is the state
 /// at `i * STEP_MS`, so lookup is pure index math.
 #[derive(Clone, Copy)]
+#[derive(Debug)]
 struct TimelineSample {
     amount: f32,
     center: XY<f32>,
@@ -927,6 +943,58 @@ mod tests {
             "camera never re-aimed toward the hovered corner"
         );
         assert_viewport_in_bounds(&settled, "corner hover settle");
+    }
+
+    #[test]
+    fn hostile_cursor_data_never_breaks_the_timeline() {
+        // Simulated/corrupted input: NaN and infinite coordinates, positions
+        // far outside the crop (cursor on another monitor), and full-screen
+        // teleports between consecutive events (automation tools). The
+        // timeline must stay finite, in bounds and smooth throughout.
+        let moves = vec![
+            move_event(0.0, 0.5, 0.5),
+            move_event(500.0, f64::NAN, 0.5),
+            move_event(600.0, 0.5, f64::INFINITY),
+            move_event(1000.0, -3.0, 7.5),
+            move_event(1500.0, 0.02, 0.98),
+            move_event(1550.0, 0.98, 0.02),
+            move_event(1600.0, 0.02, 0.02),
+            move_event(1650.0, 0.98, 0.98),
+            move_event(4000.0, 1.4, -0.4),
+            move_event(8000.0, 0.5, 0.5),
+        ];
+        let cursor = CursorEvents {
+            moves,
+            clicks: vec![click_event(f64::NAN), click_event(1500.0)],
+        };
+        let segments = vec![auto_segment(0.5, 9.0, 2.0)];
+        let mut timeline = timeline_for(&segments, &cursor, 10.0);
+        timeline.precompute();
+
+        for sample in &timeline.samples {
+            assert!(
+                sample.amount.is_finite()
+                    && sample.center.x.is_finite()
+                    && sample.center.y.is_finite()
+                    && sample.activity.is_finite(),
+                "non-finite sample: {sample:?}"
+            );
+        }
+        let mut t = 0.0f32;
+        while t <= 10.0 {
+            let zoom = timeline.sample(t);
+            assert!(
+                zoom.bounds.top_left.x.is_finite() && zoom.bounds.bottom_right.y.is_finite(),
+                "non-finite bounds at t={t}"
+            );
+            assert_viewport_in_bounds(&zoom, &format!("hostile input at t={t}"));
+            t += 0.037;
+        }
+        let (max_value_jump, _) = max_step_discontinuities(&timeline);
+        assert!(
+            max_value_jump < 0.08,
+            "teleporting input caused a visible jump: {max_value_jump}"
+        );
     }
 
     #[test]
