@@ -1,5 +1,4 @@
 pub mod benchmark;
-pub mod camera_heal;
 mod capture_pipeline;
 pub mod cursor;
 pub mod defaults;
@@ -16,6 +15,7 @@ pub mod screenshot;
 pub mod sources;
 pub mod studio_recording;
 pub mod sync_calibration;
+pub mod track_heal;
 
 pub use resolution_limits::{H264_MAX_DIMENSION, calculate_gpu_compatible_size};
 

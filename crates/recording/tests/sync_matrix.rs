@@ -1280,6 +1280,12 @@ async fn synthetic_device_matrix_preserves_sync() {
         (30, 240, VideoScenario::Steady, true),
         (30, 1000, VideoScenario::Steady, false),
         (60, 24, VideoScenario::Steady, true), // slow source into a fast belief
+        // Windows screen capture on a 165Hz monitor without
+        // MinUpdateInterval support: WGC free-runs at the content update
+        // rate. 134 is the delivered rate from the reported recording
+        // (2.24x slow-motion display track); 165 is the refresh ceiling.
+        (60, 134, VideoScenario::Jitter, true),
+        (60, 165, VideoScenario::Steady, true),
     ];
 
     for (nominal, delivered, scenario, fragmented) in mismatch_cases {
@@ -1290,8 +1296,10 @@ async fn synthetic_device_matrix_preserves_sync() {
             scenario.name(),
             if fragmented { "fragmented" } else { "mp4" }
         );
-        let outcome =
-            run_video_case(VideoCase::mismatch(nominal, delivered, scenario, fragmented)).await;
+        let outcome = run_video_case(VideoCase::mismatch(
+            nominal, delivered, scenario, fragmented,
+        ))
+        .await;
         record(&mut results, name, outcome);
     }
 
