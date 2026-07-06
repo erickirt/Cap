@@ -1742,20 +1742,27 @@ function RecordingControls(props: {
 								}
 								if (startDisabled()) return;
 
-								if (props.target.variant === "area") {
+								// Snapshot before onRecordingStart: dismissing the picker
+								// (targetMode: null) disposes the <Match> branch that owns
+								// this component, and the display/area target props call its
+								// narrowed accessor — reading props.target afterwards throws
+								// "Stale read from <Match>." and the recording never starts.
+								const target = props.target;
+
+								if (target.variant === "area") {
 									setOptions(
 										"captureTarget",
 										reconcile({
 											variant: "area",
-											screen: props.target.screen,
+											screen: target.screen,
 											bounds: {
 												position: {
-													x: props.target.bounds.position.x,
-													y: props.target.bounds.position.y,
+													x: target.bounds.position.x,
+													y: target.bounds.position.y,
 												},
 												size: {
-													width: props.target.bounds.size.width,
-													height: props.target.bounds.size.height,
+													width: target.bounds.size.width,
+													height: target.bounds.size.height,
 												},
 											},
 										}),
@@ -1774,10 +1781,10 @@ function RecordingControls(props: {
 											}
 										}
 
-										const path = await commands.takeScreenshot(props.target);
+										const path = await commands.takeScreenshot(target);
 										const shouldOpenEditor =
 											await commands.automationShouldOpenScreenshotEditor(
-												props.target,
+												target,
 											);
 										if (shouldOpenEditor) {
 											await commands.showWindow({ ScreenshotEditor: { path } });
@@ -1793,7 +1800,7 @@ function RecordingControls(props: {
 
 								commands
 									.startRecording({
-										capture_target: props.target,
+										capture_target: target,
 										mode: rawOptions.mode,
 										capture_system_audio: rawOptions.captureSystemAudio,
 									})
