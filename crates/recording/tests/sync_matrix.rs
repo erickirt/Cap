@@ -1174,9 +1174,51 @@ fn random_audio_case(rng: &mut Rng) -> AudioCase {
     }
 }
 
+/// Runs a throwaway pipeline so the platform h264 encoder's one-time session
+/// initialization happens before any timed case. On macOS, h264_videotoolbox
+/// blocks ~1.5s on its very first frame in a process; the first matrix case
+/// would pay that stall, overflow the muxer's bounded channel, and drop its
+/// startup frames (observed as the 15fps/fragmented case losing 3-22 of 60
+/// frames depending on load).
+async fn warm_up_video_encoder() {
+    let Ok(temp) = tempfile::tempdir() else {
+        return;
+    };
+    let info = VideoInfo::from_raw(cap_media_info::RawVideoFormat::Bgra, 160, 120, 30);
+    let (tx, rx) = flume::bounded::<FFmpegVideoFrame>(8);
+    let timestamps = Timestamps::now();
+    let base = timestamps.instant();
+    let mut rng = Rng(1);
+    let Ok(pipeline) = OutputPipeline::builder(temp.path().join("warmup"))
+        .with_video::<ChannelVideoSource<FFmpegVideoFrame>>(ChannelVideoSourceConfig::new(info, rx))
+        .with_timestamps(timestamps)
+        .build::<SegmentedVideoMuxer>(SegmentedVideoMuxerConfig {
+            segment_duration: Duration::from_secs(2),
+            ..Default::default()
+        })
+        .await
+    else {
+        return;
+    };
+    for i in 0..3u64 {
+        let frame = FFmpegVideoFrame {
+            inner: make_video_frame(160, 120, i, Content::Flat, &mut rng),
+            timestamp: Timestamp::Instant(base + Duration::from_millis(i * 30)),
+        };
+        if tx.send_async(frame).await.is_err() {
+            break;
+        }
+    }
+    drop(tx);
+    // Blocks until the cold encoder session is live and drained.
+    let _ = pipeline.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn synthetic_device_matrix_preserves_sync() {
     let mut results: Vec<CaseResult> = Vec::new();
+
+    warm_up_video_encoder().await;
 
     // Randomized cases are reproducible: rerun with CAP_SYNC_MATRIX_SEED=<seed>.
     let seed: u64 = std::env::var("CAP_SYNC_MATRIX_SEED")
