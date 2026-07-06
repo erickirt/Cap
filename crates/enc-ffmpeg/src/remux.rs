@@ -664,6 +664,100 @@ pub fn remux_file(input_path: &Path, output_path: &Path) -> Result<(), RemuxErro
     remux_to_regular_mp4(input_path, output_path)
 }
 
+/// Stream-copies the video track of `input_path` to `output_path` with every
+/// timestamp multiplied by `scale`. Used to repair recordings whose video
+/// track was stamped at the wrong rate (e.g. a 60fps camera recorded as
+/// 30fps, leaving the track twice as long as the wall-clock recording).
+/// Audio/data streams are not carried over — callers use this on video-only
+/// tracks.
+pub fn rescale_video_timestamps(
+    input_path: &Path,
+    output_path: &Path,
+    scale: f64,
+) -> Result<(), RemuxError> {
+    suppress_ffmpeg_logs();
+    let result = rescale_video_timestamps_inner(input_path, output_path, scale);
+    restore_ffmpeg_logs();
+    result
+}
+
+fn rescale_video_timestamps_inner(
+    input_path: &Path,
+    output_path: &Path,
+    scale: f64,
+) -> Result<(), RemuxError> {
+    // Fine-grained output timescale so the scaled timestamps lose at most
+    // ~11us to rounding regardless of the input's track timescale.
+    const OUTPUT_TIMESCALE: i32 = 90_000;
+
+    let mut ictx = avformat::input(input_path)?;
+    let mut octx = avformat::output(output_path)?;
+
+    let mut stream_mapping: Vec<Option<usize>> = Vec::new();
+    let mut output_stream_index = 0usize;
+
+    for input_stream in ictx.streams() {
+        let codec_params = input_stream.parameters();
+
+        if codec_params.medium() == ffmpeg::media::Type::Video {
+            stream_mapping.push(Some(output_stream_index));
+            output_stream_index += 1;
+
+            let mut output_stream = octx.add_stream(None)?;
+            output_stream.set_parameters(codec_params);
+            unsafe {
+                (*output_stream.as_mut_ptr()).time_base =
+                    ffmpeg::Rational::new(1, OUTPUT_TIMESCALE).into();
+            }
+        } else {
+            stream_mapping.push(None);
+        }
+    }
+
+    octx.write_header()?;
+
+    let mut last_dts: Vec<i64> = vec![i64::MIN; output_stream_index];
+
+    for (input_stream, packet) in ictx.packets() {
+        let input_stream_index = input_stream.index();
+
+        if let Some(Some(output_index)) = stream_mapping.get(input_stream_index) {
+            let output_index = *output_index;
+            let mut packet = packet;
+            let input_time_base = input_stream.time_base();
+            let output_time_base = octx.stream(output_index).unwrap().time_base();
+
+            let tick_scale = scale * f64::from(input_time_base) / f64::from(output_time_base);
+            let rescale = |ts: i64| (ts as f64 * tick_scale).round() as i64;
+
+            let scaled_pts = packet.pts().map(rescale);
+            let mut scaled_dts = rescale(packet.dts().unwrap_or(0));
+
+            if last_dts[output_index] != i64::MIN && scaled_dts <= last_dts[output_index] {
+                scaled_dts = last_dts[output_index] + 1;
+            }
+            last_dts[output_index] = scaled_dts;
+
+            let scaled_duration = (packet.duration() as f64 * tick_scale).round() as i64;
+
+            unsafe {
+                (*packet.as_mut_ptr()).dts = scaled_dts;
+                (*packet.as_mut_ptr()).pts = scaled_pts.unwrap_or(scaled_dts).max(scaled_dts);
+                (*packet.as_mut_ptr()).duration = scaled_duration.max(0);
+            }
+
+            packet.set_stream(output_index);
+            packet.set_position(-1);
+
+            packet.write_interleaved(&mut octx)?;
+        }
+    }
+
+    octx.write_trailer()?;
+
+    Ok(())
+}
+
 pub fn merge_video_audio(
     video_path: &Path,
     audio_path: &Path,
