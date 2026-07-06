@@ -1057,7 +1057,9 @@ const getPlayback = Effect.fn("Mobile.getPlayback")(function* (
 	const storage = yield* Storage;
 	const [video] = yield* videos.getByIdForViewing(videoId).pipe(
 		Effect.flatten,
-		Effect.catchTag("NoSuchElementException", () => new Video.NotFoundError()),
+		Effect.catchTag("NoSuchElementException", () =>
+			Effect.fail(new Video.NotFoundError()),
+		),
 	);
 
 	if (video.ownerId !== user.id) {

@@ -298,13 +298,11 @@ export const ExtensionHttpLive = HttpApiBuilder.group(
 							state: payload.state,
 						});
 					}).pipe(
-						Effect.catchTag(
-							"AuthKeyMintRateLimited",
-							() => new HttpApiError.BadRequest(),
+						Effect.catchTag("AuthKeyMintRateLimited", () =>
+							Effect.fail(new HttpApiError.BadRequest()),
 						),
-						Effect.catchTag(
-							"UnknownException",
-							() => new Http.InternalServerError({ cause: "unknown" }),
+						Effect.catchTag("UnknownException", () =>
+							Effect.fail(new Http.InternalServerError({ cause: "unknown" })),
 						),
 						handleDomainError,
 					),
@@ -322,7 +320,9 @@ export const ExtensionHttpLive = HttpApiBuilder.group(
 
 						return { success: true };
 					}).pipe(
-						Effect.catchTag("ParseError", () => new HttpApiError.BadRequest()),
+						Effect.catchTag("ParseError", () =>
+							Effect.fail(new HttpApiError.BadRequest()),
+						),
 						handleDomainError,
 					),
 				)

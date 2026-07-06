@@ -298,7 +298,7 @@ const getPlaylistResponse = (
 				.pipe(
 					Effect.andThen(
 						Option.match({
-							onNone: () => new HttpApiError.NotFound(),
+							onNone: () => Effect.fail(new HttpApiError.NotFound()),
 							onSome: (c) =>
 								HttpServerResponse.text(c).pipe(
 									HttpServerResponse.setHeaders({
@@ -319,7 +319,9 @@ const getPlaylistResponse = (
 			const enhancedAudioKey = `${video.ownerId}/${video.id}/enhanced-audio.mp3`;
 			return yield* bucket.getSignedObjectUrl(enhancedAudioKey).pipe(
 				Effect.map(HttpServerResponse.redirect),
-				Effect.catchTag("StorageError", () => new HttpApiError.NotFound()),
+				Effect.catchTag("StorageError", () =>
+					Effect.fail(new HttpApiError.NotFound()),
+				),
 				Effect.withSpan("fetchEnhancedAudio"),
 			);
 		}
