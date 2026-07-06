@@ -361,6 +361,12 @@ async pickRecordingsFolder() : Promise<string | null> {
 async resetRecordingsFolder() : Promise<null> {
     return await TAURI_INVOKE("reset_recordings_folder");
 },
+async countRecordingsToMigrate() : Promise<number> {
+    return await TAURI_INVOKE("count_recordings_to_migrate");
+},
+async migrateRecordingsToCurrentDir() : Promise<RecordingsMigrationSummary> {
+    return await TAURI_INVOKE("migrate_recordings_to_current_dir");
+},
 async setCameraPreviewState(state: CameraPreviewState) : Promise<null> {
     return await TAURI_INVOKE("set_camera_preview_state", { state });
 },
@@ -488,6 +494,7 @@ recordingEvent: RecordingEvent,
 recordingOptionsChanged: RecordingOptionsChanged,
 recordingStarted: RecordingStarted,
 recordingStopped: RecordingStopped,
+recordingsMigrationProgress: RecordingsMigrationProgress,
 renderFrameEvent: RenderFrameEvent,
 requestOpenRecordingPicker: RequestOpenRecordingPicker,
 requestOpenSettings: RequestOpenSettings,
@@ -516,6 +523,7 @@ recordingEvent: "recording-event",
 recordingOptionsChanged: "recording-options-changed",
 recordingStarted: "recording-started",
 recordingStopped: "recording-stopped",
+recordingsMigrationProgress: "recordings-migration-progress",
 renderFrameEvent: "render-frame-event",
 requestOpenRecordingPicker: "request-open-recording-picker",
 requestOpenSettings: "request-open-settings",
@@ -737,6 +745,11 @@ export type FrameTheme = "dark" | "light"
 export type FramesRendered = { renderedCount: number; totalFrames: number; type: "FramesRendered" }
 export type GeneralSettingsStore = { instanceId?: string; uploadIndividualFiles?: boolean; hideDockIcon?: boolean; autoCreateShareableLink?: boolean; enableNotifications?: boolean; disableAutoOpenLinks?: boolean; hasCompletedStartup?: boolean; theme?: AppTheme; commercialLicense?: CommercialLicense | null; lastVersion?: string | null; windowTransparency?: boolean; postStudioRecordingBehaviour?: PostStudioRecordingBehaviour; mainWindowRecordingStartBehaviour?: MainWindowRecordingStartBehaviour; custom_cursor_capture2?: boolean; serverUrl?: string; recordingCountdown?: number | null; enableNativeCameraPreview: boolean; autoZoomOnClicks?: boolean; captureKeyboardEvents?: boolean; postDeletionBehaviour?: PostDeletionBehaviour; excludedWindows?: WindowExclusion[]; deleteInstantRecordingsAfterUpload?: boolean; instantModeMaxResolution?: number; defaultProjectNameTemplate?: string | null; crashRecoveryRecording?: boolean; maxFps?: number; transcriptionHints?: string[]; editorPreviewQuality?: EditorPreviewQuality; studioRecordingQuality?: StudioRecordingQuality; mainWindowPosition?: WindowPosition | null; cameraWindowPosition?: WindowPosition | null; cameraWindowPositionsByMonitorName?: { [key in string]: WindowPosition }; hasCompletedOnboarding?: boolean; enableTelemetry?: boolean; outOfProcessMuxer?: boolean; recordingsPath?: string | null; 
 /**
+ * Custom recordings folders that were used before; recordings left in
+ * them stay visible in the library. Most recent last.
+ */
+previousRecordingsPaths?: string[]; 
+/**
  * App version at which camera background blur was disabled after a crash
  * was attributed to the blur pipeline; `None` means blur is allowed.
  * Cleared automatically when the app version changes (one retry per
@@ -835,6 +848,9 @@ export type RecordingStarted = null
 export type RecordingStatus = "pending" | "recording"
 export type RecordingStopped = null
 export type RecordingTargetMode = "display" | "window" | "area" | "camera"
+export type RecordingsMigrationFailure = { name: string; error: string }
+export type RecordingsMigrationProgress = { total: number; done: number; current: string | null }
+export type RecordingsMigrationSummary = { moved: number; skippedInUse: number; failed: RecordingsMigrationFailure[] }
 export type RenderFrameEvent = { frame_number: number; fps: number; resolution_base: XY<number> }
 export type RequestOpenRecordingPicker = { target_mode: RecordingTargetMode | null }
 export type RequestOpenSettings = { page: string }

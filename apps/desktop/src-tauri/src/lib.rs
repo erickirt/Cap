@@ -36,6 +36,7 @@ mod presets;
 mod recording;
 mod recording_settings;
 mod recording_telemetry;
+mod recordings_locations;
 mod recovery;
 mod screenshot_editor;
 mod target_select_overlay;
@@ -3840,31 +3841,27 @@ fn get_recording_meta(
 #[specta::specta]
 #[instrument(skip(app))]
 fn list_recordings(app: AppHandle) -> Result<Vec<(PathBuf, RecordingMetaWithMetadata)>, String> {
-    let recordings_dir = recordings_path(&app);
+    // Recordings can live in multiple folders (the active one, the default
+    // one, and any previously used custom folders) — scan them all so
+    // switching the storage folder never hides existing recordings.
+    let mut result = Vec::new();
+    for recordings_dir in recordings_locations::known_recordings_dirs(&app) {
+        let Ok(entries) = std::fs::read_dir(&recordings_dir) else {
+            continue;
+        };
 
-    if !recordings_dir.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut result = std::fs::read_dir(&recordings_dir)
-        .map_err(|e| format!("Failed to read recordings directory: {e}"))?
-        .filter_map(|entry| {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => return None,
-            };
-
+        for entry in entries.flatten() {
             let path = entry.path();
 
             if !path.is_dir() {
-                return None;
+                continue;
             }
 
-            get_recording_meta(path.clone(), FileType::Recording)
-                .ok()
-                .map(|meta| (path, meta))
-        })
-        .collect::<Vec<_>>();
+            if let Ok(meta) = get_recording_meta(path.clone(), FileType::Recording) {
+                result.push((path, meta));
+            }
+        }
+    }
 
     result.sort_by(|a, b| {
         let b_time =
@@ -3887,7 +3884,9 @@ fn list_recordings(app: AppHandle) -> Result<Vec<(PathBuf, RecordingMetaWithMeta
 #[specta::specta]
 #[instrument(skip(app))]
 async fn delete_recording_directory(app: AppHandle, path: PathBuf) -> Result<(), String> {
-    let recordings_dir = recordings_path(&app);
+    // The library lists recordings from every known storage folder, so
+    // deletion must accept the same set — but nothing outside it.
+    let recordings_dirs = recordings_locations::known_recordings_dirs(&app);
 
     // Reject `..` components up front: `Path::starts_with` compares raw components
     // and does not normalize them, so a path like `<recordings_dir>/../../etc` would
@@ -3899,22 +3898,24 @@ async fn delete_recording_directory(app: AppHandle, path: PathBuf) -> Result<(),
         return Err("Invalid path".to_string());
     }
 
-    if !path.starts_with(&recordings_dir) {
-        return Err("Path is not inside the recordings directory".to_string());
+    if !recordings_dirs.iter().any(|dir| path.starts_with(dir)) {
+        return Err("Path is not inside a recordings directory".to_string());
     }
 
     if path.exists() {
         // Canonicalize both paths so symlinks can't be used to escape the
-        // recordings directory before we recursively delete.
-        let recordings_dir = recordings_dir
-            .canonicalize()
-            .map_err(|e| format!("Failed to resolve recordings directory: {e}"))?;
+        // recordings directories before we recursively delete.
         let canonical_path = path
             .canonicalize()
             .map_err(|e| format!("Failed to resolve recording path: {e}"))?;
 
-        if !canonical_path.starts_with(&recordings_dir) {
-            return Err("Path is not inside the recordings directory".to_string());
+        let inside_known_dir = recordings_dirs.iter().any(|dir| {
+            dir.canonicalize()
+                .map(|dir| canonical_path.starts_with(&dir))
+                .unwrap_or(false)
+        });
+        if !inside_known_dir {
+            return Err("Path is not inside a recordings directory".to_string());
         }
 
         std::fs::remove_dir_all(&canonical_path)
@@ -4456,7 +4457,8 @@ async fn pick_recordings_folder(app: AppHandle) -> Result<Option<String>, String
     let result = rx.await.map_err(|e| e.to_string())?;
     if let Some(ref path) = result {
         general_settings::GeneralSettingsStore::update(&app, |s| {
-            s.recordings_path = Some(path.clone());
+            let previous = s.recordings_path.replace(path.clone());
+            recordings_locations::remember_previous_recordings_path(s, previous, Some(path));
         })?;
     }
     Ok(result)
@@ -4467,7 +4469,8 @@ async fn pick_recordings_folder(app: AppHandle) -> Result<Option<String>, String
 #[instrument(skip(app))]
 async fn reset_recordings_folder(app: AppHandle) -> Result<(), String> {
     general_settings::GeneralSettingsStore::update(&app, |s| {
-        s.recordings_path = None;
+        let previous = s.recordings_path.take();
+        recordings_locations::remember_previous_recordings_path(s, previous, None);
     })
 }
 
@@ -4909,6 +4912,8 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
             set_server_url,
             pick_recordings_folder,
             reset_recordings_folder,
+            recordings_locations::count_recordings_to_migrate,
+            recordings_locations::migrate_recordings_to_current_dir,
             set_camera_preview_state,
             set_camera_window_position,
             ignore_camera_window_position,
@@ -4967,6 +4972,7 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
             captions::DownloadProgress,
             recording::RecordingEvent,
             RecordingDeleted,
+            recordings_locations::RecordingsMigrationProgress,
             target_select_overlay::TargetUnderCursor,
             hotkeys::OnEscapePress,
             upload::UploadProgressEvent,
@@ -6129,14 +6135,15 @@ fn reopen_main_window(app: &AppHandle) {
 }
 
 async fn resume_uploads(app: AppHandle) -> Result<(), String> {
-    let recordings_dir = recordings_path(&app);
-    if !recordings_dir.exists() {
-        return Err("Recording directory missing".to_string());
+    let mut entries = Vec::new();
+    for recordings_dir in recordings_locations::known_recordings_dirs(&app) {
+        let Ok(dir_entries) = std::fs::read_dir(&recordings_dir) else {
+            continue;
+        };
+        entries.extend(dir_entries.flatten());
     }
 
-    let entries = std::fs::read_dir(&recordings_dir)
-        .map_err(|e| format!("Failed to read recordings directory: {e}"))?;
-    for entry in entries.flatten() {
+    for entry in entries {
         let path = entry.path();
         if path.is_dir() && path.extension().and_then(|s| s.to_str()) == Some("cap") {
             // Load recording meta to check for in-progress recordings

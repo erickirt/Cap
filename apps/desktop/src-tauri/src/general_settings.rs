@@ -228,6 +228,10 @@ pub struct GeneralSettingsStore {
     pub out_of_process_muxer: bool,
     #[serde(default)]
     pub recordings_path: Option<String>,
+    /// Custom recordings folders that were used before; recordings left in
+    /// them stay visible in the library. Most recent last.
+    #[serde(default)]
+    pub previous_recordings_paths: Vec<String>,
     /// App version at which camera background blur was disabled after a crash
     /// was attributed to the blur pipeline; `None` means blur is allowed.
     /// Cleared automatically when the app version changes (one retry per
@@ -333,6 +337,7 @@ impl Default for GeneralSettingsStore {
             enable_telemetry: true,
             out_of_process_muxer: cap_recording::DEFAULT_OUT_OF_PROCESS_MUXER,
             recordings_path: None,
+            previous_recordings_paths: Vec::new(),
             camera_blur_disabled_by_crash: None,
         }
     }
@@ -359,7 +364,23 @@ impl GeneralSettingsStore {
                 if path.is_absolute() { Some(path) } else { None }
             });
 
-        let path = custom.unwrap_or_else(|| app.path().app_data_dir().unwrap().join("recordings"));
+        // A custom folder can become unavailable (unplugged drive, deleted
+        // path). Recording must keep working, so fall back to the default
+        // location instead of failing; the library lists recordings from
+        // every known folder, so nothing goes missing when this happens.
+        if let Some(path) = custom {
+            match std::fs::create_dir_all(&path) {
+                Ok(()) => return path,
+                Err(e) => {
+                    tracing::warn!(
+                        ?path, %e,
+                        "Custom recordings directory unavailable; falling back to default"
+                    );
+                }
+            }
+        }
+
+        let path = app.path().app_data_dir().unwrap().join("recordings");
         if let Err(e) = std::fs::create_dir_all(&path) {
             tracing::warn!(?path, %e, "Failed to create recordings directory");
         }
