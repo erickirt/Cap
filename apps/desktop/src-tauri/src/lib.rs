@@ -6492,6 +6492,23 @@ pub(crate) async fn wait_for_recording_ready(app: &AppHandle, path: &Path) -> Re
         info!("Crash recovery remux completed");
     }
 
+    if meta.studio_meta().is_some() {
+        // Repair camera tracks that were stamped at the wrong rate by older
+        // recorders (2x-length slow-motion camera). Non-fatal: the editor
+        // still opens with the unhealed file if this fails.
+        let path = path.to_path_buf();
+        match tokio::task::spawn_blocking(move || {
+            cap_recording::camera_heal::heal_stretched_camera(&path)
+        })
+        .await
+        {
+            Ok(Ok(true)) => info!("Healed stretched camera track(s)"),
+            Ok(Ok(false)) => {}
+            Ok(Err(e)) => warn!("Camera heal check failed: {e:#}"),
+            Err(e) => warn!("Camera heal task panicked: {e}"),
+        }
+    }
+
     Ok(())
 }
 
