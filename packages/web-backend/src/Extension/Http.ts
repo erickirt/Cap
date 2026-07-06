@@ -241,9 +241,8 @@ export const ExtensionHttpLive = HttpApiBuilder.group(
 							state: urlParams.state,
 						});
 					}).pipe(
-						Effect.catchTag(
-							"UnknownException",
-							() => new Http.InternalServerError({ cause: "unknown" }),
+						Effect.catchTag("UnknownException", () =>
+							Effect.fail(new Http.InternalServerError({ cause: "unknown" })),
 						),
 						handleDomainError,
 					),
@@ -359,23 +358,27 @@ export const ExtensionHttpLive = HttpApiBuilder.group(
 				)
 				.handle("createInstantRecording", ({ payload }) =>
 					videos.createInstantRecording(payload).pipe(
-						Effect.catchTag("PolicyDenied", (error) => error),
+						Effect.catchTag("PolicyDenied", (error) => Effect.fail(error)),
 						handleDomainError,
 					),
 				)
 				.handle("updateInstantRecordingProgress", ({ payload }) =>
 					videos.updateUploadProgress(payload).pipe(
 						Effect.map((success) => ({ success })),
-						Effect.catchTag("VideoNotFoundError", (error) => error),
-						Effect.catchTag("PolicyDenied", (error) => error),
+						Effect.catchTag("VideoNotFoundError", (error) =>
+							Effect.fail(error),
+						),
+						Effect.catchTag("PolicyDenied", (error) => Effect.fail(error)),
 						handleDomainError,
 					),
 				)
 				.handle("deleteInstantRecording", ({ path }) =>
 					videos.delete(path.videoId).pipe(
 						Effect.as({ success: true }),
-						Effect.catchTag("VideoNotFoundError", (error) => error),
-						Effect.catchTag("PolicyDenied", (error) => error),
+						Effect.catchTag("VideoNotFoundError", (error) =>
+							Effect.fail(error),
+						),
+						Effect.catchTag("PolicyDenied", (error) => Effect.fail(error)),
 						handleDomainError,
 					),
 				);

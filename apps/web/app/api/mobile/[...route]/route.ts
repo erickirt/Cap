@@ -277,14 +277,15 @@ const toMobileCapSummary = (
 const withMappedErrors = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 	effect.pipe(
 		Effect.catchTags({
-			DatabaseError: () => new HttpApiError.InternalServerError(),
-			NoSuchElementException: () => new HttpApiError.NotFound(),
-			PolicyDenied: () => new HttpApiError.Forbidden(),
-			S3Error: () => new HttpApiError.InternalServerError(),
-			StorageError: () => new HttpApiError.InternalServerError(),
-			UnknownException: () => new HttpApiError.InternalServerError(),
-			VerifyVideoPasswordError: () => new HttpApiError.Forbidden(),
-			VideoNotFoundError: () => new HttpApiError.NotFound(),
+			DatabaseError: () => Effect.fail(new HttpApiError.InternalServerError()),
+			NoSuchElementException: () => Effect.fail(new HttpApiError.NotFound()),
+			PolicyDenied: () => Effect.fail(new HttpApiError.Forbidden()),
+			S3Error: () => Effect.fail(new HttpApiError.InternalServerError()),
+			StorageError: () => Effect.fail(new HttpApiError.InternalServerError()),
+			UnknownException: () =>
+				Effect.fail(new HttpApiError.InternalServerError()),
+			VerifyVideoPasswordError: () => Effect.fail(new HttpApiError.Forbidden()),
+			VideoNotFoundError: () => Effect.fail(new HttpApiError.NotFound()),
 		}),
 	);
 

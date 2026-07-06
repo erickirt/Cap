@@ -67,9 +67,8 @@ const ApiLive = HttpApiBuilder.api(Api).pipe(
 							.getByIdForViewing(urlParams.videoId)
 							.pipe(
 								Effect.flatten,
-								Effect.catchTag(
-									"NoSuchElementException",
-									() => new HttpApiError.NotFound(),
+								Effect.catchTag("NoSuchElementException", () =>
+									Effect.fail(new HttpApiError.NotFound()),
 								),
 							);
 
@@ -78,11 +77,15 @@ const ApiLive = HttpApiBuilder.api(Api).pipe(
 						provideOptionalAuth,
 						Effect.tapErrorCause(Effect.logError),
 						Effect.catchTags({
-							VerifyVideoPasswordError: () => new HttpApiError.Forbidden(),
-							PolicyDenied: () => new HttpApiError.Unauthorized(),
-							DatabaseError: () => new HttpApiError.InternalServerError(),
-							StorageError: () => new HttpApiError.InternalServerError(),
-							UnknownException: () => new HttpApiError.InternalServerError(),
+							VerifyVideoPasswordError: () =>
+								Effect.fail(new HttpApiError.Forbidden()),
+							PolicyDenied: () => Effect.fail(new HttpApiError.Unauthorized()),
+							DatabaseError: () =>
+								Effect.fail(new HttpApiError.InternalServerError()),
+							StorageError: () =>
+								Effect.fail(new HttpApiError.InternalServerError()),
+							UnknownException: () =>
+								Effect.fail(new HttpApiError.InternalServerError()),
 						}),
 						Effect.provideService(Storage, storage),
 					),
