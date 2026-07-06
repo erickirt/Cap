@@ -1908,6 +1908,10 @@ function Page() {
 	};
 
 	createTauriEventListener(events.recordingDeleted, () => recordings.refetch());
+	createTauriEventListener(events.recordingsMigrationProgress, (payload) => {
+		// Storage-folder migration finished: moved recordings changed paths.
+		if (payload.done === payload.total) void recordings.refetch();
+	});
 	createTauriEventListener(
 		events.recordingStarted,
 		refetchRecordingsUnlessEditorRecording,

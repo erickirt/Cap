@@ -646,6 +646,7 @@ function Inner(props: { initialStore: GeneralSettingsStore | null }) {
 							const path = await commands.pickRecordingsFolder();
 							if (path !== null) {
 								setSettings("recordingsPath", path);
+								await offerRecordingsMigration();
 							}
 						} catch (e) {
 							toast.error(
@@ -657,6 +658,7 @@ function Inner(props: { initialStore: GeneralSettingsStore | null }) {
 						try {
 							await commands.resetRecordingsFolder();
 							setSettings("recordingsPath", null);
+							await offerRecordingsMigration();
 						} catch (e) {
 							toast.error(
 								`Failed to reset recordings folder: ${e instanceof Error ? e.message : String(e)}`,
@@ -711,6 +713,59 @@ function Inner(props: { initialStore: GeneralSettingsStore | null }) {
 			</SettingsPageContent>
 		</div>
 	);
+}
+
+async function offerRecordingsMigration() {
+	let count = 0;
+	try {
+		count = await commands.countRecordingsToMigrate();
+	} catch {
+		// Recordings in other folders stay visible in the library either way,
+		// so a failed scan just means we don't offer the move.
+		return;
+	}
+	if (count === 0) return;
+
+	const plural = count === 1 ? "recording" : "recordings";
+	const shouldMove = await confirm(
+		`Move your ${count} existing ${plural} to the new location? Recordings stay in your library either way.`,
+	);
+	if (!shouldMove) return;
+
+	const toastId = toast.loading(`Moving ${count} ${plural}…`);
+	let unlisten: (() => void) | undefined;
+	try {
+		unlisten = await events.recordingsMigrationProgress.listen((e) => {
+			toast.loading(
+				`Moving recordings… ${Math.min(e.payload.done + 1, e.payload.total)}/${e.payload.total}`,
+				{ id: toastId },
+			);
+		});
+
+		const summary = await commands.migrateRecordingsToCurrentDir();
+
+		const parts = [
+			`Moved ${summary.moved} ${summary.moved === 1 ? "recording" : "recordings"}`,
+		];
+		if (summary.skippedInUse > 0) {
+			parts.push(`${summary.skippedInUse} in use — left in place`);
+		}
+		if (summary.failed.length > 0) {
+			parts.push(
+				`${summary.failed.length} failed — kept in the original folder`,
+			);
+			toast.error(parts.join(" · "), { id: toastId });
+		} else {
+			toast.success(parts.join(" · "), { id: toastId });
+		}
+	} catch (e) {
+		toast.error(
+			`Failed to move recordings: ${e instanceof Error ? e.message : String(e)}`,
+			{ id: toastId },
+		);
+	} finally {
+		unlisten?.();
+	}
 }
 
 function StorageSection(props: {
