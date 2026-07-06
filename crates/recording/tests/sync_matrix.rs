@@ -186,7 +186,12 @@ impl Rng {
 
 #[derive(Clone)]
 struct VideoCase {
+    /// The rate the pipeline is CONFIGURED for (VideoInfo). Real devices may
+    /// deliver at a completely different rate.
     fps: u32,
+    /// The rate frames are actually generated at (labeling only; the truth
+    /// lives in `sent`).
+    delivered_fps: u32,
     sent: Vec<f64>,
     fragmented: bool,
     width: u32,
@@ -199,7 +204,30 @@ impl VideoCase {
     fn curated(fps: u32, scenario: VideoScenario, fragmented: bool) -> Self {
         Self {
             fps,
+            delivered_fps: fps,
             sent: scenario.timestamps(fps),
+            fragmented,
+            width: 160,
+            height: 120,
+            content: Content::Flat,
+            rng_seed: 1,
+        }
+    }
+
+    /// A device that free-runs at `delivered_fps` while the pipeline believes
+    /// `nominal_fps` — the configured rate is a belief, not a constraint. A
+    /// camera advertising 30fps but delivering 60 produced recordings twice
+    /// as long as the audio, playing at 0.5x.
+    fn mismatch(
+        nominal_fps: u32,
+        delivered_fps: u32,
+        scenario: VideoScenario,
+        fragmented: bool,
+    ) -> Self {
+        Self {
+            fps: nominal_fps,
+            delivered_fps,
+            sent: scenario.timestamps(delivered_fps),
             fragmented,
             width: 160,
             height: 120,
@@ -1069,11 +1097,18 @@ fn record(results: &mut Vec<CaseResult>, name: String, outcome: Result<String, S
 /// exist yet).
 fn random_video_case(rng: &mut Rng) -> VideoCase {
     let fps = rng.range(10, 120) as u32;
+    // Half the time the device free-runs at a rate unrelated to the
+    // configured one — anywhere up to a 1000fps camera.
+    let delivered_fps = if rng.f64() < 0.5 {
+        rng.range(10, 1000) as u32
+    } else {
+        fps
+    };
     let (width, height) = rng.pick(&[(160u32, 120u32), (320, 240), (640, 360)]);
     let content = rng.pick(&[Content::Flat, Content::Noise, Content::Motion]);
     let fragmented = rng.f64() < 0.75;
 
-    let period = 1.0 / f64::from(fps);
+    let period = 1.0 / f64::from(delivered_fps);
     let jitter = rng.f64() * 0.45;
     let drop_prob = rng.f64() * 0.25;
     let gap_count = rng.range(0, 2);
@@ -1086,7 +1121,7 @@ fn random_video_case(rng: &mut Rng) -> VideoCase {
         .collect();
     gaps.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
-    let total = (CONTENT_SECS * f64::from(fps)) as u64;
+    let total = (CONTENT_SECS * f64::from(delivered_fps)) as u64;
     let mut sent = Vec::new();
     for k in 0..total {
         if rng.f64() < drop_prob {
@@ -1110,6 +1145,7 @@ fn random_video_case(rng: &mut Rng) -> VideoCase {
 
     VideoCase {
         fps,
+        delivered_fps,
         sent,
         fragmented,
         width,
@@ -1190,6 +1226,33 @@ async fn synthetic_device_matrix_preserves_sync() {
         run_video_pause_case().await,
     );
 
+    // Nominal-vs-delivered rate mismatches: devices free-run at whatever
+    // rate they like regardless of the configured format (a camera
+    // advertising 30fps delivered 60fps and recordings came out 2x too long
+    // at 0.5x speed). Sync must hold for ANY delivered rate — including a
+    // 1000fps camera.
+    let mismatch_cases: Vec<(u32, u32, VideoScenario, bool)> = vec![
+        (30, 60, VideoScenario::Steady, true), // the original report
+        (30, 60, VideoScenario::Jitter, true),
+        (24, 90, VideoScenario::Steady, true), // caught the ladder-escape sawtooth
+        (30, 240, VideoScenario::Steady, true),
+        (30, 1000, VideoScenario::Steady, false),
+        (60, 24, VideoScenario::Steady, true), // slow source into a fast belief
+    ];
+
+    for (nominal, delivered, scenario, fragmented) in mismatch_cases {
+        let name = format!(
+            "video/nominal{}-delivered{}/{}/{}",
+            nominal,
+            delivered,
+            scenario.name(),
+            if fragmented { "fragmented" } else { "mp4" }
+        );
+        let outcome =
+            run_video_case(VideoCase::mismatch(nominal, delivered, scenario, fragmented)).await;
+        record(&mut results, name, outcome);
+    }
+
     let audio_cases: Vec<(u32, u16)> = vec![
         (8_000, 2),
         (16_000, 2),
@@ -1261,8 +1324,9 @@ async fn synthetic_device_matrix_preserves_sync() {
         let video = random_video_case(&mut rng);
         let audio = random_audio_case(&mut rng);
         let name = format!(
-            "random/{i}/video-{}fps-{}x{}-{:?}-{}ts/audio-{}hz-{}ch-{:.0}ms-drift{:+.2}%",
+            "random/{i}/video-nominal{}-delivered{}-{}x{}-{:?}-{}ts/audio-{}hz-{}ch-{:.0}ms-drift{:+.2}%",
             video.fps,
+            video.delivered_fps,
             video.width,
             video.height,
             video.content,
