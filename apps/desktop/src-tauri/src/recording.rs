@@ -1527,7 +1527,7 @@ pub async fn start_recording(
     let filename = project_name.replace(":", ".");
     let filename = format!("{}.cap", sanitize_filename::sanitize(&filename));
 
-    let recordings_base_dir = app.path().app_data_dir().unwrap().join("recordings");
+    let recordings_base_dir = GeneralSettingsStore::recordings_dir(&app);
 
     pending_try!(ensure_dir(&recordings_base_dir), |e| format!(
         "Failed to create recordings directory: {e}"
@@ -1580,8 +1580,10 @@ pub async fn start_recording(
     );
 
     if let Some(window) = CapWindowId::Camera.get(&app)
-        && let Err(error) =
-            window.set_content_protected(matches!(inputs.mode, RecordingMode::Studio))
+        && let Err(error) = window.set_content_protected(
+            matches!(inputs.mode, RecordingMode::Studio)
+                && !crate::windows::capture_exclusion_hides_ui(),
+        )
     {
         warn!(%error, "Failed to update camera window content protection");
     }
@@ -1723,7 +1725,7 @@ pub async fn start_recording(
     if let Some(editor_target) = EditorRecordingTarget::current(&app)
         && let Some(editor_window) = editor_window_for_path(&app, &editor_target)
     {
-        let _ = editor_window.set_content_protected(true);
+        let _ = editor_window.set_content_protected(!crate::windows::capture_exclusion_hides_ui());
         let _ = editor_window.minimize();
     }
 
