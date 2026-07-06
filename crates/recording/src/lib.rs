@@ -1,4 +1,5 @@
 pub mod benchmark;
+pub mod camera_heal;
 mod capture_pipeline;
 pub mod cursor;
 pub mod defaults;
