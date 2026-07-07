@@ -287,7 +287,6 @@ fn normalize_input_pts(pts: i64, last_pts: Option<i64>) -> i64 {
     last_pts + 1
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
