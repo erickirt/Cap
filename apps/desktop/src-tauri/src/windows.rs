@@ -670,7 +670,9 @@ impl CursorMonitorInfo {
 
         // outer_position is physical. On Windows, resolve the display in
         // physical space (per-monitor logical rects overlap in mixed-DPI
-        // layouts); elsewhere, convert to logical, which is a global space.
+        // layouts). On macOS, convert to logical points, a true global space.
+        // On Linux scap reports logical bounds in unscaled physical units, so
+        // the raw position compares directly.
         #[cfg(windows)]
         {
             let (pos_x, pos_y) = (window_pos.x as f64, window_pos.y as f64);
@@ -692,13 +694,26 @@ impl CursorMonitorInfo {
             Self::get()
         }
 
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         {
             let scale = window.scale_factor().unwrap_or(1.0);
             let pos = window_pos.to_logical::<f64>(scale);
 
             for display in Display::list() {
                 if display_contains_logical(&display, pos.x, pos.y) {
+                    return Self::from_display(&display);
+                }
+            }
+
+            Self::get()
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let (pos_x, pos_y) = (window_pos.x as f64, window_pos.y as f64);
+
+            for display in Display::list() {
+                if display_contains_logical(&display, pos_x, pos_y) {
                     return Self::from_display(&display);
                 }
             }
