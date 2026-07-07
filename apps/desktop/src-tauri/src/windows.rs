@@ -2401,12 +2401,15 @@ impl ShowCapWindow {
                         .position(bounds.position().x(), bounds.position().y());
                 }
 
+                // On Windows a window's DPI scale isn't known until it's placed on a
+                // monitor, so sizing/positioning from logical bounds at build time is
+                // unreliable across monitors with different DPIs — the overlay ends up
+                // sized for the wrong monitor and no longer covers the target display,
+                // which truncates area selections on HiDPI secondary monitors. Build a
+                // placeholder and fix the geometry up after the window exists (below),
+                // mirroring the TargetSelectOverlay path.
                 #[cfg(windows)]
-                if let Some(bounds) = display.raw_handle().logical_bounds() {
-                    window_builder = window_builder
-                        .inner_size(bounds.size().width(), bounds.size().height())
-                        .position(bounds.position().x(), bounds.position().y());
-                } else {
+                {
                     window_builder = window_builder.inner_size(100.0, 100.0).position(0.0, 0.0);
                 }
 
@@ -2419,6 +2422,49 @@ impl ShowCapWindow {
 
                 let window = window_builder.build()?;
                 lock_window_text_scale(&window);
+
+                // Fix up the overlay geometry now that the window exists and its real
+                // per-monitor DPI is known: position with physical coordinates (which are
+                // unambiguous across monitors), then set the logical size so the window
+                // covers the full display. Verify the resulting physical size matches the
+                // display and re-apply once if the initial placement raced the DPI change.
+                #[cfg(windows)]
+                {
+                    let Some(position) = display.raw_handle().physical_position() else {
+                        warn!(display_id = %screen_id, "Missing display position for capture area overlay");
+                        return Err(tauri::Error::WindowNotFound);
+                    };
+                    let Some(logical_size) = display.logical_size() else {
+                        warn!(display_id = %screen_id, "Missing display logical size for capture area overlay");
+                        return Err(tauri::Error::WindowNotFound);
+                    };
+                    let Some(physical_size) = display.physical_size() else {
+                        warn!(display_id = %screen_id, "Missing display physical size for capture area overlay");
+                        return Err(tauri::Error::WindowNotFound);
+                    };
+                    use tauri::{LogicalSize, PhysicalPosition};
+                    let _ = window.set_size(LogicalSize::new(
+                        logical_size.width(),
+                        logical_size.height(),
+                    ));
+                    let _ = window.set_position(PhysicalPosition::new(position.x(), position.y()));
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+                    match window.inner_size() {
+                        Ok(actual_physical_size)
+                            if physical_size.width() != actual_physical_size.width as f64 =>
+                        {
+                            let _ = window.set_size(LogicalSize::new(
+                                logical_size.width(),
+                                logical_size.height(),
+                            ));
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            warn!(%err, "Failed to read capture area overlay inner size");
+                        }
+                    }
+                }
 
                 #[cfg(target_os = "linux")]
                 if let Some(bounds) = display.raw_handle().physical_bounds() {
