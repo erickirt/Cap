@@ -5819,7 +5819,15 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
                         }
                     }
                 }
-                    _ => {}
+                WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                    if let Some(webview_window) = app.get_webview_window(label) {
+                        windows::update_window_rasterization_scale(
+                            &webview_window,
+                            *scale_factor,
+                        );
+                    }
+                }
+                _ => {}
                 }
             }));
 

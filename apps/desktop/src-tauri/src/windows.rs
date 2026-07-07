@@ -2925,6 +2925,34 @@ fn lock_window_text_scale(_window: &WebviewWindow<Wry>) {
     }
 }
 
+/// `lock_window_text_scale` disables WebView2's own monitor-scale detection
+/// (so the Windows text-size setting can't zoom the UI), which also stops it
+/// following per-monitor DPI. The new scale factor must be forwarded here on
+/// every `ScaleFactorChanged`, or a window dragged to a monitor with
+/// different scaling keeps rasterizing and laying out at the old DPI.
+pub fn update_window_rasterization_scale(_window: &WebviewWindow<Wry>, _scale_factor: f64) {
+    #[cfg(windows)]
+    {
+        if let Err(e) = _window.with_webview(move |webview| unsafe {
+            use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Controller3;
+            use windows_core::Interface;
+
+            let controller = webview.controller();
+
+            let Ok(controller3) = controller.cast::<ICoreWebView2Controller3>() else {
+                warn!("Failed to access WebView2 controller scale APIs");
+                return;
+            };
+
+            if let Err(e) = controller3.SetRasterizationScale(_scale_factor) {
+                warn!("Failed to update WebView rasterization scale: {}", e);
+            }
+        }) {
+            warn!("Failed to access platform WebView: {}", e);
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn add_traffic_lights(window: &WebviewWindow<Wry>, controls_inset: Option<LogicalPosition<f64>>) {
     use crate::platform::delegates;
