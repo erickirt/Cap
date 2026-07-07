@@ -1777,9 +1777,9 @@ mod tests {
         assert_duration_tracks_input(1000.0, 60, 1.2);
         // Seeded-random rate: an arbitrary camera cadence nothing was tuned
         // for.
-        let random_fps = 5.0 + (0x5EEDu64.wrapping_mul(6364136223846793005) >> 11) as f64
-            / (1u64 << 53) as f64
-            * 995.0;
+        let random_fps = 5.0
+            + (0x5EEDu64.wrapping_mul(6364136223846793005) >> 11) as f64 / (1u64 << 53) as f64
+                * 995.0;
         assert_duration_tracks_input(random_fps, 30, 1.5);
     }
 

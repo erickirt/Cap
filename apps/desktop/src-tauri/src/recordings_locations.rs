@@ -10,8 +10,7 @@ use tauri_specta::Event;
 use tracing::{info, warn};
 
 use crate::{
-    ArcLock, RecordingState, editor_window::EditorInstances,
-    general_settings::GeneralSettingsStore,
+    ArcLock, RecordingState, editor_window::EditorInstances, general_settings::GeneralSettingsStore,
 };
 
 /// Staging directory (inside the destination) used for cross-volume moves.
@@ -240,11 +239,10 @@ pub async fn migrate_recordings_to_current_dir(
 
         let dest = dest.clone();
         let src = project.clone();
-        let result =
-            tokio::task::spawn_blocking(move || move_project_dir(&src, &dest))
-                .await
-                .map_err(|e| format!("Move task failed: {e}"))
-                .and_then(|r| r);
+        let result = tokio::task::spawn_blocking(move || move_project_dir(&src, &dest))
+            .await
+            .map_err(|e| format!("Move task failed: {e}"))
+            .and_then(|r| r);
 
         match result {
             Ok(new_path) => {
@@ -253,7 +251,9 @@ pub async fn migrate_recordings_to_current_dir(
             }
             Err(error) => {
                 warn!(?project, %error, "Migration: failed to move recording; kept in place");
-                summary.failed.push(RecordingsMigrationFailure { name, error });
+                summary
+                    .failed
+                    .push(RecordingsMigrationFailure { name, error });
             }
         }
     }
@@ -313,7 +313,10 @@ fn project_is_in_use(project: &Path, in_use: &HashSet<PathBuf>) -> bool {
                 }
             }
             cap_project::RecordingMetaInner::Instant(instant) => {
-                matches!(instant, cap_project::InstantRecordingMeta::InProgress { .. })
+                matches!(
+                    instant,
+                    cap_project::InstantRecordingMeta::InProgress { .. }
+                )
             }
         },
         // Unreadable meta is not proof of activity; old or partially written
@@ -390,7 +393,10 @@ fn copy_verify_delete(src: &Path, dest_dir: &Path, unique: &str) -> Result<PathB
     // The copy is verified and in place; a failure to delete the source only
     // leaves a duplicate behind, which is safe. Don't fail the migration.
     if let Err(e) = std::fs::remove_dir_all(src) {
-        warn!(?src, "Migration: copied project but failed to remove the original: {e}");
+        warn!(
+            ?src,
+            "Migration: copied project but failed to remove the original: {e}"
+        );
     }
 
     Ok(target)
@@ -410,8 +416,7 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
         if file_type.is_dir() {
             copy_dir_recursive(&from, &to)?;
         } else {
-            std::fs::copy(&from, &to)
-                .map_err(|e| format!("Failed to copy {from:?}: {e}"))?;
+            std::fs::copy(&from, &to).map_err(|e| format!("Failed to copy {from:?}: {e}"))?;
         }
     }
 
@@ -470,7 +475,10 @@ mod tests {
         let project = make_project(
             &src_dir,
             "Test.cap",
-            &[("recording-meta.json", "{}"), ("content/display.mp4", "vid")],
+            &[
+                ("recording-meta.json", "{}"),
+                ("content/display.mp4", "vid"),
+            ],
         );
 
         let moved = move_project_dir(&project, &dest_dir).unwrap();
@@ -491,7 +499,11 @@ mod tests {
         std::fs::create_dir_all(&src_dir).unwrap();
         std::fs::create_dir_all(&dest_dir).unwrap();
 
-        make_project(&dest_dir, "Test.cap", &[("recording-meta.json", "existing")]);
+        make_project(
+            &dest_dir,
+            "Test.cap",
+            &[("recording-meta.json", "existing")],
+        );
         let project = make_project(&src_dir, "Test.cap", &[("recording-meta.json", "incoming")]);
 
         let moved = move_project_dir(&project, &dest_dir).unwrap();
@@ -582,7 +594,11 @@ mod tests {
     fn dir_stats_detects_mismatch() {
         let tmp = tempfile::tempdir().unwrap();
         let a = make_project(tmp.path(), "a.cap", &[("recording-meta.json", "same")]);
-        let b = make_project(tmp.path(), "b.cap", &[("recording-meta.json", "different!")]);
+        let b = make_project(
+            tmp.path(),
+            "b.cap",
+            &[("recording-meta.json", "different!")],
+        );
         let c = make_project(tmp.path(), "c.cap", &[("recording-meta.json", "same")]);
 
         assert_ne!(dir_stats(&a).unwrap(), dir_stats(&b).unwrap());
