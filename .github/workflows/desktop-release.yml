@@ -480,7 +480,20 @@ jobs:
           artifact-configuration-slug: ${{ secrets.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
           github-artifact-id: ${{ steps.upload_unsigned_windows_installer.outputs.artifact-id }}
           wait-for-completion: true
-          wait-for-completion-timeout-in-seconds: 3600
+          # SignPath Foundation requires a human to approve each signing
+          # request, so this step blocks until someone clicks approve. Raising
+          # wait-for-completion-timeout-in-seconds alone did NOT extend the
+          # window: while a request sits "WaitingForApproval" the action's
+          # per-call retry budget (service-unavailable-timeout-in-seconds,
+          # default 600s) is what expires and fails the job at ~10 min, so both
+          # must be raised. GitHub-hosted jobs are hard-capped at 6h total and
+          # the Windows build already consumes part of that, so ~4h is the
+          # practical ceiling for a blocking wait; the action times out cleanly
+          # here rather than letting GitHub kill the runner mid-build. For a
+          # genuinely longer (12h+) window the signing has to be decoupled from
+          # the build job (submit without waiting, finalise in a later job).
+          wait-for-completion-timeout-in-seconds: 14400
+          service-unavailable-timeout-in-seconds: 14400
           output-artifact-directory: signed-windows-installer
 
       - name: Restore signed Windows installer
