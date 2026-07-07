@@ -31,6 +31,7 @@ import {
 } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
 import { Transition } from "solid-transition-group";
+import toast from "solid-toast";
 import Mode from "~/components/Mode";
 import { RecoveryToast } from "~/components/RecoveryToast";
 import Tooltip from "~/components/Tooltip";
@@ -1920,6 +1921,19 @@ function Page() {
 		events.recordingStopped,
 		refetchRecordingsUnlessEditorRecording,
 	);
+	// Start failures happen before the in-progress window exists, and the picker
+	// overlay that invoked start_recording may already be dismissed — this window
+	// is the only reliable surface for telling the user why nothing started. The
+	// picker flow also hides this window, so reveal it first or the toast lands
+	// in a hidden webview and the failure is invisible again.
+	createTauriEventListener(events.recordingEvent, (payload) => {
+		if (payload.variant === "StartFailed") {
+			const currentWindow = getCurrentWindow();
+			void currentWindow.show();
+			void currentWindow.setFocus();
+			toast.error(payload.error);
+		}
+	});
 
 	const handleReupload = async (path: string) => {
 		setReuploadingPaths((prev) => new Set([...prev, path]));

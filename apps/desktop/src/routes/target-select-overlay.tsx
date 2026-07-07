@@ -335,7 +335,19 @@ function Inner() {
 		} else {
 			setOptions({ targetMode: null, targetModeDismissal });
 		}
-		commands.closeTargetSelectOverlays();
+		// Hide rather than close: startRecording is invoked from THIS webview right
+		// after dismissal, and closing destroys the webview before the invoke is
+		// dispatched — the recording then silently never starts. The backend closes
+		// these windows itself once the recording is underway, and the start handler
+		// closes them if the command fails.
+		void WebviewWindow.getAll().then((all) => {
+			for (const win of all) {
+				if (win.label.startsWith("target-select-overlay-")) {
+					void win.setIgnoreCursorEvents(true);
+					void win.hide();
+				}
+			}
+		});
 	};
 
 	// This prevents browser keyboard shortcuts from firing.
@@ -1804,8 +1816,19 @@ function RecordingControls(props: {
 										mode: rawOptions.mode,
 										capture_system_audio: rawOptions.captureSystemAudio,
 									})
+									.then((action) => {
+										// On success the backend closes the overlay windows; the
+										// non-Started actions leave our hidden windows behind.
+										// User-facing feedback for them arrives via the backend's
+										// StartFailed event in the main window.
+										if (action !== "Started")
+											void commands.closeTargetSelectOverlays();
+									})
 									.catch((e: unknown) => {
 										const msg = e instanceof Error ? e.message : String(e);
+										// This webview is hidden by now, so the toast is a
+										// best-effort extra — the visible feedback comes from the
+										// backend's StartFailed event toasted in the main window.
 										if (
 											msg.includes("no longer available") ||
 											msg.includes("DeviceNotFound")
@@ -1816,6 +1839,14 @@ function RecordingControls(props: {
 										} else {
 											toast.error(`Failed to start recording: ${msg}`);
 										}
+										// An IPC-level rejection never reaches the backend, so no
+										// StartFailed event fires; the picker flow hid the main
+										// window and dismissal closed the overlays — without this,
+										// the whole app visually vanishes with no recording.
+										void commands.showWindow({
+											Main: { init_target_mode: null },
+										});
+										void commands.closeTargetSelectOverlays();
 									});
 							}}
 						>
