@@ -1,3 +1,4 @@
+use crate::updates::UpdateChannel;
 use crate::window_exclusion::WindowExclusion;
 use scap_targets::DisplayId;
 use serde::{Deserialize, Serialize};
@@ -238,6 +239,8 @@ pub struct GeneralSettingsStore {
     /// update, since a new ort/wgpu/driver stack may have fixed the crash).
     #[serde(default)]
     pub camera_blur_disabled_by_crash: Option<String>,
+    #[serde(default)]
+    pub update_channel: UpdateChannel,
 }
 
 fn default_enable_native_camera_preview() -> bool {
@@ -339,6 +342,7 @@ impl Default for GeneralSettingsStore {
             recordings_path: None,
             previous_recordings_paths: Vec::new(),
             camera_blur_disabled_by_crash: None,
+            update_channel: UpdateChannel::Stable,
         }
     }
 }

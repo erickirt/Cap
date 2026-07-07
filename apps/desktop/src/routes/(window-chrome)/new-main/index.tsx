@@ -14,8 +14,8 @@ import {
 } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import * as dialog from "@tauri-apps/plugin-dialog";
+import { relaunch } from "@tauri-apps/plugin-process";
 import * as shell from "@tauri-apps/plugin-shell";
-import * as updater from "@tauri-apps/plugin-updater";
 import { cx } from "cva";
 import {
 	createEffect,
@@ -30,8 +30,8 @@ import {
 	Suspense,
 } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
-import { Transition } from "solid-transition-group";
 import toast from "solid-toast";
+import { Transition } from "solid-transition-group";
 import Mode from "~/components/Mode";
 import { RecoveryToast } from "~/components/RecoveryToast";
 import Tooltip from "~/components/Tooltip";
@@ -76,9 +76,9 @@ import {
 	type OSPermissionsCheck,
 	type RecordingTargetMode,
 	type ScreenCaptureTarget,
+	type UpdateCheckResult,
 	type UploadProgress,
 } from "~/utils/tauri";
-import { getUpdaterCheckOptions } from "~/utils/updater";
 import IconCapLogoFull from "~icons/cap/logo-full";
 import IconCapLogoFullDark from "~icons/cap/logo-full-dark";
 import IconLucideAppWindowMac from "~icons/lucide/app-window-mac";
@@ -1563,10 +1563,13 @@ function createUpdateCheck() {
 
 		await new Promise((res) => setTimeout(res, 10_000));
 
-		let update: updater.Update | undefined;
+		// The Rust background loop owns nightly updates.
+		const settings = await generalSettingsStore.get();
+		if (settings?.updateChannel === "nightly") return;
+
+		let update: UpdateCheckResult | null = null;
 		try {
-			const result = await updater.check(getUpdaterCheckOptions());
-			if (result) update = result;
+			update = await commands.updatesCheck();
 		} catch (e) {
 			console.error("Failed to check for updates:", e);
 			return;
@@ -1587,6 +1590,51 @@ function createUpdateCheck() {
 
 		if (!shouldUpdate) return;
 		navigate("/update");
+	});
+}
+
+function createUpdateReadyToast() {
+	createTauriEventListener(events.updateReady, (update) => {
+		toast.custom(
+			(t) => (
+				<div class="flex gap-3 items-center px-4 py-3 rounded-xl border shadow-lg bg-gray-1 border-gray-4 text-gray-12">
+					<p class="text-sm">
+						{update.installed
+							? `Cap ${update.version} has been installed — restart to apply`
+							: `Cap ${update.version} is ready to install`}
+					</p>
+					<button
+						type="button"
+						class="px-2.5 py-1 text-xs font-medium rounded-lg transition-colors bg-blue-9 text-white hover:bg-blue-10"
+						onClick={() => {
+							toast.dismiss(t.id);
+							const install = update.installed
+								? Promise.resolve(null)
+								: commands.updatesDownloadAndInstall();
+							// On Windows the NSIS installer restarts Cap itself, so the
+							// relaunch call is unreachable there; that matches update.tsx.
+							install
+								.then(() => relaunch())
+								.catch((e) => console.error("Failed to install update:", e));
+						}}
+					>
+						{update.installed ? "Restart now" : "Install and restart"}
+					</button>
+					<button
+						type="button"
+						class="px-2.5 py-1 text-xs font-medium rounded-lg transition-colors text-gray-11 hover:text-gray-12"
+						onClick={() => toast.dismiss(t.id)}
+					>
+						Dismiss
+					</button>
+				</div>
+			),
+			{
+				// One toast per version: re-emissions replace instead of stacking.
+				id: `update-ready-${update.version}`,
+				duration: Number.POSITIVE_INFINITY,
+			},
+		);
 	});
 }
 
@@ -2137,6 +2185,7 @@ function Page() {
 	const setCamera = createCameraMutation();
 
 	createUpdateCheck();
+	createUpdateReadyToast();
 
 	onMount(async () => {
 		if (document.activeElement instanceof HTMLElement) {

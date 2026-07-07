@@ -43,6 +43,7 @@ mod target_select_overlay;
 mod thumbnails;
 mod tray;
 mod update_project_names;
+mod updates;
 mod upload;
 pub mod web_api;
 mod window_exclusion;
@@ -4949,6 +4950,9 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
             automation::test_automation,
             automation::automation_should_open_screenshot_editor,
             automation::list_automation_capabilities,
+            updates::updates_check,
+            updates::updates_download_and_install,
+            updates::updates_channel_changed,
         ])
         .events(tauri_specta::collect_events![
             RecordingOptionsChanged,
@@ -4979,6 +4983,8 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
             import::VideoImportProgress,
             SetCaptureAreaPending,
             DevicesUpdated,
+            updates::UpdateDownloadProgress,
+            updates::UpdateReady,
         ])
         .error_handling(tauri_specta::ErrorHandlingMode::Throw)
         .typ::<ProjectConfiguration>()
@@ -5176,6 +5182,8 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
             app.manage(http_client::RetryableHttpClient::default());
             app.manage(PendingScreenshots::default());
             app.manage(FinalizingRecordings::default());
+            app.manage(updates::UpdatesState::default());
+            updates::spawn_background_loop(app.clone());
 
             #[cfg(unix)]
             {

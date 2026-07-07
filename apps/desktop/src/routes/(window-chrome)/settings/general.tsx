@@ -41,6 +41,7 @@ import {
 	type PostDeletionBehaviour,
 	type PostStudioRecordingBehaviour,
 	type StudioRecordingQuality,
+	type UpdateChannel,
 	type WindowExclusion,
 } from "~/utils/tauri";
 import IconLucideAlertTriangle from "~icons/lucide/alert-triangle";
@@ -686,6 +687,18 @@ function Inner(props: { initialStore: GeneralSettingsStore | null }) {
 					isWindows={ostype === "windows"}
 				/>
 
+				<UpdatesSection
+					value={settings.updateChannel ?? "stable"}
+					onChange={async (channel) => {
+						await handleChange("updateChannel", channel);
+						try {
+							await commands.updatesChannelChanged();
+						} catch (error) {
+							console.error("Failed to notify update channel change", error);
+						}
+					}}
+				/>
+
 				<ServerURLSetting
 					value={settings.serverUrl ?? clientEnv.VITE_SERVER_URL}
 					defaultValue={clientEnv.VITE_SERVER_URL}
@@ -816,6 +829,71 @@ function TelemetryCard(props: {
 					onChange={props.onChange}
 				/>
 			</SectionRows>
+		</Section>
+	);
+}
+
+type UpdateChannelOption = {
+	value: UpdateChannel;
+	label: string;
+	description: string;
+};
+
+const UPDATE_CHANNEL_OPTIONS: UpdateChannelOption[] = [
+	{
+		value: "stable",
+		label: "Stable",
+		description: "Versioned releases (recommended)",
+	},
+	{
+		value: "nightly",
+		label: "Nightly",
+		description:
+			"The newest builds, updated automatically in the background when you're not recording or exporting. May be unstable.",
+	},
+];
+
+function UpdatesSection(props: {
+	value: UpdateChannel;
+	onChange: (value: UpdateChannel) => void;
+}) {
+	const currentOption = createMemo(
+		() =>
+			UPDATE_CHANNEL_OPTIONS.find((option) => option.value === props.value) ??
+			UPDATE_CHANNEL_OPTIONS[0],
+	);
+
+	return (
+		<Section title="Updates" description="Choose which Cap builds you receive.">
+			<SectionCard>
+				<div class="flex flex-col gap-3 px-4 py-4">
+					<div class="flex justify-between items-start gap-4">
+						<div class="flex flex-col gap-0.5 min-w-0">
+							<p class="text-[13px] text-gray-12">Update channel</p>
+							<p class="text-xs leading-snug text-gray-10">
+								Which release channel Cap updates from.
+							</p>
+						</div>
+						<SegmentedControl
+							value={props.value}
+							onChange={props.onChange}
+							options={UPDATE_CHANNEL_OPTIONS.map((option) => ({
+								value: option.value,
+								label: option.label,
+							}))}
+						/>
+					</div>
+					<div class="flex flex-col gap-1.5 px-3 py-2.5 rounded-lg bg-gray-3">
+						<p class="text-xs text-gray-12">{currentOption().description}</p>
+						<Show when={props.value === "nightly"}>
+							<p class="text-[11px] text-gray-10 leading-snug">
+								Switching back to Stable will return you to the latest stable
+								version, which may be older than your current build.
+							</p>
+						</Show>
+					</div>
+				</div>
+			</SectionCard>
 		</Section>
 	);
 }

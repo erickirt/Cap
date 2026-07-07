@@ -75,6 +75,7 @@ clipboard-rs = "0.2.2"
 whisper-rs = "0.11.0"
 lazy_static = "1.4.0"
 log = "0.4.20"
+semver = "1"
 
 cap-audio = { path = "../../../crates/audio" }
 cap-camera = { path = "../../../crates/camera", features = ["serde", "specta"] }
