@@ -82,6 +82,14 @@ function InProgressRecordingInner() {
 	);
 	const [start, setStart] = createSignal(Date.now());
 	const [time, setTime] = createSignal(Date.now());
+	// When we last entered the "stopped" state. The reconcile effect compares
+	// this against the recording query's dataUpdatedAt so a refetch that is
+	// still in flight when a stop completes can't resurrect the old recording.
+	let stoppedAt = 0;
+	const markStopped = () => {
+		stoppedAt = Date.now();
+		setState({ variant: "stopped" });
+	};
 	const currentRecording = createCurrentRecordingQuery();
 	const optionsQuery = createOptionsQuery();
 	const startedWithMicrophone = optionsQuery.rawOptions.micName != null;
@@ -209,9 +217,14 @@ function InProgressRecordingInner() {
 				setPauseResumes([]);
 				setStopRequested(false);
 				aborted = false;
-				setState({ variant: "recording" });
+				// This window is reused across recordings, so `start`/`time` still
+				// hold the previous session's values here. Effects (the free-plan
+				// length limit) run synchronously on the state flip below, so the
+				// timestamps must be reset first or the new recording gets measured
+				// against the old session and stopped immediately.
 				setStart(Date.now());
 				setTime(Date.now());
+				setState({ variant: "recording" });
 				if (wasStartingDismissed) {
 					void getCurrentWindow().show();
 				}
@@ -255,6 +268,21 @@ function InProgressRecordingInner() {
 		}
 	});
 
+	// A recording can end outside this window: the main window's stop button,
+	// the tray, a global shortcut, or a mid-recording failure. The switch above
+	// never resets state for those (RecordingEvent::Stopped exists but comes
+	// from a racing wait-actor and can land mid-restart, so it is deliberately
+	// not handled). RecordingStopped is only emitted after the recording state
+	// clears and strictly before any next recording can start, making it the
+	// safe reset signal — without it this reused window keeps ticking a phantom
+	// session that poisons the next recording's elapsed-time checks.
+	createTauriEventListener(events.recordingStopped, () => {
+		// Restart/delete drive their own state while the discarded recording
+		// tears down; the stop mutation marks stopped itself once it resolves.
+		if (teardownInFlight()) return;
+		markStopped();
+	});
+
 	createEffect(() => {
 		// While restart/delete teardown is running the query data is stale;
 		// reconciling against it would resurrect the discarded recording's state.
@@ -267,6 +295,16 @@ function InProgressRecordingInner() {
 			| undefined;
 
 		if (s.variant === "stopped" && !currentRecording.isPending && recording) {
+			// Only trust data fetched after we entered "stopped". The stop
+			// command resolves before the invalidated query can refetch (the
+			// backend holds the recording state lock until the command returns),
+			// so `data` here can still describe the recording that just ended.
+			// Resurrecting from it would leave this reused window in a phantom
+			// "recording" state, with the timer running against a dead session.
+			// (dataUpdatedAt marks fetch resolution, not the snapshot, so a
+			// fetch dispatched pre-stop can slip through — the fresh start/time
+			// set below keeps even that phantom harmless to the next session.)
+			if (currentRecording.dataUpdatedAt <= stoppedAt) return;
 			setStartingDismissed(false);
 			setDisconnectedInputs({ microphone: false, camera: false });
 			setRecordingFailure(null);
@@ -275,9 +313,9 @@ function InProgressRecordingInner() {
 			setStopRequested(false);
 			aborted = false;
 			if (recording.status === "recording") {
-				setState({ variant: "recording" });
 				setStart(Date.now());
 				setTime(Date.now());
+				setState({ variant: "recording" });
 			} else {
 				setState({ variant: "initializing" });
 			}
@@ -292,13 +330,14 @@ function InProgressRecordingInner() {
 			setRecordingFailure(null);
 			setDegradedReason(null);
 			setPauseResumes([]);
-			setState({ variant: "recording" });
+			aborted = false;
 			setStart(Date.now());
 			setTime(Date.now());
+			setState({ variant: "recording" });
 			return;
 		}
 		if (s.variant === "initializing" && !recording) {
-			setState({ variant: "stopped" });
+			markStopped();
 			void getCurrentWindow().hide();
 		}
 	});
@@ -418,7 +457,7 @@ function InProgressRecordingInner() {
 		mutationFn: async () => {
 			setStopRequested(true);
 			await commands.stopRecording();
-			setState({ variant: "stopped" });
+			markStopped();
 			void getCurrentWindow().hide();
 		},
 		onError: () => {
@@ -470,7 +509,7 @@ function InProgressRecordingInner() {
 			if (!shouldDelete) return;
 
 			setTeardownInFlight(true);
-			setState({ variant: "stopped" });
+			markStopped();
 			void getCurrentWindow().hide();
 			try {
 				await commands.deleteRecording();
@@ -657,6 +696,11 @@ function InProgressRecordingInner() {
 
 	let aborted = false;
 	createEffect(() => {
+		// Only a live session may trip the limit; in the other variants
+		// `time`/`start` are leftovers from a previous recording in this
+		// reused window and must never trigger a stop.
+		const variant = state().variant;
+		if (variant !== "recording" && variant !== "paused") return;
 		if (
 			isMaxRecordingLimitEnabled() &&
 			adjustedTime() > MAX_RECORDING_FOR_FREE &&
@@ -675,7 +719,7 @@ function InProgressRecordingInner() {
 	const isInitializing = () => state().variant === "initializing";
 	const closeStartingBar = async () => {
 		setStartingDismissed(true);
-		setState({ variant: "stopped" });
+		markStopped();
 		await getCurrentWindow().hide();
 	};
 	const isCountdown = () => state().variant === "countdown";
