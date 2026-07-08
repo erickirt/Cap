@@ -118,6 +118,10 @@ function InProgressRecordingInner() {
 	const [startingDismissed, setStartingDismissed] = createSignal(false);
 	const [stopRequested, setStopRequested] = createSignal(false);
 	const [teardownInFlight, setTeardownInFlight] = createSignal(false);
+	// Mirrors the backend's recording-scoped mic mute. The backend flag lives
+	// on the per-recording microphone lock, so every new recording starts
+	// unmuted — this signal must be reset wherever a new session begins.
+	const [micMuted, setMicMuted] = createSignal(false);
 	const [interactiveAreaRef, setInteractiveAreaRef] =
 		createSignal<HTMLDivElement | null>(null);
 	let settingsButtonRef: HTMLButtonElement | undefined;
@@ -202,6 +206,7 @@ function InProgressRecordingInner() {
 				setDegradedReason(null);
 				setPauseResumes([]);
 				setStopRequested(false);
+				setMicMuted(false);
 				setState({
 					variant: "countdown",
 					from: payload.value,
@@ -216,6 +221,7 @@ function InProgressRecordingInner() {
 				setDegradedReason(null);
 				setPauseResumes([]);
 				setStopRequested(false);
+				setMicMuted(false);
 				aborted = false;
 				// This window is reused across recordings, so `start`/`time` still
 				// hold the previous session's values here. Effects (the free-plan
@@ -311,6 +317,7 @@ function InProgressRecordingInner() {
 			setDegradedReason(null);
 			setPauseResumes([]);
 			setStopRequested(false);
+			setMicMuted(false);
 			aborted = false;
 			if (recording.status === "recording") {
 				setStart(Date.now());
@@ -330,6 +337,7 @@ function InProgressRecordingInner() {
 			setRecordingFailure(null);
 			setDegradedReason(null);
 			setPauseResumes([]);
+			setMicMuted(false);
 			aborted = false;
 			setStart(Date.now());
 			setTime(Date.now());
@@ -476,6 +484,31 @@ function InProgressRecordingInner() {
 				await commands.resumeRecording();
 			} else {
 				await commands.pauseRecording();
+			}
+		},
+	}));
+
+	// Muting zeroes the mic samples backend-side while the stream keeps its
+	// normal cadence, so the recording timeline is unaffected. Only exposed for
+	// instant mode: studio records the mic as an editable track, where muted
+	// spans would silently bake zeros into it.
+	const canToggleMicMute = createMemo(
+		() =>
+			recordingMode() === "instant" &&
+			optionsQuery.rawOptions.micName != null &&
+			!disconnectedInputs.microphone &&
+			(state().variant === "recording" || state().variant === "paused"),
+	);
+
+	const toggleMicMute = createMutation(() => ({
+		mutationFn: async () => {
+			const next = !micMuted();
+			setMicMuted(next);
+			try {
+				await commands.setMicRecordingMuted(next);
+			} catch (error) {
+				setMicMuted(!next);
+				throw error;
 			}
 		},
 	}));
@@ -845,13 +878,55 @@ function InProgressRecordingInner() {
 								</Show>
 
 								<div class="flex items-center gap-1">
-									<div
-										class="relative flex h-8 w-8 items-center justify-center"
-										title={microphoneTitle()}
+									<Show
+										when={canToggleMicMute()}
+										fallback={
+											<div
+												class="relative flex h-8 w-8 items-center justify-center"
+												title={microphoneTitle()}
+											>
+												{optionsQuery.rawOptions.micName != null ? (
+													disconnectedInputs.microphone ? (
+														<IconLucideMicOff class="size-5 text-amber-11" />
+													) : (
+														<>
+															<IconCapMicrophone class="size-5 text-gray-12" />
+															<div class="absolute bottom-1 left-1 right-1 h-0.5 overflow-hidden rounded-full bg-gray-10">
+																<div
+																	class="absolute inset-0 bg-blue-9 transition-transform duration-100"
+																	style={{
+																		transform: `translateX(-${
+																			(1 - audioLevel()) * 100
+																		}%)`,
+																	}}
+																/>
+															</div>
+														</>
+													)
+												) : (
+													<IconLucideMicOff
+														class="size-5 text-gray-7"
+														data-tauri-drag-region
+													/>
+												)}
+											</div>
+										}
 									>
-										{optionsQuery.rawOptions.micName != null ? (
-											disconnectedInputs.microphone ? (
-												<IconLucideMicOff class="size-5 text-amber-11" />
+										<button
+											type="button"
+											class="relative flex h-8 w-8 items-center justify-center rounded-lg transition-colors duration-100 hover:bg-gray-12/6 active:bg-gray-12/10 disabled:opacity-50 disabled:hover:bg-transparent dark:hover:bg-white/8 dark:active:bg-white/12"
+											disabled={toggleMicMute.isPending}
+											onClick={() => toggleMicMute.mutate()}
+											title={
+												micMuted() ? "Unmute microphone" : "Mute microphone"
+											}
+											aria-pressed={micMuted() ? "true" : "false"}
+											aria-label={
+												micMuted() ? "Unmute microphone" : "Mute microphone"
+											}
+										>
+											{micMuted() ? (
+												<IconLucideMicOff class="size-5 text-red-9" />
 											) : (
 												<>
 													<IconCapMicrophone class="size-5 text-gray-12" />
@@ -866,14 +941,9 @@ function InProgressRecordingInner() {
 														/>
 													</div>
 												</>
-											)
-										) : (
-											<IconLucideMicOff
-												class="size-5 text-gray-7"
-												data-tauri-drag-region
-											/>
-										)}
-									</div>
+											)}
+										</button>
+									</Show>
 									<Show when={hasCameraInput() && disconnectedInputs.camera}>
 										<div
 											class="flex h-8 w-8 items-center justify-center"
