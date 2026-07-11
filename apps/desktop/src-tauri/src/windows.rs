@@ -2884,8 +2884,8 @@ impl ShowCapWindow {
                     .build()?;
                 lock_window_text_scale(&window);
 
-                let _ =
-                    window.set_position(cursor_monitor.position(cursor_monitor.x, cursor_monitor.y));
+                let _ = window
+                    .set_position(cursor_monitor.position(cursor_monitor.x, cursor_monitor.y));
 
                 // The build-time inner_size above was interpreted with the DPI of
                 // whatever monitor the window materialized on; now that it sits on the
@@ -2899,8 +2899,8 @@ impl ShowCapWindow {
                     ));
                     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
 
-                    let expected_physical_width = (cursor_monitor.width * cursor_monitor.scale)
-                        .round();
+                    let expected_physical_width =
+                        (cursor_monitor.width * cursor_monitor.scale).round();
                     match window.inner_size() {
                         Ok(actual_physical_size)
                             if expected_physical_width != actual_physical_size.width as f64 =>

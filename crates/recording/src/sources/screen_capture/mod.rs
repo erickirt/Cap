@@ -737,14 +737,26 @@ mod tests {
     fn full_selection_covers_full_display_at_every_scale() {
         // (logical_size, physical_size) pairs for 100/125/150/175/200% scaling.
         let scales = [
-            (LogicalSize::new(1920.0, 1080.0), PhysicalSize::new(1920.0, 1080.0)), // 100%
-            (LogicalSize::new(1536.0, 864.0), PhysicalSize::new(1920.0, 1080.0)),  // 125%
-            (LogicalSize::new(1280.0, 720.0), PhysicalSize::new(1920.0, 1080.0)),  // 150%
+            (
+                LogicalSize::new(1920.0, 1080.0),
+                PhysicalSize::new(1920.0, 1080.0),
+            ), // 100%
+            (
+                LogicalSize::new(1536.0, 864.0),
+                PhysicalSize::new(1920.0, 1080.0),
+            ), // 125%
+            (
+                LogicalSize::new(1280.0, 720.0),
+                PhysicalSize::new(1920.0, 1080.0),
+            ), // 150%
             (
                 LogicalSize::new(1097.142_857_142_857, 617.142_857_142_857),
                 PhysicalSize::new(1920.0, 1080.0),
             ), // 175%
-            (LogicalSize::new(1280.0, 720.0), PhysicalSize::new(2560.0, 1440.0)),  // 200%
+            (
+                LogicalSize::new(1280.0, 720.0),
+                PhysicalSize::new(2560.0, 1440.0),
+            ), // 200%
         ];
 
         for (logical, physical) in scales {
