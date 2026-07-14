@@ -305,6 +305,12 @@ async positionTrafficLights(controlsInset: [number, number] | null) : Promise<vo
 async setTheme(theme: AppTheme) : Promise<void> {
     await TAURI_INVOKE("set_theme", { theme });
 },
+async setTeleprompterWindowLevel(alwaysOnTop: boolean) : Promise<void> {
+    await TAURI_INVOKE("set_teleprompter_window_level", { alwaysOnTop });
+},
+async setTeleprompterWindowOpacity(opacity: number) : Promise<void> {
+    await TAURI_INVOKE("set_teleprompter_window_opacity", { opacity });
+},
 async applyMacosLiquidGlassBackground(enabled: boolean, radius: number) : Promise<boolean> {
     return await TAURI_INVOKE("apply_macos_liquid_glass_background", { enabled, radius });
 },

@@ -4911,6 +4911,8 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
             clip_thumbnails::get_clip_thumbnail,
             windows::position_traffic_lights,
             windows::set_theme,
+            windows::set_teleprompter_window_level,
+            windows::set_teleprompter_window_opacity,
             windows::apply_macos_liquid_glass_background,
             global_message_dialog,
             show_window,
