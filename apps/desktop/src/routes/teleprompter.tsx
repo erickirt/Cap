@@ -106,6 +106,8 @@ export default function Teleprompter() {
 	let playbackFrame = 0;
 	let playbackPosition = 0;
 	let playbackTimestamp: number | undefined;
+	let allowClose = false;
+	let closePending = false;
 
 	const hasScript = createMemo(() => state().script.trim().length > 0);
 	const wordCount = createMemo(() => countWords(state().script));
@@ -152,6 +154,27 @@ export default function Teleprompter() {
 		}
 	});
 
+	onMount(async () => {
+		const unlisten = await currentWindow.onCloseRequested(async (event) => {
+			if (allowClose) return;
+			event.preventDefault();
+			if (closePending) return;
+
+			closePending = true;
+			clearTimeout(saveTimer);
+			try {
+				if (isLoaded()) await teleprompterStore.set(state());
+			} catch (error) {
+				console.error("Failed to save teleprompter before closing:", error);
+			} finally {
+				allowClose = true;
+				await currentWindow.close();
+			}
+		});
+
+		onCleanup(() => unlisten());
+	});
+
 	createEffect(() => {
 		if (!isLoaded()) return;
 		const nextState = state();
@@ -171,6 +194,7 @@ export default function Teleprompter() {
 
 	onCleanup(() => {
 		clearTimeout(saveTimer);
+		if (isLoaded() && !allowClose) void teleprompterStore.set(state());
 		cancelAnimationFrame(playbackFrame);
 		resizeObserver?.disconnect();
 		unlistenTitlebar?.();
