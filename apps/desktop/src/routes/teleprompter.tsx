@@ -102,12 +102,14 @@ export default function Teleprompter() {
 	let editorElement: HTMLTextAreaElement | undefined;
 	let saveTimer: ReturnType<typeof setTimeout> | undefined;
 	let unlistenTitlebar: UnlistenFn | undefined;
+	let unlistenCloseRequested: UnlistenFn | undefined;
 	let resizeObserver: ResizeObserver | undefined;
 	let playbackFrame = 0;
 	let playbackPosition = 0;
 	let playbackTimestamp: number | undefined;
 	let allowClose = false;
 	let closePending = false;
+	let disposed = false;
 
 	const hasScript = createMemo(() => state().script.trim().length > 0);
 	const wordCount = createMemo(() => countWords(state().script));
@@ -154,25 +156,31 @@ export default function Teleprompter() {
 		}
 	});
 
-	onMount(async () => {
-		const unlisten = await currentWindow.onCloseRequested(async (event) => {
-			if (allowClose) return;
-			event.preventDefault();
-			if (closePending) return;
+	onMount(() => {
+		void currentWindow
+			.onCloseRequested(async (event) => {
+				if (allowClose) return;
+				event.preventDefault();
+				if (closePending) return;
 
-			closePending = true;
-			clearTimeout(saveTimer);
-			try {
-				if (isLoaded()) await teleprompterStore.set(state());
-			} catch (error) {
-				console.error("Failed to save teleprompter before closing:", error);
-			} finally {
-				allowClose = true;
-				await currentWindow.close();
-			}
-		});
-
-		onCleanup(() => unlisten());
+				closePending = true;
+				clearTimeout(saveTimer);
+				try {
+					if (isLoaded()) await teleprompterStore.set(state());
+				} catch (error) {
+					console.error("Failed to save teleprompter before closing:", error);
+				} finally {
+					allowClose = true;
+					await currentWindow.close();
+				}
+			})
+			.then((unlisten) => {
+				if (disposed) unlisten();
+				else unlistenCloseRequested = unlisten;
+			})
+			.catch((error) => {
+				console.error("Failed to register teleprompter close handler:", error);
+			});
 	});
 
 	createEffect(() => {
@@ -193,11 +201,13 @@ export default function Teleprompter() {
 	});
 
 	onCleanup(() => {
-		clearTimeout(saveTimer);
+		disposed = true;
 		if (isLoaded() && !allowClose) void teleprompterStore.set(state());
+		clearTimeout(saveTimer);
 		cancelAnimationFrame(playbackFrame);
 		resizeObserver?.disconnect();
 		unlistenTitlebar?.();
+		unlistenCloseRequested?.();
 	});
 
 	function resizeEditor() {
