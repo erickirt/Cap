@@ -15,7 +15,11 @@ import {
 import { Toggle } from "~/components/Toggle";
 import CaptionControlsMacOS from "~/components/titlebar/controls/CaptionControlsMacOS";
 import CaptionControlsWindows11 from "~/components/titlebar/controls/CaptionControlsWindows11";
-import { type TeleprompterStore, teleprompterStore } from "~/store";
+import {
+	type TeleprompterStore,
+	teleprompterDefaults,
+	teleprompterStore,
+} from "~/store";
 import { applyMacOSWindowMaterial } from "~/utils/macos-window-material";
 import { commands } from "~/utils/tauri";
 import { initializeTitlebar } from "~/utils/titlebar-state";
@@ -36,16 +40,6 @@ import {
 	clamp,
 	countWords,
 } from "./teleprompter-utils";
-
-const DEFAULT_STATE: TeleprompterStore = {
-	script: "",
-	fontSize: 30,
-	wordsPerMinute: 150,
-	lineHeight: 1.5,
-	showCueMarkers: true,
-	mirror: false,
-	windowOpacityPercent: 92,
-};
 
 function ToolButton(props: {
 	label: string;
@@ -99,7 +93,8 @@ export default function Teleprompter() {
 	const isMacOS = platform === "macos";
 	const isWindows = platform === "windows";
 	const isLinux = platform === "linux";
-	const [state, setState] = createSignal<TeleprompterStore>(DEFAULT_STATE);
+	const [state, setState] =
+		createSignal<TeleprompterStore>(teleprompterDefaults);
 	const [isLoaded, setIsLoaded] = createSignal(false);
 	const [isPlaying, setIsPlaying] = createSignal(false);
 	const [settingsOpen, setSettingsOpen] = createSignal(false);
@@ -142,7 +137,7 @@ export default function Teleprompter() {
 		void teleprompterStore
 			.get()
 			.then((saved) => {
-				if (saved) setState({ ...DEFAULT_STATE, ...saved });
+				if (saved) setState({ ...teleprompterDefaults, ...saved });
 				setIsLoaded(true);
 				requestAnimationFrame(resizeEditor);
 			})

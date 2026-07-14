@@ -20,6 +20,16 @@ export type TeleprompterStore = {
 	windowOpacityPercent: number;
 };
 
+export const teleprompterDefaults: TeleprompterStore = {
+	script: "",
+	fontSize: 30,
+	wordsPerMinute: 150,
+	lineHeight: 1.5,
+	showCueMarkers: true,
+	mirror: false,
+	windowOpacityPercent: 92,
+};
+
 export type UserProfileStore = {
 	userId: string | null;
 	profile: {
@@ -104,13 +114,5 @@ export const recordingSettingsStore = declareStore<RecordingSettingsStore>(
 );
 export const teleprompterStore = declareStore<TeleprompterStore>(
 	"teleprompter",
-	{
-		script: "",
-		fontSize: 30,
-		wordsPerMinute: 150,
-		lineHeight: 1.5,
-		showCueMarkers: true,
-		mirror: false,
-		windowOpacityPercent: 92,
-	},
+	teleprompterDefaults,
 );
