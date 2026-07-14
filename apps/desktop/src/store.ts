@@ -10,6 +10,16 @@ import type {
 	RecordingSettingsStore,
 } from "~/utils/tauri";
 
+export type TeleprompterStore = {
+	script: string;
+	fontSize: number;
+	wordsPerMinute: number;
+	lineHeight: number;
+	showCueMarkers: boolean;
+	mirror: boolean;
+	windowOpacityPercent: number;
+};
+
 export type UserProfileStore = {
 	userId: string | null;
 	profile: {
@@ -90,5 +100,17 @@ export const recordingSettingsStore = declareStore<RecordingSettingsStore>(
 		organizationId: null,
 		cameraDeviceSettings: {},
 		microphoneDeviceSettings: {},
+	},
+);
+export const teleprompterStore = declareStore<TeleprompterStore>(
+	"teleprompter",
+	{
+		script: "",
+		fontSize: 30,
+		wordsPerMinute: 150,
+		lineHeight: 1.5,
+		showCueMarkers: true,
+		mirror: false,
+		windowOpacityPercent: 92,
 	},
 );
