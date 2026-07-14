@@ -125,7 +125,6 @@ export default function Teleprompter() {
 			}),
 		])
 			.then(async () => {
-				await currentWindow.setAlwaysOnTop(true);
 				await commands.setTeleprompterWindowLevel(true);
 				await currentWindow.show();
 				await currentWindow.setFocus();

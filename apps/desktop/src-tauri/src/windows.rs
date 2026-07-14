@@ -3255,6 +3255,13 @@ pub fn set_teleprompter_window_level(_window: tauri::Window, _always_on_top: boo
         };
         crate::platform::set_window_level(_window, level);
     }
+
+    #[cfg(not(target_os = "macos"))]
+    if _window.label() == CapWindowId::Teleprompter.to_string()
+        && let Err(error) = _window.set_always_on_top(_always_on_top)
+    {
+        warn!(?error, "Failed to update teleprompter window level");
+    }
 }
 
 #[tauri::command]
