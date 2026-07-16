@@ -187,6 +187,8 @@ export function TranscriptPanel() {
 				project.timeline?.segments ?? [],
 				recordingSegments(),
 				project.timeline?.transitions ?? [],
+				undefined,
+				"incoming",
 			) ?? outputStart;
 		const end = start + defaultDuration;
 		const text = "New caption";
@@ -268,6 +270,8 @@ export function TranscriptPanel() {
 			project.timeline?.segments ?? [],
 			recordingSegments(),
 			project.timeline?.transitions ?? [],
+			undefined,
+			"incoming",
 		);
 		if (sourceTime === null) return -1;
 

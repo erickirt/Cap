@@ -1353,6 +1353,8 @@ export const [EditorContextProvider, useEditorContext] = createContextProvider(
 						timeline.segments,
 						captionRecordingSegments,
 						timeline.transitions ?? [],
+						undefined,
+						"incoming",
 					);
 				const inverted = segments.flatMap((segment) => {
 					const start = toSource(segment.start);

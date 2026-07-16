@@ -403,6 +403,7 @@ export function mapEditedTimeToSource(
 	recordingSegments: SegmentRecordings[],
 	transitions: ClipTransition[] = [],
 	sourceRange?: { start: number; end: number },
+	overlapPreference: "outgoing" | "incoming" = "outgoing",
 ): number | null {
 	const mappings = buildSourceToEditedMappings(
 		timelineSegments,
@@ -425,7 +426,9 @@ export function mapEditedTimeToSource(
 			) {
 				return sourceTime;
 			}
-			fallback = sourceTime;
+			if (fallback === null || overlapPreference === "incoming") {
+				fallback = sourceTime;
+			}
 		}
 	}
 	return fallback;
@@ -818,7 +821,7 @@ if (import.meta.vitest) {
 	});
 
 	describe("mapEditedTimeToSource", () => {
-		it("selects the incoming source by default and honors a caption source hint", () => {
+		it("selects overlap sources explicitly and honors a caption source hint", () => {
 			const segments: TimelineSegment[] = [
 				{ start: 4, end: 6, timescale: 1, recordingSegment: 0 },
 				{ start: 0, end: 2, timescale: 1, recordingSegment: 1 },
@@ -833,6 +836,16 @@ if (import.meta.vitest) {
 
 			expect(
 				mapEditedTimeToSource(1.75, segments, recordings, transitions),
+			).toBeCloseTo(5.75);
+			expect(
+				mapEditedTimeToSource(
+					1.75,
+					segments,
+					recordings,
+					transitions,
+					undefined,
+					"incoming",
+				),
 			).toBeCloseTo(10.25);
 			expect(
 				mapEditedTimeToSource(1.75, segments, recordings, transitions, {
