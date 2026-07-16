@@ -5,6 +5,7 @@ import { type User, Video } from "@cap/web-domain";
 import {
 	and,
 	asc,
+	desc,
 	eq,
 	inArray,
 	isNull,
@@ -25,6 +26,7 @@ import {
 } from "@/lib/desktop-segments-recovery-marker";
 import { runPromise } from "@/lib/server";
 import { decodeStorageVideo } from "@/lib/video-storage";
+import { WORKFLOW_UPGRADE_ERROR_FRAGMENT } from "@/lib/workflow-recovery";
 
 const MINUTE = 60 * 1000;
 
@@ -418,7 +420,12 @@ export async function recoverStaleDesktopSegments({
 				),
 			),
 		)
-		.orderBy(asc(videoUploads.updatedAt))
+		.orderBy(
+			desc(
+				sql<number>`CASE WHEN ${videoUploads.processingError} LIKE ${`%${WORKFLOW_UPGRADE_ERROR_FRAGMENT}%`} THEN 1 ELSE 0 END`,
+			),
+			asc(videoUploads.updatedAt),
+		)
 		.limit(limit);
 
 	const summary: StaleDesktopSegmentsRecoverySummary = {
