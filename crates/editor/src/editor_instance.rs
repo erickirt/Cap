@@ -778,13 +778,13 @@ impl EditorInstance {
                                                 prefetch_frame as f64 / fps as f64,
                                             )
                                         else {
-                                            break;
+                                            continue;
                                         };
                                         let Some(prefetch_segment_media) = this
                                             .segment_medias
                                             .get(prefetch_segment.recording_clip as usize)
                                         else {
-                                            break;
+                                            continue;
                                         };
                                         let prefetch_clip_offsets = project
                                             .clips
