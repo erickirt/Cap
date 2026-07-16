@@ -531,8 +531,7 @@ fn evaluate_display_stretch(inputs: &DisplayStretchInputs) -> Option<StretchDeci
     }
 
     let ratio = inputs.display_secs / expected_span_secs;
-    if ratio < DISPLAY_MIN_STRETCH_RATIO
-        || ratio > DISPLAY_MAX_STRETCH_RATIO
+    if !(DISPLAY_MIN_STRETCH_RATIO..=DISPLAY_MAX_STRETCH_RATIO).contains(&ratio)
         || inputs.display_secs - expected_span_secs < DISPLAY_MIN_STRETCH_SECS
     {
         return None;
@@ -1043,6 +1042,7 @@ mod tests {
                 end: 202.220711,
                 name: None,
             }],
+            transitions: Vec::new(),
             zoom_segments: vec![ZoomSegment {
                 start: 100.0,
                 end: 150.0,
@@ -1099,6 +1099,7 @@ mod tests {
                     name: None,
                 },
             ],
+            transitions: Vec::new(),
             zoom_segments: vec![ZoomSegment {
                 start: 10.0,
                 end: 20.0,
