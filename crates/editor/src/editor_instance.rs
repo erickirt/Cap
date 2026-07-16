@@ -752,7 +752,7 @@ impl EditorInstance {
                             }
 
                             if rendered
-                                && !preview_rx.has_changed().unwrap_or(false)
+                                && !preview_rx.has_changed().unwrap_or(true)
                                 && !*self.playback_active_rx.borrow()
                                 && !self.export_preview_active.load(Ordering::Acquire)
                                 && !self.export_active.load(Ordering::Acquire)
