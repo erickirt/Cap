@@ -428,6 +428,7 @@ impl AudioRenderer {
         out: &mut [f32],
     ) -> usize {
         if source.segment.timescale != 1.0 {
+            // Keep the inherited silent behavior until per-segment retiming can supply this chunk.
             return 0;
         }
         let cursor = source_cursor(source, self.playhead_to_samples(source.source_time));
