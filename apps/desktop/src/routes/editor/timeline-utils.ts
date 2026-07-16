@@ -1,3 +1,11 @@
+import {
+	type ClipTransition,
+	clipTimelineDuration,
+	clipTimelineOffsets,
+	transitionsAfterClipDelete,
+	transitionsAfterClipSplit,
+} from "./clip-transitions";
+
 export function shiftTimeAfterCut(
 	time: number,
 	cutStart: number,
@@ -253,11 +261,3 @@ if (import.meta.vitest) {
 		]);
 	});
 }
-
-import {
-	type ClipTransition,
-	clipTimelineDuration,
-	clipTimelineOffsets,
-	transitionsAfterClipDelete,
-	transitionsAfterClipSplit,
-} from "./clip-transitions";
