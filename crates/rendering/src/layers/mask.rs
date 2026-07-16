@@ -3,6 +3,9 @@ use wgpu::util::DeviceExt;
 
 use crate::{PreparedMask, RenderSession};
 
+const BLUR_HORIZONTAL_MODE: u32 = 2;
+const BLUR_VERTICAL_MODE: u32 = 3;
+
 pub struct MaskLayer {
     sampler: wgpu::Sampler,
     pipeline: MaskPipeline,
@@ -49,7 +52,7 @@ impl MaskLayer {
                     target_texture_view: session.other_texture_view(),
                     render_pipeline: &self.pipeline.render_pipeline,
                     load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    uniforms: MaskUniforms::from_mask_with_mode(mask, 2),
+                    uniforms: MaskUniforms::from_mask_with_mode(mask, BLUR_HORIZONTAL_MODE),
                 },
             );
             self.render_pass(
@@ -60,7 +63,7 @@ impl MaskLayer {
                     target_texture_view: session.current_texture_view(),
                     render_pipeline: &self.pipeline.blur_composite_pipeline,
                     load: wgpu::LoadOp::Load,
-                    uniforms: MaskUniforms::from_mask_with_mode(mask, 3),
+                    uniforms: MaskUniforms::from_mask_with_mode(mask, BLUR_VERTICAL_MODE),
                 },
             );
         } else {

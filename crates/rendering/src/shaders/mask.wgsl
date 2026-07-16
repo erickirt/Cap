@@ -15,6 +15,11 @@ struct Uniforms {
 @group(0) @binding(1) var source_texture: texture_2d<f32>;
 @group(0) @binding(2) var source_sampler: sampler;
 
+const MODE_PIXELATE: u32 = 0u;
+const MODE_HIGHLIGHT: u32 = 1u;
+const MODE_BLUR_HORIZONTAL: u32 = 2u;
+const MODE_BLUR_VERTICAL: u32 = 3u;
+
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -93,13 +98,13 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     let base = textureSample(source_texture, source_sampler, uv);
     let mask = rect_mask(uv);
 
-    if uniforms.mode == 0u {
+    if uniforms.mode == MODE_PIXELATE {
         let pixelated = pixelate_sample(uv);
         let effect = vec4<f32>(pixelated.rgb, base.a);
         return mix(base, effect, mask);
     }
 
-    if uniforms.mode == 2u {
+    if uniforms.mode == MODE_BLUR_HORIZONTAL {
         if !horizontal_blur_support(uv) {
             return base;
         }
@@ -107,7 +112,7 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
         return vec4<f32>(blurred.rgb, base.a);
     }
 
-    if uniforms.mode == 3u {
+    if uniforms.mode == MODE_BLUR_VERTICAL {
         if mask <= 0.0 {
             discard;
         }
@@ -115,7 +120,11 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
         return vec4<f32>(blurred.rgb, mask);
     }
 
-    let darkness = clamp(uniforms.darkness * uniforms.opacity, 0.0, 1.0);
-    let outside = vec4<f32>(base.rgb * (1.0 - darkness), base.a);
-    return mix(outside, base, mask);
+    if uniforms.mode == MODE_HIGHLIGHT {
+        let darkness = clamp(uniforms.darkness * uniforms.opacity, 0.0, 1.0);
+        let outside = vec4<f32>(base.rgb * (1.0 - darkness), base.a);
+        return mix(outside, base, mask);
+    }
+
+    return base;
 }
