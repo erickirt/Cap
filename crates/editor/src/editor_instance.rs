@@ -794,15 +794,16 @@ impl EditorInstance {
                                             })
                                             .map(|v| v.offsets)
                                             .unwrap_or_default();
-                                        prefetch_segment_media
-                                            .decoders
-                                            .get_frames(
+                                        tokio::select! {
+                                            biased;
+                                            _ = cancel_token.cancelled() => break,
+                                            _ = prefetch_segment_media.decoders.get_frames(
                                                 prefetch_segment_time as f32,
                                                 !project.camera.hide,
                                                 true,
                                                 prefetch_clip_offsets,
-                                            )
-                                            .await;
+                                            ) => {}
+                                        }
 
                                         if cancel_token.is_cancelled() {
                                             break;
