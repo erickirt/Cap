@@ -19,7 +19,6 @@ import {
 	PhysicalPosition,
 } from "@tauri-apps/api/window";
 import * as dialog from "@tauri-apps/plugin-dialog";
-import { stat } from "@tauri-apps/plugin-fs";
 import { relaunch } from "@tauri-apps/plugin-process";
 import * as shell from "@tauri-apps/plugin-shell";
 import { cx } from "cva";
@@ -2218,15 +2217,10 @@ function Page() {
 					.slice(0, RECENT_MEDIA_LIMIT)
 					.map((target) => ({ kind: "screenshot" as const, target })),
 			];
-			const datedCandidates = await Promise.all(
-				candidates.map(async (candidate) => {
-					const fileInfo = await stat(candidate.target.path).catch(() => null);
-					return {
-						candidate,
-						createdAt: (fileInfo?.birthtime ?? fileInfo?.mtime)?.getTime() ?? 0,
-					};
-				}),
-			);
+			const datedCandidates = candidates.map((candidate) => ({
+				candidate,
+				createdAt: candidate.target.sort_time_millis,
+			}));
 
 			return datedCandidates
 				.sort((a, b) => b.createdAt - a.createdAt)
