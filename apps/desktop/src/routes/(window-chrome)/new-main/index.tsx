@@ -1814,6 +1814,26 @@ function Page() {
 	const compatibilityStudioMode = () =>
 		rawOptions.mode === "studio" &&
 		generalSettings.data?.studioRecordingQuality === "compatibility";
+
+	const toggleMainWindowExpanded = async () => {
+		if (isWindowResizing()) return;
+		const previousExpanded = isExpanded();
+		const expanded = !previousExpanded;
+		setIsWindowResizing(true);
+		if (!expanded) setIsExpanded(false);
+		try {
+			await resizeMainWindow(expanded, true);
+			if (expanded) setIsExpanded(true);
+			void mainWindowUIStore.set({ expanded }).catch((error) => {
+				console.error("Failed to save main window size:", error);
+			});
+		} catch (error) {
+			setIsExpanded(previousExpanded);
+			console.error("Failed to resize main window:", error);
+		} finally {
+			setIsWindowResizing(false);
+		}
+	};
 	let cancelScheduledTargetListPrewarm: (() => void) | undefined;
 	onCleanup(() => cancelScheduledTargetListPrewarm?.());
 
@@ -2091,25 +2111,6 @@ function Page() {
 		}
 	});
 
-	const refetchRecordingsUnlessEditorRecording = () => {
-		if (rawOptions.targetModeSource !== "editorRecording") {
-			void recordings.refetch();
-		}
-	};
-
-	createTauriEventListener(events.recordingDeleted, () => recordings.refetch());
-	createTauriEventListener(events.recordingsMigrationProgress, (payload) => {
-		// Storage-folder migration finished: moved recordings changed paths.
-		if (payload.done === payload.total) void recordings.refetch();
-	});
-	createTauriEventListener(
-		events.recordingStarted,
-		refetchRecordingsUnlessEditorRecording,
-	);
-	createTauriEventListener(
-		events.recordingStopped,
-		refetchRecordingsUnlessEditorRecording,
-	);
 	// Start failures happen before the in-progress window exists, and the picker
 	// overlay that invoked start_recording may already be dismissed — this window
 	// is the only reliable surface for telling the user why nothing started. The
@@ -2472,7 +2473,7 @@ function Page() {
 
 		setCanRevealMainWindow(true);
 		void emit("main-window-ready");
-		scheduleTargetListPrewarm();
+		if (!targetMode) scheduleTargetListPrewarm();
 
 		if (rawOptions.micName) {
 			setMicInput
@@ -2969,7 +2970,10 @@ function Page() {
 			onMouseEnter={handleMouseEnter}
 			class="flex relative flex-col px-[13px] gap-2 pb-[8px] h-full min-h-0 text-(--text-primary)"
 		>
-			<WindowChromeHeader hideMaximize>
+			<WindowChromeHeader
+				maximized={isExpanded()}
+				onMaximize={() => void toggleMainWindowExpanded()}
+			>
 				<div
 					class="flex flex-1 gap-1 items-center mx-2 min-w-0"
 					data-tauri-drag-region
@@ -2977,6 +2981,27 @@ function Page() {
 					<MainWindowHelpButton />
 					<div class="flex-1 min-h-9 min-w-0" data-tauri-drag-region />
 					<div class="flex gap-1 items-center shrink-0" data-tauri-drag-region>
+						<Tooltip
+							content={<span>{isExpanded() ? "Collapse" : "Expand"}</span>}
+						>
+							<button
+								type="button"
+								disabled={isWindowResizing()}
+								onClick={() => void toggleMainWindowExpanded()}
+								aria-label={isExpanded() ? "Collapse window" : "Expand window"}
+								aria-pressed={isExpanded()}
+								class="flex items-center justify-center size-5 focus:outline-hidden disabled:opacity-50"
+							>
+								<Show
+									when={isExpanded()}
+									fallback={
+										<IconLucideMaximize2 class="transition-colors text-gray-11 size-3.5 hover:text-gray-12" />
+									}
+								>
+									<IconLucideMinimize2 class="transition-colors text-gray-11 size-3.5 hover:text-gray-12" />
+								</Show>
+							</button>
+						</Tooltip>
 						<Tooltip content={<span>Settings</span>}>
 							<button
 								type="button"
