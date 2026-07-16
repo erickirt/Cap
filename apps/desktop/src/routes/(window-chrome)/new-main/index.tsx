@@ -3276,33 +3276,7 @@ function Page() {
 									errorMessage={
 										recordings.error ? "Failed to load recordings" : undefined
 									}
-									onSelect={async (recording) => {
-										if (recording.mode === "studio") {
-											let projectPath = recording.path;
-
-											const needsRecovery =
-												recording.status.status === "InProgress" ||
-												recording.status.status === "NeedsRemux";
-
-											if (needsRecovery) {
-												try {
-													projectPath =
-														await commands.recoverRecording(projectPath);
-												} catch (e) {
-													console.error("Failed to recover recording:", e);
-												}
-											}
-
-											await commands.showWindow({
-												Editor: { project_path: projectPath },
-											});
-										} else {
-											if (recording.sharing?.link) {
-												await shell.open(recording.sharing.link);
-											}
-										}
-										getCurrentWindow().hide();
-									}}
+									onSelect={openRecording}
 									disabled={isRecording()}
 									onBack={() => {
 										setRecordingsMenuOpen(false);
@@ -3316,7 +3290,7 @@ function Page() {
 									uploadProgress={uploadProgress}
 									reuploadingPaths={reuploadingPaths()}
 									onReupload={handleReupload}
-									onRefetch={() => recordings.refetch()}
+									onRefetch={refreshRecordings}
 								/>
 							) : variant === "screenshot" ? (
 								<TargetMenuPanel
@@ -3326,13 +3300,7 @@ function Page() {
 									errorMessage={
 										screenshots.error ? "Failed to load screenshots" : undefined
 									}
-									onSelect={async (screenshot) => {
-										await commands.showWindow({
-											ScreenshotEditor: {
-												path: screenshot.path,
-											},
-										});
-									}}
+									onSelect={openScreenshot}
 									disabled={isRecording()}
 									onBack={() => {
 										setScreenshotsMenuOpen(false);
