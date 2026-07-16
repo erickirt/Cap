@@ -2443,10 +2443,15 @@ function Page() {
 		};
 		const targetMode = __CAP__?.initialTargetMode ?? null;
 		const currentWindow = getCurrentWindow();
-
-		currentWindow.setSize(
-			new LogicalSize(WINDOW_SIZE.width, WINDOW_SIZE.height),
-		);
+		const storedWindowUI = await mainWindowUIStore.get().catch((error) => {
+			console.error("Failed to load main window size:", error);
+			return undefined;
+		});
+		const expanded = storedWindowUI?.expanded ?? false;
+		setIsExpanded(expanded);
+		await resizeMainWindow(expanded, false).catch((error) => {
+			console.error("Failed to restore main window size:", error);
+		});
 
 		if (targetMode) {
 			await commands.openTargetSelectOverlays(null, null, targetMode);
@@ -2868,20 +2873,25 @@ function Page() {
 						</div>
 						<div
 							class={cx(
-								"flex flex-1 overflow-hidden rounded-lg border border-gray-5 bg-gray-3 ring-1 ring-transparent ring-offset-2 ring-offset-gray-1 transition focus-within:ring-blue-9 focus-within:ring-offset-2 focus-within:ring-offset-gray-1",
-								(rawOptions.targetMode === "window" || windowMenuOpen()) &&
-									"ring-blue-9",
+								"flex flex-1 overflow-hidden rounded-lg border border-gray-6 bg-gray-2 ring-1 ring-transparent ring-offset-1 ring-offset-gray-1 transition-[background-color,border-color] focus-within:ring-blue-9 focus-within:ring-offset-1 focus-within:ring-offset-gray-1",
+								rawOptions.targetMode === "window" || windowMenuOpen()
+									? "border-blue-8 bg-blue-3 ring-blue-8 hover:border-blue-9 hover:bg-blue-4 dark:bg-blue-3/30 dark:hover:bg-blue-4/40"
+									: "hover:border-gray-8 hover:bg-gray-3",
 							)}
 						>
 							<TargetTypeButton
 								selected={rawOptions.targetMode === "window"}
 								Component={IconLucideAppWindowMac}
 								disabled={isRecording()}
+								description={isExpanded() ? "One app" : undefined}
 								onClick={() => {
 									toggleTargetMode("window");
 								}}
 								name="Window"
-								class="flex-1 rounded-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 pl-5"
+								class={cx(
+									"flex-1 rounded-none border-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0",
+									isExpanded() ? "pl-3" : "pl-5",
+								)}
 							/>
 							<TargetDropdownButton
 								class={cx(
@@ -2910,6 +2920,7 @@ function Page() {
 							selected={rawOptions.targetMode === "area"}
 							Component={IconMaterialSymbolsScreenshotFrame2Rounded}
 							disabled={isRecording()}
+							description={isExpanded() ? "Custom region" : undefined}
 							onClick={() => {
 								toggleTargetMode("area");
 							}}
