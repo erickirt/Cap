@@ -1,19 +1,40 @@
 import type {
 	PersistenceSyncAPI,
+	PersistenceSyncCallback,
 	PersistenceSyncData,
 } from "@solid-primitives/storage";
 import type { CropBounds, Ratio } from "~/components/Cropper";
 import type { DisplayId } from "~/utils/tauri";
 
 export const AREA_SELECTION_STORAGE_KEY = "target-select-area-preferences-v1";
-export const AREA_SELECTION_STORAGE_SYNC: PersistenceSyncAPI = [
-	(subscriber) =>
-		window.addEventListener("storage", (event) => {
-			const data = areaSelectionSyncData(event);
-			if (data) subscriber(data);
-		}),
-	() => {},
-];
+export const AREA_SELECTION_STORAGE_SYNC = createAreaSelectionStorageSync(
+	(listener) => window.addEventListener("storage", listener),
+);
+
+export function createAreaSelectionStorageSync(
+	subscribeToStorage: (
+		listener: (
+			event: Pick<StorageEvent, "key" | "newValue" | "timeStamp">,
+		) => void,
+	) => void,
+): PersistenceSyncAPI {
+	let activeSubscriber: PersistenceSyncCallback | undefined;
+	let subscribed = false;
+
+	return [
+		(subscriber) => {
+			activeSubscriber = subscriber;
+			if (subscribed) return;
+
+			subscribeToStorage((event) => {
+				const data = areaSelectionSyncData(event);
+				if (data) activeSubscriber?.(data);
+			});
+			subscribed = true;
+		},
+		() => {},
+	];
+}
 
 export function areaSelectionSyncData(
 	event: Pick<StorageEvent, "key" | "newValue" | "timeStamp">,

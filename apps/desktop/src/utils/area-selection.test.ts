@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	areaSelectionSyncData,
+	createAreaSelectionStorageSync,
 	createDefaultAreaSelectionPreferences,
 	cropBoundsEqual,
 	getLockedAreaBounds,
@@ -80,6 +81,34 @@ describe("area selection comparisons", () => {
 });
 
 describe("area selection storage sync", () => {
+	it("keeps one listener and replaces the active subscriber", () => {
+		let listener:
+			| ((event: {
+					key: string | null;
+					newValue: string | null;
+					timeStamp: number;
+			  }) => void)
+			| undefined;
+		const subscribeToStorage = vi.fn((nextListener) => {
+			listener = nextListener;
+		});
+		const sync = createAreaSelectionStorageSync(subscribeToStorage);
+		const firstSubscriber = vi.fn();
+		const secondSubscriber = vi.fn();
+
+		sync[0](firstSubscriber);
+		sync[0](secondSubscriber);
+		listener?.({ key: "selection", newValue: "{}", timeStamp: 42 });
+
+		expect(subscribeToStorage).toHaveBeenCalledTimes(1);
+		expect(firstSubscriber).not.toHaveBeenCalled();
+		expect(secondSubscriber).toHaveBeenCalledWith({
+			key: "selection",
+			newValue: "{}",
+			timeStamp: 42,
+		});
+	});
+
 	it("forwards updates without tying them to one overlay URL", () => {
 		expect(
 			areaSelectionSyncData({
