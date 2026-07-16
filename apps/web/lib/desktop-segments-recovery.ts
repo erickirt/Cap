@@ -29,6 +29,7 @@ import { decodeStorageVideo } from "@/lib/video-storage";
 import { WORKFLOW_UPGRADE_ERROR_FRAGMENT } from "@/lib/workflow-recovery";
 
 const MINUTE = 60 * 1000;
+const DAY = 24 * 60 * MINUTE;
 
 export const DESKTOP_SEGMENTS_RECOVERY_MIN_AGE_MS = 60 * MINUTE;
 export const DESKTOP_SEGMENTS_RECOVERY_STABILITY_MS = 15 * MINUTE;
@@ -398,6 +399,7 @@ export async function recoverStaleDesktopSegments({
 	const staleBefore = new Date(
 		now.getTime() - DESKTOP_SEGMENTS_RECOVERY_MIN_AGE_MS,
 	);
+	const priorityWindowStart = new Date(now.getTime() - DAY);
 	const candidates = await db()
 		.select({
 			videoId: videos.id,
@@ -423,6 +425,9 @@ export async function recoverStaleDesktopSegments({
 		.orderBy(
 			desc(
 				sql<number>`CASE WHEN ${videoUploads.processingError} LIKE ${`%${WORKFLOW_UPGRADE_ERROR_FRAGMENT}%`} THEN 1 ELSE 0 END`,
+			),
+			desc(
+				sql<number>`CASE WHEN ${videoUploads.startedAt} >= ${priorityWindowStart} THEN 1 ELSE 0 END`,
 			),
 			asc(videoUploads.updatedAt),
 		)
