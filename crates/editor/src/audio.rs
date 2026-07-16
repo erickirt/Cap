@@ -739,7 +739,7 @@ impl SpeedAudioProcessor {
         graph
             .output("in", 0)?
             .input("out", 0)?
-            .parse(&speed_audio_filter(key.mode, timescale))?;
+            .parse(&speed_audio_filter(key.mode, timescale)?)?;
         graph.validate()?;
 
         let requested_source_sample = requested_source_sample.clamp(
@@ -862,9 +862,9 @@ impl SpeedAudioProcessor {
     }
 }
 
-fn speed_audio_filter(mode: ClipSpeedAudioMode, timescale: f64) -> String {
+fn speed_audio_filter(mode: ClipSpeedAudioMode, timescale: f64) -> Result<String, ffmpeg::Error> {
     let retiming = match mode {
-        ClipSpeedAudioMode::Mute => "anull".to_string(),
+        ClipSpeedAudioMode::Mute => return Err(ffmpeg::Error::InvalidData),
         ClipSpeedAudioMode::MaintainPitch => {
             let mut remaining = timescale;
             let mut filters = Vec::new();
@@ -876,7 +876,7 @@ fn speed_audio_filter(mode: ClipSpeedAudioMode, timescale: f64) -> String {
                 filters.push("atempo=2.0".to_string());
                 remaining /= 2.0;
             }
-            if (remaining - 1.0).abs() > f64::EPSILON || filters.is_empty() {
+            if (remaining - 1.0).abs() > 1e-9 || filters.is_empty() {
                 filters.push(format!("atempo={remaining:.10}"));
             }
             filters.join(",")
@@ -887,12 +887,12 @@ fn speed_audio_filter(mode: ClipSpeedAudioMode, timescale: f64) -> String {
         }
     };
 
-    format!(
+    Ok(format!(
         "{retiming},aformat=sample_fmts={}:sample_rates={}:channel_layouts=0x{:x}",
         AudioRenderer::SAMPLE_FORMAT.name(),
         AudioRenderer::SAMPLE_RATE,
         ChannelLayout::STEREO.bits(),
-    )
+    ))
 }
 
 fn mix_transition_audio(
@@ -2105,6 +2105,14 @@ mod tests {
                 assert!(mean_abs(&seek_samples) > 0.1);
             }
         }
+    }
+
+    #[test]
+    fn speed_audio_filter_rejects_mute_and_omits_near_unit_stage() {
+        assert!(speed_audio_filter(ClipSpeedAudioMode::Mute, 2.0).is_err());
+
+        let filter = speed_audio_filter(ClipSpeedAudioMode::MaintainPitch, 4.0 + 1e-10).unwrap();
+        assert_eq!(filter.matches("atempo=").count(), 2);
     }
 
     #[test]
