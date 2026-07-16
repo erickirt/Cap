@@ -3,7 +3,7 @@ struct Uniforms {
     rect_size: vec2<f32>,
     feather: f32,
     opacity: f32,
-    pixel_size: f32,
+    effect_size: f32,
     darkness: f32,
     mode: u32,
     padding0: u32,
@@ -47,10 +47,38 @@ fn rect_mask(uv: vec2<f32>) -> f32 {
 }
 
 fn pixelate_sample(uv: vec2<f32>) -> vec4<f32> {
-    let px_size = max(uniforms.pixel_size, 1.0);
+    let px_size = max(uniforms.effect_size, 1.0);
     let cell = px_size / uniforms.output_size;
     let snapped = floor(uv / cell) * cell + cell * 0.5;
-    return textureSample(source_texture, source_sampler, snapped);
+    let texture_size = textureDimensions(source_texture);
+    let max_coord = vec2<i32>(texture_size) - vec2<i32>(1);
+    let coord = clamp(
+        vec2<i32>(snapped * vec2<f32>(texture_size)),
+        vec2<i32>(0),
+        max_coord,
+    );
+    return textureLoad(source_texture, coord, 0);
+}
+
+fn blur_sample(uv: vec2<f32>, direction: vec2<f32>) -> vec4<f32> {
+    let radius = max(uniforms.effect_size, 1.0);
+    let sample_step = direction * radius / (uniforms.output_size * 12.0);
+    var color = vec4<f32>(0.0);
+    var weight_sum = 0.0;
+
+    for (var index = -12; index <= 12; index++) {
+        let distance = f32(index) / 4.0;
+        let weight = exp(-0.5 * distance * distance);
+        color += textureSampleLevel(
+            source_texture,
+            source_sampler,
+            uv + f32(index) * sample_step,
+            0.0,
+        ) * weight;
+        weight_sum += weight;
+    }
+
+    return color / weight_sum;
 }
 
 @fragment
@@ -60,9 +88,26 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
 
     if uniforms.mode == 0u {
         let pixelated = pixelate_sample(uv);
-        let mix_amount = clamp(uniforms.opacity, 0.0, 1.0);
-        let effect = mix(base, pixelated, mix_amount);
-        return mix(base, effect, mask * mix_amount);
+        let effect = vec4<f32>(pixelated.rgb, base.a);
+        return mix(base, effect, mask);
+    }
+
+    if uniforms.mode == 2u {
+        if mask <= 0.0 {
+            return base;
+        }
+        let blurred = blur_sample(uv, vec2<f32>(1.0, 0.0));
+        let effect = vec4<f32>(blurred.rgb, base.a);
+        return mix(base, effect, mask);
+    }
+
+    if uniforms.mode == 3u {
+        if mask <= 0.0 {
+            return base;
+        }
+        let blurred = blur_sample(uv, vec2<f32>(0.0, 1.0));
+        let effect = vec4<f32>(blurred.rgb, base.a);
+        return mix(base, effect, mask);
     }
 
     let darkness = clamp(uniforms.darkness * uniforms.opacity, 0.0, 1.0);

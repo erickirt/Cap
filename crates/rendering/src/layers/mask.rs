@@ -15,8 +15,8 @@ impl MaskLayer {
                 address_mode_u: wgpu::AddressMode::ClampToEdge,
                 address_mode_v: wgpu::AddressMode::ClampToEdge,
                 address_mode_w: wgpu::AddressMode::ClampToEdge,
-                mag_filter: wgpu::FilterMode::Nearest,
-                min_filter: wgpu::FilterMode::Nearest,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
                 mipmap_filter: wgpu::FilterMode::Nearest,
                 ..Default::default()
             }),
@@ -32,7 +32,34 @@ impl MaskLayer {
         encoder: &mut wgpu::CommandEncoder,
         mask: &PreparedMask,
     ) {
-        let uniforms = MaskUniforms::from_mask(mask);
+        if mask.mode == crate::MaskRenderMode::Blur {
+            self.render_pass(
+                device,
+                session,
+                encoder,
+                MaskUniforms::from_mask_with_mode(mask, 2),
+            );
+            session.swap_textures();
+            self.render_pass(
+                device,
+                session,
+                encoder,
+                MaskUniforms::from_mask_with_mode(mask, 3),
+            );
+            session.swap_textures();
+        } else {
+            self.render_pass(device, session, encoder, MaskUniforms::from_mask(mask));
+            session.swap_textures();
+        }
+    }
+
+    fn render_pass(
+        &self,
+        device: &wgpu::Device,
+        session: &RenderSession,
+        encoder: &mut wgpu::CommandEncoder,
+        uniforms: MaskUniforms,
+    ) {
         let uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Mask Uniform Buffer"),
             contents: bytemuck::cast_slice(&[uniforms]),
@@ -66,7 +93,6 @@ impl MaskLayer {
         pass.draw(0..3, 0..1);
 
         drop(pass);
-        session.swap_textures();
     }
 }
 
@@ -77,7 +103,7 @@ struct MaskUniforms {
     rect_size: [f32; 2],
     feather: f32,
     opacity: f32,
-    pixel_size: f32,
+    effect_size: f32,
     darkness: f32,
     mode: u32,
     padding0: u32,
@@ -93,14 +119,18 @@ impl Default for MaskUniforms {
 
 impl MaskUniforms {
     fn from_mask(mask: &PreparedMask) -> Self {
+        Self::from_mask_with_mode(mask, mask.mode_value())
+    }
+
+    fn from_mask_with_mode(mask: &PreparedMask, mode: u32) -> Self {
         Self {
             rect_center: [mask.center.x, mask.center.y],
             rect_size: [mask.size.x, mask.size.y],
             feather: mask.feather,
             opacity: mask.opacity,
-            pixel_size: mask.pixel_size,
+            effect_size: mask.effect_size,
             darkness: mask.darkness,
-            mode: mask.mode_value(),
+            mode,
             padding0: 0,
             output_size: [mask.output_size.x as f32, mask.output_size.y as f32],
             padding1: [0.0; 2],

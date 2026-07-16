@@ -800,7 +800,7 @@ pub struct MaskSegment {
     pub feather: f64,
     #[serde(default = "MaskSegment::default_opacity")]
     pub opacity: f64,
-    #[serde(default)]
+    #[serde(default = "MaskSegment::default_pixelation")]
     pub pixelation: f64,
     #[serde(default)]
     pub darkness: f64,
@@ -817,6 +817,10 @@ impl MaskSegment {
 
     fn default_opacity() -> f64 {
         1.0
+    }
+
+    fn default_pixelation() -> f64 {
+        16.0
     }
 
     fn default_fade_duration() -> f64 {
@@ -1617,6 +1621,20 @@ mod tests {
 
         assert_eq!(config.cursor.motion_blur, 1.0);
         assert_eq!(config.screen_motion_blur, 1.0);
+    }
+
+    #[test]
+    fn mask_without_pixelation_uses_a_visible_safe_default() {
+        let segment: MaskSegment = serde_json::from_value(serde_json::json!({
+            "start": 0.0,
+            "end": 1.0,
+            "maskType": "sensitive",
+            "center": { "x": 0.5, "y": 0.5 },
+            "size": { "x": 0.25, "y": 0.25 }
+        }))
+        .unwrap();
+
+        assert_eq!(segment.pixelation, 16.0);
     }
 
     #[test]
