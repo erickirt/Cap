@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type BunFile, file, spawn } from "bun";
 import type { VideoMetadata } from "./job-manager";
@@ -183,11 +183,21 @@ function resolveResourceUrl(
 	baseUrl: string,
 	query: string,
 ): string {
-	if (resource.startsWith("http://") || resource.startsWith("https://")) {
-		return withQuery(resource, query);
+	const resolved = new URL(resource, baseUrl);
+	if (resolved.protocol !== "http:" && resolved.protocol !== "https:") {
+		throw new Error(
+			`Unsupported media resource protocol: ${resolved.protocol}`,
+		);
 	}
 
-	return withQuery(new URL(resource, baseUrl).toString(), query);
+	return withQuery(resolved.toString(), query);
+}
+
+function getFetchSignal(timeoutMs: number, abortSignal?: AbortSignal) {
+	const timeoutSignal = AbortSignal.timeout(timeoutMs);
+	return abortSignal
+		? AbortSignal.any([abortSignal, timeoutSignal])
+		: timeoutSignal;
 }
 
 function redactUrl(value: string): string {
@@ -227,12 +237,13 @@ export async function materializeHlsPlaylist(
 	playlistUrl: string,
 	dirPath: string,
 	cache = new Map<string, string>(),
+	abortSignal?: AbortSignal,
 ): Promise<string> {
 	const cached = cache.get(playlistUrl);
 	if (cached) return cached;
 
 	const response = await fetch(playlistUrl, {
-		signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+		signal: getFetchSignal(DOWNLOAD_TIMEOUT_MS, abortSignal),
 	});
 
 	if (!response.ok) {
@@ -258,7 +269,7 @@ export async function materializeHlsPlaylist(
 			if (!trimmed.startsWith("#")) {
 				const resolved = resolveResourceUrl(trimmed, baseUrl, query);
 				return isHlsUrl(resolved)
-					? await materializeHlsPlaylist(resolved, dirPath, cache)
+					? await materializeHlsPlaylist(resolved, dirPath, cache, abortSignal)
 					: resolved;
 			}
 
@@ -273,7 +284,7 @@ export async function materializeHlsPlaylist(
 
 				const resolved = resolveResourceUrl(original, baseUrl, query);
 				const replacement = isHlsUrl(resolved)
-					? await materializeHlsPlaylist(resolved, dirPath, cache)
+					? await materializeHlsPlaylist(resolved, dirPath, cache, abortSignal)
 					: resolved;
 
 				rewritten = rewritten.replace(
@@ -293,9 +304,10 @@ export async function materializeHlsPlaylist(
 export async function materializeMpdManifest(
 	manifestUrl: string,
 	dirPath: string,
+	abortSignal?: AbortSignal,
 ): Promise<string> {
 	const response = await fetch(manifestUrl, {
-		signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+		signal: getFetchSignal(DOWNLOAD_TIMEOUT_MS, abortSignal),
 	});
 
 	if (!response.ok) {
@@ -309,11 +321,26 @@ export async function materializeMpdManifest(
 	const baseUrl = new URL(".", parsedUrl).toString();
 	const query = parsedUrl.search;
 	const filePath = join(dirPath, `${randomUUID()}.mpd`);
+	const rewrittenElements = content.replace(
+		/<(BaseURL|Location)(\b[^>]*)>([\s\S]*?)<\/\1>/gi,
+		(_, tag: string, attributes: string, resource: string) => {
+			const resolved = resolveResourceUrl(
+				decodeXmlAttribute(resource.trim()),
+				baseUrl,
+				query,
+			);
+			return `<${tag}${attributes}>${escapeXmlAttribute(resolved)}</${tag}>`;
+		},
+	);
 
-	const rewritten = content.replace(
-		/(initialization|media)="([^"]+)"/g,
+	const rewritten = rewrittenElements.replace(
+		/(initialization|media|sourceURL|xlink:href|href)="([^"]+)"/gi,
 		(_, attribute: string, resource: string) => {
-			const resolved = resolveResourceUrl(resource, baseUrl, query);
+			const resolved = resolveResourceUrl(
+				decodeXmlAttribute(resource),
+				baseUrl,
+				query,
+			);
 			return `${attribute}="${escapeXmlAttribute(resolved)}"`;
 		},
 	);
@@ -460,11 +487,11 @@ function getDashResourceBaseUrl(
 		"BaseURL",
 	);
 	const baseUrl = adaptationBaseUrl
-		? new URL(adaptationBaseUrl, manifestBaseUrl).toString()
+		? resolveResourceUrl(adaptationBaseUrl, manifestBaseUrl, "")
 		: manifestBaseUrl;
 
 	return representationBaseUrl
-		? new URL(representationBaseUrl, baseUrl).toString()
+		? resolveResourceUrl(representationBaseUrl, baseUrl, "")
 		: baseUrl;
 }
 
@@ -656,9 +683,10 @@ function shouldFallbackToGenericMpd(error: unknown): boolean {
 export async function materializeMpdAsHlsPlaylist(
 	manifestUrl: string,
 	dirPath: string,
+	abortSignal?: AbortSignal,
 ): Promise<string> {
 	const response = await fetch(manifestUrl, {
-		signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+		signal: getFetchSignal(DOWNLOAD_TIMEOUT_MS, abortSignal),
 	});
 
 	if (!response.ok) {
@@ -821,21 +849,41 @@ export async function materializeMpdAsHlsPlaylist(
 export async function materializeStreamingInput(
 	videoUrl: string,
 	dirPath: string,
+	abortSignal?: AbortSignal,
 ): Promise<string> {
-	if (isHlsUrl(videoUrl)) {
-		return await materializeHlsPlaylist(videoUrl, dirPath);
-	}
+	let inputPath: string;
 
-	if (isMpdUrl(videoUrl)) {
+	if (isHlsUrl(videoUrl)) {
+		inputPath = await materializeHlsPlaylist(
+			videoUrl,
+			dirPath,
+			undefined,
+			abortSignal,
+		);
+	} else if (isMpdUrl(videoUrl)) {
 		try {
-			return await materializeMpdAsHlsPlaylist(videoUrl, dirPath);
+			inputPath = await materializeMpdAsHlsPlaylist(
+				videoUrl,
+				dirPath,
+				abortSignal,
+			);
 		} catch (err) {
 			if (!shouldFallbackToGenericMpd(err)) throw err;
-			return await materializeMpdManifest(videoUrl, dirPath);
+			inputPath = await materializeMpdManifest(videoUrl, dirPath, abortSignal);
+		}
+	} else {
+		return videoUrl;
+	}
+
+	for (const entry of await readdir(dirPath)) {
+		if (!entry.endsWith(".m3u8") && !entry.endsWith(".mpd")) continue;
+		const content = await file(join(dirPath, entry)).text();
+		if (/\b(?:file|data):/i.test(content)) {
+			throw new Error("Unsupported manifest resource protocol");
 		}
 	}
 
-	return videoUrl;
+	return inputPath;
 }
 
 async function drainStream(
@@ -996,7 +1044,11 @@ async function downloadStreamingVideoToTemp(
 	};
 
 	try {
-		const inputPath = await materializeStreamingInput(videoUrl, manifestDir);
+		const inputPath = await materializeStreamingInput(
+			videoUrl,
+			manifestDir,
+			abortSignal,
+		);
 
 		await runFfmpegCommand(
 			buildStreamingDownloadFfmpegArgs(inputPath, tempFile.path),
@@ -1761,7 +1813,7 @@ async function uploadWithRetry(
 	presignedUrl: string,
 	contentType: string,
 	contentLength: number,
-	bodyFactory: () => Blob | Uint8Array | ArrayBuffer | BunFile,
+	bodyFactory: () => Blob | BunFile,
 ): Promise<void> {
 	let lastError: Error | undefined;
 
