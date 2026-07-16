@@ -2891,25 +2891,35 @@ function Page() {
 			exitClass="scale-100"
 			exitToClass="scale-95"
 		>
-			<div class="flex flex-col gap-2 w-full">
+			<div class="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pb-1 w-full">
+				<Show when={isExpanded()}>
+					<div class="px-1 pb-0.5">
+						<h2 class="text-xs font-semibold text-gray-12">Capture</h2>
+					</div>
+				</Show>
 				<div class="flex flex-col gap-2 w-full text-xs text-gray-11">
 					<div class="flex flex-row gap-2 items-stretch w-full">
 						<div
 							class={cx(
-								"flex flex-1 overflow-hidden rounded-lg border border-gray-5 bg-gray-3 ring-1 ring-transparent ring-offset-2 ring-offset-gray-1 transition focus-within:ring-blue-9 focus-within:ring-offset-2 focus-within:ring-offset-gray-1",
-								(rawOptions.targetMode === "display" || displayMenuOpen()) &&
-									"ring-blue-9",
+								"flex flex-1 overflow-hidden rounded-lg border border-gray-6 bg-gray-2 ring-1 ring-transparent ring-offset-1 ring-offset-gray-1 transition-[background-color,border-color] focus-within:ring-blue-9 focus-within:ring-offset-1 focus-within:ring-offset-gray-1",
+								rawOptions.targetMode === "display" || displayMenuOpen()
+									? "border-blue-8 bg-blue-3 ring-blue-8 hover:border-blue-9 hover:bg-blue-4 dark:bg-blue-3/30 dark:hover:bg-blue-4/40"
+									: "hover:border-gray-8 hover:bg-gray-3",
 							)}
 						>
 							<TargetTypeButton
 								selected={rawOptions.targetMode === "display"}
 								Component={IconMdiMonitor}
 								disabled={isRecording()}
+								description={isExpanded() ? "Entire screen" : undefined}
 								onClick={() => {
 									toggleTargetMode("display");
 								}}
 								name="Display"
-								class="flex-1 rounded-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 pl-5"
+								class={cx(
+									"flex-1 rounded-none border-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0",
+									isExpanded() ? "pl-3" : "pl-5",
+								)}
 							/>
 							<TargetDropdownButton
 								class={cx(
@@ -2992,6 +3002,7 @@ function Page() {
 							selected={rawOptions.targetMode === "camera"}
 							Component={IconLucideVideo}
 							disabled={isRecording()}
+							description={isExpanded() ? "No screen" : undefined}
 							onClick={() => {
 								toggleTargetMode("camera");
 							}}
@@ -3001,6 +3012,25 @@ function Page() {
 					</div>
 				</div>
 				<BaseControls />
+				<Show when={isExpanded()}>
+					<div class="pt-2">
+						<Recents
+							items={recentMedia.data}
+							isLoading={
+								recentMedia.data === undefined &&
+								(recentMedia.status === "pending" ||
+									recentMedia.fetchStatus === "fetching")
+							}
+							errorMessage={
+								recentMedia.error && recentMedia.data === undefined
+									? "Unable to load recent captures"
+									: undefined
+							}
+							disabled={isRecording()}
+							onSelect={(item) => void openRecentMedia(item)}
+						/>
+					</div>
+				</Show>
 			</div>
 		</Transition>
 	);
