@@ -1,13 +1,16 @@
 import type { XY } from "~/utils/tauri";
+import maskEffectContract from "../../../../../crates/project/mask-effects.json";
 
 export type MaskKind = "sensitive" | "highlight";
 export type MaskEffect = "blur" | "pixelate";
 
 // Older versions interpret encoded blur as strong pixelation, keeping masked content private.
-const MASK_BLUR_ENCODING_OFFSET = 1000;
-const DEFAULT_MASK_EFFECT_AMOUNT = 16;
-const MIN_MASK_EFFECT_AMOUNT = 4;
-const MAX_MASK_EFFECT_AMOUNT = 80;
+const {
+	blurEncodingOffset: MASK_BLUR_ENCODING_OFFSET,
+	defaultAmount: DEFAULT_MASK_EFFECT_AMOUNT,
+	minAmount: MIN_MASK_EFFECT_AMOUNT,
+	maxAmount: MAX_MASK_EFFECT_AMOUNT,
+} = maskEffectContract;
 
 export type MaskScalarKeyframe = {
 	time: number;

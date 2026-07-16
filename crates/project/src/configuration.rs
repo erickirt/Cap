@@ -2,6 +2,7 @@ use std::{
     fmt,
     ops::{Add, Div, Mul, Sub, SubAssign},
     path::Path,
+    sync::LazyLock,
 };
 
 use serde::{Deserialize, Serialize};
@@ -758,6 +759,24 @@ pub enum MaskKind {
     Highlight,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaskEffectContract {
+    pub blur_encoding_offset: f64,
+    pub default_amount: f64,
+    pub min_amount: f64,
+    pub max_amount: f64,
+}
+
+static MASK_EFFECT_CONTRACT: LazyLock<MaskEffectContract> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("../mask-effects.json"))
+        .expect("embedded mask effect contract must be valid JSON")
+});
+
+pub fn mask_effect_contract() -> &'static MaskEffectContract {
+    &MASK_EFFECT_CONTRACT
+}
+
 #[derive(Type, Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct MaskScalarKeyframe {
@@ -820,7 +839,7 @@ impl MaskSegment {
     }
 
     fn default_pixelation() -> f64 {
-        16.0
+        mask_effect_contract().default_amount
     }
 
     fn default_fade_duration() -> f64 {

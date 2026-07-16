@@ -1,13 +1,10 @@
-use cap_project::{MaskKind, MaskScalarKeyframe, MaskSegment, MaskVectorKeyframe, XY};
+use cap_project::{
+    MaskKind, MaskScalarKeyframe, MaskSegment, MaskVectorKeyframe, XY, mask_effect_contract,
+};
 
 use crate::{MaskRenderMode, PreparedMask};
 
 const MASK_EFFECT_BASE_HEIGHT: f32 = 1080.0;
-// Older versions interpret encoded blur as strong pixelation, keeping masked content private.
-const MASK_BLUR_ENCODING_OFFSET: f64 = 1000.0;
-const DEFAULT_MASK_EFFECT_AMOUNT: f64 = 16.0;
-const MIN_MASK_EFFECT_AMOUNT: f64 = 4.0;
-const MAX_MASK_EFFECT_AMOUNT: f64 = 80.0;
 
 fn interpolate_vector(base: XY<f64>, keys: &[MaskVectorKeyframe], time: f64) -> XY<f64> {
     if keys.is_empty() {
@@ -142,15 +139,16 @@ pub fn interpolate_masks(
 }
 
 fn sensitive_effect(stored_effect: f64) -> (MaskRenderMode, f64) {
+    let contract = mask_effect_contract();
     let stored_effect = if stored_effect.is_finite() {
         stored_effect
     } else {
-        DEFAULT_MASK_EFFECT_AMOUNT
+        contract.default_amount
     };
-    if stored_effect >= MASK_BLUR_ENCODING_OFFSET {
+    if stored_effect >= contract.blur_encoding_offset {
         (
             MaskRenderMode::Blur,
-            normalize_effect_amount(stored_effect - MASK_BLUR_ENCODING_OFFSET),
+            normalize_effect_amount(stored_effect - contract.blur_encoding_offset),
         )
     } else {
         (
@@ -161,10 +159,11 @@ fn sensitive_effect(stored_effect: f64) -> (MaskRenderMode, f64) {
 }
 
 fn normalize_effect_amount(amount: f64) -> f64 {
+    let contract = mask_effect_contract();
     if amount <= 0.0 {
-        DEFAULT_MASK_EFFECT_AMOUNT
+        contract.default_amount
     } else {
-        amount.clamp(MIN_MASK_EFFECT_AMOUNT, MAX_MASK_EFFECT_AMOUNT)
+        amount.clamp(contract.min_amount, contract.max_amount)
     }
 }
 
