@@ -10,12 +10,17 @@ import {
 } from "solid-js";
 
 export default function CaptionControlsMacOS(
-	props: ComponentProps<"div"> & { showMinimize?: boolean; showZoom?: boolean },
+	props: ComponentProps<"div"> & {
+		showMinimize?: boolean;
+		showZoom?: boolean;
+		onZoom?: () => void;
+	},
 ) {
 	const [local, otherProps] = splitProps(props, [
 		"class",
 		"showMinimize",
 		"showZoom",
+		"onZoom",
 	]);
 	const currentWindow = getCurrentWindow();
 	const [focused, setFocus] = createSignal(true);
@@ -65,7 +70,10 @@ export default function CaptionControlsMacOS(
 					type="zoom"
 					focused={focused()}
 					hovered={hovered()}
-					onClick={() => currentWindow.toggleMaximize()}
+					onClick={() => {
+						if (local.onZoom) local.onZoom();
+						else void currentWindow.toggleMaximize();
+					}}
 				/>
 			</Show>
 		</div>
