@@ -2831,8 +2831,13 @@ function Page() {
 			await commands.showWindow({
 				Editor: { project_path: projectPath },
 			});
-		} else if (recording.sharing?.link) {
-			await shell.open(recording.sharing.link);
+		} else {
+			const link = recording.sharing?.link;
+			if (!link) {
+				toast.error("This recording isn't ready to open yet.");
+				return;
+			}
+			await shell.open(link);
 		}
 
 		await getCurrentWindow().hide();
