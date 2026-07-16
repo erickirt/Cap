@@ -226,15 +226,22 @@ mod tests {
     }
 
     #[test]
-    fn encoded_blur_uses_its_decoded_radius() {
-        let mut segment = sample_segment();
-        segment.pixelation = MASK_BLUR_ENCODING_OFFSET + 24.0;
+    fn persisted_effect_encoding_matches_the_desktop_contract() {
+        for (stored_effect, expected_mode, expected_size) in [
+            (18.0, MaskRenderMode::Pixelate, 18.0),
+            (1001.0, MaskRenderMode::Blur, 4.0),
+            (1024.0, MaskRenderMode::Blur, 24.0),
+            (1080.0, MaskRenderMode::Blur, 80.0),
+        ] {
+            let mut segment = sample_segment();
+            segment.pixelation = stored_effect;
 
-        let masks = interpolate_masks(XY::new(1920, 1080), 1.0, &[segment]);
+            let masks = interpolate_masks(XY::new(1920, 1080), 1.0, &[segment]);
 
-        assert_eq!(masks[0].mode, MaskRenderMode::Blur);
-        assert_eq!(masks[0].effect_size, 24.0);
-        assert_eq!(masks[0].opacity, 1.0);
+            assert_eq!(masks[0].mode, expected_mode);
+            assert_eq!(masks[0].effect_size, expected_size);
+            assert_eq!(masks[0].opacity, 1.0);
+        }
     }
 
     #[test]
