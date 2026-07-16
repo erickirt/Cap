@@ -608,12 +608,18 @@ impl AVAssetReaderDecoder {
             let processing_deferred = !deferred_requests.is_empty();
 
             if let Some(request) = deferred_requests.pop_front() {
+                if request.sender.is_closed() {
+                    continue;
+                }
                 let mut last_frame = request.frame;
                 pending_requests.push(request);
                 while deferred_requests.front().is_some_and(|next| {
                     next.frame.saturating_sub(last_frame) <= DECODER_REQUEST_CLUSTER_GAP_FRAMES
                 }) {
                     if let Some(request) = deferred_requests.pop_front() {
+                        if request.sender.is_closed() {
+                            continue;
+                        }
                         last_frame = request.frame;
                         pending_requests.push(request);
                     }
