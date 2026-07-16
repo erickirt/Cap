@@ -3853,6 +3853,17 @@ fn get_recording_meta(
         .map_err(|e| format!("Failed to load recording meta: {e}"))
 }
 
+fn media_sort_time(path: &Path) -> SystemTime {
+    let Ok(metadata) = path.metadata() else {
+        return UNIX_EPOCH;
+    };
+
+    metadata
+        .created()
+        .or_else(|_| metadata.modified())
+        .unwrap_or(UNIX_EPOCH)
+}
+
 #[tauri::command]
 #[specta::specta]
 #[instrument(skip(app))]
@@ -3879,19 +3890,7 @@ fn list_recordings(app: AppHandle) -> Result<Vec<(PathBuf, RecordingMetaWithMeta
         }
     }
 
-    result.sort_by(|a, b| {
-        let b_time =
-            b.0.metadata()
-                .and_then(|m| m.created())
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-
-        let a_time =
-            a.0.metadata()
-                .and_then(|m| m.created())
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-
-        b_time.cmp(&a_time)
-    });
+    result.sort_by_cached_key(|(path, _)| std::cmp::Reverse(media_sort_time(path)));
 
     Ok(result)
 }
@@ -3973,16 +3972,7 @@ fn list_screenshots(app: AppHandle) -> Result<Vec<(PathBuf, RecordingMeta)>, Str
         })
         .collect::<Vec<_>>();
 
-    result.sort_by(|a, b| {
-        b.0.metadata()
-            .and_then(|m| m.created())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-            .cmp(
-                &a.0.metadata()
-                    .and_then(|m| m.created())
-                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
-            )
-    });
+    result.sort_by_cached_key(|(path, _)| std::cmp::Reverse(media_sort_time(path)));
 
     Ok(result)
 }
