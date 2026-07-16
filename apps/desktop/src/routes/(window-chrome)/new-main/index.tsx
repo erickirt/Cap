@@ -113,6 +113,7 @@ import CameraSelect from "./CameraSelect";
 import ChangelogButton from "./ChangeLogButton";
 import MicrophoneSelect from "./MicrophoneSelect";
 import ModeInfoPanel from "./ModeInfoPanel";
+import Recents, { type RecentMediaItem } from "./Recents";
 import SystemAudio from "./SystemAudio";
 import type { RecordingWithPath, ScreenshotWithPath } from "./TargetCard";
 import TargetDropdownButton from "./TargetDropdownButton";
@@ -2774,50 +2775,109 @@ function Page() {
 		setCameraMenuOpen(false);
 	};
 
+	const openRecording = async (recording: RecordingWithPath) => {
+		if (recording.mode === "studio") {
+			let projectPath = recording.path;
+			const needsRecovery =
+				recording.status.status === "InProgress" ||
+				recording.status.status === "NeedsRemux";
+
+			if (needsRecovery) {
+				try {
+					projectPath = await commands.recoverRecording(projectPath);
+				} catch (error) {
+					console.error("Failed to recover recording:", error);
+				}
+			}
+
+			await commands.showWindow({
+				Editor: { project_path: projectPath },
+			});
+		} else if (recording.sharing?.link) {
+			await shell.open(recording.sharing.link);
+		}
+
+		await getCurrentWindow().hide();
+	};
+
+	const openScreenshot = async (screenshot: ScreenshotWithPath) => {
+		await commands.showWindow({
+			ScreenshotEditor: { path: screenshot.path },
+		});
+	};
+
+	const openRecentMedia = async (item: RecentMediaItem) => {
+		if (item.kind === "recording") {
+			await openRecording(item.target);
+		} else {
+			await openScreenshot(item.target);
+		}
+	};
+
+	const ExpandedControlLabel = (props: { title: string }) => (
+		<Show when={isExpanded()}>
+			<div class="mb-1 px-1">
+				<p class="text-xs font-semibold text-gray-12">{props.title}</p>
+			</div>
+		</Show>
+	);
+
 	const BaseControls = () => (
-		<div class="space-y-2">
-			<CameraSelect
-				disabled={enableDeviceQueries() && devices.isPending}
-				options={devices.cameras}
-				value={options.camera() ?? null}
-				selectedLabel={rawOptions.cameraLabel}
-				isSelected={rawOptions.cameraID != null}
-				onChange={(c) => {
-					if (!c) {
-						setOptions("cameraLabel", null);
-						setCamera.mutate({ model: null });
-					} else if (c.model_id) {
-						setOptions("cameraLabel", c.display_name);
-						setCamera.mutate({ model: { ModelID: c.model_id } });
-					} else {
-						setOptions("cameraLabel", c.display_name);
-						setCamera.mutate({ model: { DeviceID: c.device_id } });
+		<div class={cx("space-y-2", isExpanded() && "space-y-2.5")}>
+			<div>
+				<ExpandedControlLabel title="Camera" />
+				<CameraSelect
+					disabled={enableDeviceQueries() && devices.isPending}
+					options={devices.cameras}
+					value={options.camera() ?? null}
+					selectedLabel={rawOptions.cameraLabel}
+					isSelected={rawOptions.cameraID != null}
+					onChange={(c) => {
+						if (!c) {
+							setOptions("cameraLabel", null);
+							setCamera.mutate({ model: null });
+						} else if (c.model_id) {
+							setOptions("cameraLabel", c.display_name);
+							setCamera.mutate({ model: { ModelID: c.model_id } });
+						} else {
+							setOptions("cameraLabel", c.display_name);
+							setCamera.mutate({ model: { DeviceID: c.device_id } });
+						}
+					}}
+					permissions={currentPermissions()}
+					onOpen={() => openCameraMenu(null)}
+					onOpenSettings={() =>
+						openCameraMenu(
+							options.camera() ?? null,
+							rawOptions.cameraID != null,
+						)
 					}
-				}}
-				permissions={currentPermissions()}
-				onOpen={() => openCameraMenu(null)}
-				onOpenSettings={() =>
-					openCameraMenu(options.camera() ?? null, rawOptions.cameraID != null)
-				}
-			/>
-			<MicrophoneSelect
-				disabled={enableDeviceQueries() && devices.isPending}
-				options={devices.microphones.map((m) => m.name)}
-				value={rawOptions.micName ?? null}
-				onChange={(v) => setMicInput.mutate(v)}
-				permissions={currentPermissions()}
-				onOpen={() => openMicrophoneMenu(null)}
-				onOpenSettings={
-					rawOptions.micName
-						? () =>
-								openMicrophoneMenu(
-									options.micName() ?? null,
-									rawOptions.micName != null,
-								)
-						: undefined
-				}
-			/>
-			<SystemAudio />
+				/>
+			</div>
+			<div>
+				<ExpandedControlLabel title="Microphone" />
+				<MicrophoneSelect
+					disabled={enableDeviceQueries() && devices.isPending}
+					options={devices.microphones.map((m) => m.name)}
+					value={rawOptions.micName ?? null}
+					onChange={(v) => setMicInput.mutate(v)}
+					permissions={currentPermissions()}
+					onOpen={() => openMicrophoneMenu(null)}
+					onOpenSettings={
+						rawOptions.micName
+							? () =>
+									openMicrophoneMenu(
+										options.micName() ?? null,
+										rawOptions.micName != null,
+									)
+							: undefined
+					}
+				/>
+			</div>
+			<div>
+				<ExpandedControlLabel title="System audio" />
+				<SystemAudio />
+			</div>
 		</div>
 	);
 
