@@ -12,8 +12,14 @@ import {
 	getAllWebviewWindows,
 	WebviewWindow,
 } from "@tauri-apps/api/webviewWindow";
-import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import {
+	currentMonitor,
+	getCurrentWindow,
+	LogicalSize,
+	PhysicalPosition,
+} from "@tauri-apps/api/window";
 import * as dialog from "@tauri-apps/plugin-dialog";
+import { stat } from "@tauri-apps/plugin-fs";
 import { relaunch } from "@tauri-apps/plugin-process";
 import * as shell from "@tauri-apps/plugin-shell";
 import { cx } from "cva";
@@ -39,6 +45,7 @@ import { Input } from "~/routes/editor/ui";
 import {
 	authStore,
 	generalSettingsStore,
+	mainWindowUIStore,
 	recordingSettingsStore,
 } from "~/store";
 import { createSignInMutation } from "~/utils/auth";
@@ -88,6 +95,8 @@ import IconLucideBug from "~icons/lucide/bug";
 import IconLucideCircleHelp from "~icons/lucide/circle-help";
 import IconLucideImage from "~icons/lucide/image";
 import IconLucideImport from "~icons/lucide/import";
+import IconLucideMaximize2 from "~icons/lucide/maximize-2";
+import IconLucideMinimize2 from "~icons/lucide/minimize-2";
 import IconLucideScanText from "~icons/lucide/scan-text";
 import IconLucideSearch from "~icons/lucide/search";
 import IconLucideSettings from "~icons/lucide/settings";
@@ -111,7 +120,14 @@ import TargetMenuGrid from "./TargetMenuGrid";
 import TargetTypeButton from "./TargetTypeButton";
 import useRequestPermission from "./useRequestPermission";
 
-const WINDOW_SIZE = { width: 330, height: 395 } as const;
+const MAIN_WINDOW_SIZE = {
+	compact: { width: 330, height: 395 },
+	expanded: { width: 600, height: 660 },
+} as const;
+const MAIN_WINDOW_SCREEN_PADDING = 12;
+const MAIN_WINDOW_RESIZE_DURATION = 180;
+const RECENT_MEDIA_LIMIT = 9;
+const RECENT_MEDIA_QUERY_KEY = ["recent-media"] as const;
 const CAPTURE_LIST_STALE_TIME = 5_000;
 const CAPTURE_LIST_GC_TIME = 60_000;
 const CAPTURE_THUMBNAIL_STALE_TIME = 10_000;
@@ -146,6 +162,120 @@ type RecordingDeviceSettingsStore = {
 	cameraDeviceSettings?: Record<string, CameraDeviceSettings>;
 	microphoneDeviceSettings?: Record<string, MicrophoneDeviceSettings>;
 };
+
+type RecentMediaCandidate =
+	| {
+			kind: "recording";
+			target: RecordingWithPath;
+	  }
+	| {
+			kind: "screenshot";
+			target: ScreenshotWithPath;
+	  };
+
+const listScreenshotsQuery = queryOptions<ScreenshotWithPath[]>({
+	queryKey: ["screenshots"],
+	queryFn: async () => {
+		const result = await commands.listScreenshots().catch(() => [] as const);
+
+		return result.map(
+			([path, meta]) => ({ ...meta, path }) as ScreenshotWithPath,
+		);
+	},
+	staleTime: 5_000,
+	reconcile: (old, next) => reconcile(next)(old),
+	initialData: [],
+	initialDataUpdatedAt: 0,
+});
+
+const nextAnimationFrame = () =>
+	new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+const clamp = (value: number, minimum: number, maximum: number) =>
+	Math.min(Math.max(value, minimum), maximum);
+
+async function resizeMainWindow(expanded: boolean, animate: boolean) {
+	const currentWindow = getCurrentWindow();
+	const [physicalSize, scaleFactor, physicalPosition, monitor] =
+		await Promise.all([
+			currentWindow.innerSize(),
+			currentWindow.scaleFactor(),
+			currentWindow.outerPosition().catch(() => null),
+			currentMonitor().catch(() => null),
+		]);
+	const preferredSize = expanded
+		? MAIN_WINDOW_SIZE.expanded
+		: MAIN_WINDOW_SIZE.compact;
+	const availableWidth = monitor
+		? monitor.workArea.size.width / scaleFactor - MAIN_WINDOW_SCREEN_PADDING * 2
+		: preferredSize.width;
+	const availableHeight = monitor
+		? monitor.workArea.size.height / scaleFactor -
+			MAIN_WINDOW_SCREEN_PADDING * 2
+		: preferredSize.height;
+	const targetWidth = Math.max(
+		MAIN_WINDOW_SIZE.compact.width,
+		Math.min(preferredSize.width, availableWidth),
+	);
+	const targetHeight = Math.max(
+		MAIN_WINDOW_SIZE.compact.height,
+		Math.min(preferredSize.height, availableHeight),
+	);
+	const startWidth = physicalSize.width / scaleFactor;
+	const startHeight = physicalSize.height / scaleFactor;
+	const widthDelta = targetWidth - startWidth;
+	const heightDelta = targetHeight - startHeight;
+	const reduceMotion = window.matchMedia(
+		"(prefers-reduced-motion: reduce)",
+	).matches;
+
+	if (Math.abs(widthDelta) > 0.5 || Math.abs(heightDelta) > 0.5) {
+		if (!animate || reduceMotion) {
+			await currentWindow.setSize(new LogicalSize(targetWidth, targetHeight));
+		} else {
+			const startedAt = performance.now();
+			let progress = 0;
+			while (progress < 1) {
+				await nextAnimationFrame();
+				progress = Math.min(
+					1,
+					(performance.now() - startedAt) / MAIN_WINDOW_RESIZE_DURATION,
+				);
+				const eased = 1 - (1 - progress) ** 3;
+				await currentWindow.setSize(
+					new LogicalSize(
+						startWidth + widthDelta * eased,
+						startHeight + heightDelta * eased,
+					),
+				);
+			}
+		}
+	}
+
+	if (!monitor || !physicalPosition) return;
+	const padding = MAIN_WINDOW_SCREEN_PADDING * scaleFactor;
+	const workArea = monitor.workArea;
+	const targetPhysicalWidth = targetWidth * scaleFactor;
+	const targetPhysicalHeight = targetHeight * scaleFactor;
+	const targetX = clamp(
+		physicalPosition.x,
+		workArea.position.x + padding,
+		workArea.position.x + workArea.size.width - targetPhysicalWidth - padding,
+	);
+	const targetY = clamp(
+		physicalPosition.y,
+		workArea.position.y + padding,
+		workArea.position.y + workArea.size.height - targetPhysicalHeight - padding,
+	);
+
+	if (targetX !== physicalPosition.x || targetY !== physicalPosition.y) {
+		await currentWindow
+			.setPosition(
+				new PhysicalPosition(Math.round(targetX), Math.round(targetY)),
+			)
+			.catch(() => undefined);
+	}
+}
 
 const recordingDeviceSettingsStore = recordingSettingsStore as unknown as {
 	get: () => Promise<RecordingDeviceSettingsStore | undefined>;
@@ -1666,6 +1796,9 @@ function Page() {
 	const queryClient = useQueryClient();
 	const { rawOptions, setOptions } = useRecordingOptions();
 	const currentRecording = createCurrentRecordingQuery();
+	const [isExpanded, setIsExpanded] = createSignal(false);
+	const [isWindowFocused, setIsWindowFocused] = createSignal(false);
+	const [isWindowResizing, setIsWindowResizing] = createSignal(false);
 	const isRecording = () => !!currentRecording.data;
 	const isActivelyRecording = () =>
 		currentRecording.data?.status === "recording";
@@ -2006,30 +2139,135 @@ function Page() {
 				next.delete(path);
 				return next;
 			});
-			recordings.refetch();
+			refreshRecordings();
 		}
 	};
 
-	const screenshots = useQuery(() =>
-		queryOptions<ScreenshotWithPath[]>({
-			queryKey: ["screenshots"],
-			queryFn: async () => {
-				const result = await commands
-					.listScreenshots()
-					.catch(() => [] as const);
+	const screenshots = useQuery(() => ({
+		...listScreenshotsQuery,
+		enabled: screenshotsMenuOpen(),
+		refetchInterval: screenshotsMenuOpen() ? 10_000 : false,
+	}));
 
-				return result.map(
-					([path, meta]) => ({ ...meta, path }) as ScreenshotWithPath,
-				);
-			},
-			enabled: screenshotsMenuOpen(),
-			refetchInterval: screenshotsMenuOpen() ? 10_000 : false,
-			staleTime: 5_000,
-			reconcile: (old, next) => reconcile(next)(old),
-			initialData: [],
-			initialDataUpdatedAt: 0,
-		}),
+	const shouldLoadRecents = () =>
+		isExpanded() &&
+		isWindowFocused() &&
+		rawOptions.targetMode === null &&
+		activeMenu() === null &&
+		!isRecording();
+
+	const recentMedia = useQuery(() => ({
+		queryKey: RECENT_MEDIA_QUERY_KEY,
+		queryFn: async (): Promise<RecentMediaItem[]> => {
+			const [recordingRows, screenshotTargets] = await Promise.all([
+				queryClient.fetchQuery({ ...listRecordings, staleTime: 0 }),
+				queryClient.fetchQuery({ ...listScreenshotsQuery, staleTime: 0 }),
+			]);
+			const candidates: RecentMediaCandidate[] = [
+				...recordingRows.slice(0, RECENT_MEDIA_LIMIT).map(([path, meta]) => ({
+					kind: "recording" as const,
+					target: { ...meta, path } as RecordingWithPath,
+				})),
+				...screenshotTargets
+					.slice(0, RECENT_MEDIA_LIMIT)
+					.map((target) => ({ kind: "screenshot" as const, target })),
+			];
+			const datedCandidates = await Promise.all(
+				candidates.map(async (candidate) => {
+					const fileInfo = await stat(candidate.target.path).catch(() => null);
+					return {
+						candidate,
+						createdAt: (fileInfo?.birthtime ?? fileInfo?.mtime)?.getTime() ?? 0,
+					};
+				}),
+			);
+
+			return datedCandidates
+				.sort((a, b) => b.createdAt - a.createdAt)
+				.slice(0, RECENT_MEDIA_LIMIT)
+				.map(({ candidate, createdAt }): RecentMediaItem => {
+					if (candidate.kind === "screenshot") {
+						return {
+							...candidate,
+							createdAt,
+							previewPath: candidate.target.path,
+							previewVersion: createdAt,
+						};
+					}
+
+					return {
+						...candidate,
+						createdAt,
+						previewPath: `${candidate.target.path}/screenshots/display.jpg`,
+						previewVersion: createdAt,
+					};
+				});
+		},
+		enabled: shouldLoadRecents(),
+		staleTime: Number.POSITIVE_INFINITY,
+		gcTime: CAPTURE_LIST_GC_TIME,
+		refetchOnWindowFocus: false,
+	}));
+
+	const invalidateRecentMedia = () => {
+		void queryClient.invalidateQueries({
+			queryKey: RECENT_MEDIA_QUERY_KEY,
+			refetchType: "none",
+		});
+	};
+
+	const refreshRecentMedia = () => {
+		invalidateRecentMedia();
+		if (shouldLoadRecents()) void recentMedia.refetch();
+	};
+
+	const invalidateRecordings = () => {
+		void queryClient.invalidateQueries({
+			queryKey: listRecordings.queryKey,
+			refetchType: "none",
+		});
+	};
+
+	const refreshRecordings = () => {
+		invalidateRecordings();
+		if (recordingsMenuOpen()) void recordings.refetch();
+		refreshRecentMedia();
+	};
+
+	const refreshScreenshots = () => {
+		void queryClient.invalidateQueries({
+			queryKey: listScreenshotsQuery.queryKey,
+			refetchType: "none",
+		});
+		if (screenshotsMenuOpen()) void screenshots.refetch();
+		refreshRecentMedia();
+	};
+
+	const refreshRecordingsUnlessEditorRecording = () => {
+		if (rawOptions.targetModeSource !== "editorRecording") {
+			refreshRecordings();
+		}
+	};
+	const invalidateRecordingsUnlessEditorRecording = () => {
+		if (rawOptions.targetModeSource !== "editorRecording") {
+			invalidateRecordings();
+			invalidateRecentMedia();
+		}
+	};
+
+	createTauriEventListener(events.recordingDeleted, refreshRecordings);
+	createTauriEventListener(events.recordingsMigrationProgress, (payload) => {
+		if (payload.done === payload.total) refreshRecordings();
+	});
+	createTauriEventListener(
+		events.recordingStarted,
+		invalidateRecordingsUnlessEditorRecording,
 	);
+	createTauriEventListener(
+		events.recordingStopped,
+		refreshRecordingsUnlessEditorRecording,
+	);
+	createTauriEventListener(events.newScreenshotAdded, refreshScreenshots);
 
 	const screens = useQuery(() => ({
 		...listScreens,
@@ -2221,6 +2459,7 @@ function Page() {
 			});
 			await currentWindow.show();
 			await currentWindow.setFocus();
+			setIsWindowFocused(true);
 			void commands.closeTargetSelectOverlays().catch((error) => {
 				console.error("Failed to close target select overlays:", error);
 			});
@@ -2244,20 +2483,17 @@ function Page() {
 
 		const unlistenFocus = currentWindow.onFocusChanged(
 			({ payload: focused }) => {
+				setIsWindowFocused(focused);
 				if (focused) {
-					currentWindow.setSize(
-						new LogicalSize(WINDOW_SIZE.width, WINDOW_SIZE.height),
-					);
+					if (!isWindowResizing()) {
+						void resizeMainWindow(isExpanded(), false).catch((error) => {
+							console.error("Failed to restore main window size:", error);
+						});
+					}
 					scheduleTargetListPrewarm();
 				}
 			},
 		);
-
-		const unlistenResize = currentWindow.onResized(() => {
-			currentWindow.setSize(
-				new LogicalSize(WINDOW_SIZE.width, WINDOW_SIZE.height),
-			);
-		});
 
 		const unlistenSetTargetMode = events.requestSetTargetMode.listen(
 			async (event) => {
@@ -2293,7 +2529,6 @@ function Page() {
 
 		onCleanup(async () => {
 			(await unlistenFocus)?.();
-			(await unlistenResize)?.();
 			(await unlistenSetTargetMode)?.();
 		});
 	});
