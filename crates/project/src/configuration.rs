@@ -2,6 +2,7 @@ use std::{
     fmt,
     ops::{Add, Div, Mul, Sub, SubAssign},
     path::Path,
+    sync::LazyLock,
 };
 
 use serde::{Deserialize, Serialize};
@@ -758,6 +759,24 @@ pub enum MaskKind {
     Highlight,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaskEffectContract {
+    pub blur_encoding_offset: f64,
+    pub default_amount: f64,
+    pub min_amount: f64,
+    pub max_amount: f64,
+}
+
+static MASK_EFFECT_CONTRACT: LazyLock<MaskEffectContract> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("../mask-effects.json"))
+        .expect("embedded mask effect contract must be valid JSON")
+});
+
+pub fn mask_effect_contract() -> &'static MaskEffectContract {
+    &MASK_EFFECT_CONTRACT
+}
+
 #[derive(Type, Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct MaskScalarKeyframe {
@@ -800,7 +819,7 @@ pub struct MaskSegment {
     pub feather: f64,
     #[serde(default = "MaskSegment::default_opacity")]
     pub opacity: f64,
-    #[serde(default)]
+    #[serde(default = "MaskSegment::default_pixelation")]
     pub pixelation: f64,
     #[serde(default)]
     pub darkness: f64,
@@ -817,6 +836,10 @@ impl MaskSegment {
 
     fn default_opacity() -> f64 {
         1.0
+    }
+
+    fn default_pixelation() -> f64 {
+        mask_effect_contract().default_amount
     }
 
     fn default_fade_duration() -> f64 {
@@ -1617,6 +1640,20 @@ mod tests {
 
         assert_eq!(config.cursor.motion_blur, 1.0);
         assert_eq!(config.screen_motion_blur, 1.0);
+    }
+
+    #[test]
+    fn mask_without_pixelation_uses_a_visible_safe_default() {
+        let segment: MaskSegment = serde_json::from_value(serde_json::json!({
+            "start": 0.0,
+            "end": 1.0,
+            "maskType": "sensitive",
+            "center": { "x": 0.5, "y": 0.5 },
+            "size": { "x": 0.25, "y": 0.25 }
+        }))
+        .unwrap();
+
+        assert_eq!(segment.pixelation, 16.0);
     }
 
     #[test]

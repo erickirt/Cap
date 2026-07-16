@@ -1,7 +1,7 @@
 use anyhow::Result;
 use cap_project::{
     AspectRatio, Camera, CameraShape, CameraXPosition, CameraYPosition, ClipOffsets, CornerStyle,
-    Crop, CursorEvents, CursorType, FrameConfiguration, FrameStyle, MaskKind, ProjectConfiguration,
+    Crop, CursorEvents, CursorType, FrameConfiguration, FrameStyle, ProjectConfiguration,
     RecordingMeta, SceneMode, StudioRecordingMeta, XY,
 };
 use composite_frame::CompositeVideoFrameUniforms;
@@ -216,19 +216,11 @@ pub struct RenderOptions {
     pub preserve_screen_alpha: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaskRenderMode {
-    Sensitive,
+    Pixelate,
     Highlight,
-}
-
-impl MaskRenderMode {
-    fn from_kind(kind: MaskKind) -> Self {
-        match kind {
-            MaskKind::Sensitive => MaskRenderMode::Sensitive,
-            MaskKind::Highlight => MaskRenderMode::Highlight,
-        }
-    }
+    Blur,
 }
 
 #[derive(Debug, Clone)]
@@ -237,19 +229,10 @@ pub struct PreparedMask {
     pub size: XY<f32>,
     pub feather: f32,
     pub opacity: f32,
-    pub pixel_size: f32,
+    pub effect_size: f32,
     pub darkness: f32,
     pub mode: MaskRenderMode,
     pub output_size: XY<u32>,
-}
-
-impl PreparedMask {
-    fn mode_value(&self) -> u32 {
-        match self.mode {
-            MaskRenderMode::Sensitive => 0,
-            MaskRenderMode::Highlight => 1,
-        }
-    }
 }
 
 #[derive(Clone)]
