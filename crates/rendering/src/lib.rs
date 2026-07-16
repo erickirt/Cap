@@ -235,16 +235,6 @@ pub struct PreparedMask {
     pub output_size: XY<u32>,
 }
 
-impl PreparedMask {
-    fn mode_value(&self) -> u32 {
-        match self.mode {
-            MaskRenderMode::Pixelate => 0,
-            MaskRenderMode::Highlight => 1,
-            MaskRenderMode::Blur => 2,
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct RecordingSegmentDecoders {
     screen: AsyncVideoDecoderHandle,

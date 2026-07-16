@@ -1,8 +1,10 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use crate::{PreparedMask, RenderSession};
+use crate::{MaskRenderMode, PreparedMask, RenderSession};
 
+const PIXELATE_MODE: u32 = 0;
+const HIGHLIGHT_MODE: u32 = 1;
 const BLUR_HORIZONTAL_MODE: u32 = 2;
 const BLUR_VERTICAL_MODE: u32 = 3;
 
@@ -43,43 +45,60 @@ impl MaskLayer {
         encoder: &mut wgpu::CommandEncoder,
         mask: &PreparedMask,
     ) {
-        if mask.mode == crate::MaskRenderMode::Blur {
-            self.render_pass(
-                device,
-                encoder,
-                MaskPass {
-                    source_texture_view: session.current_texture_view(),
-                    target_texture_view: session.other_texture_view(),
-                    render_pipeline: &self.pipeline.render_pipeline,
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    uniforms: MaskUniforms::from_mask_with_mode(mask, BLUR_HORIZONTAL_MODE),
-                },
-            );
-            self.render_pass(
-                device,
-                encoder,
-                MaskPass {
-                    source_texture_view: session.other_texture_view(),
-                    target_texture_view: session.current_texture_view(),
-                    render_pipeline: &self.pipeline.blur_composite_pipeline,
-                    load: wgpu::LoadOp::Load,
-                    uniforms: MaskUniforms::from_mask_with_mode(mask, BLUR_VERTICAL_MODE),
-                },
-            );
-        } else {
-            self.render_pass(
-                device,
-                encoder,
-                MaskPass {
-                    source_texture_view: session.current_texture_view(),
-                    target_texture_view: session.other_texture_view(),
-                    render_pipeline: &self.pipeline.render_pipeline,
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    uniforms: MaskUniforms::from_mask(mask),
-                },
-            );
-            session.swap_textures();
+        match mask.mode {
+            MaskRenderMode::Blur => {
+                self.render_pass(
+                    device,
+                    encoder,
+                    MaskPass {
+                        source_texture_view: session.current_texture_view(),
+                        target_texture_view: session.other_texture_view(),
+                        render_pipeline: &self.pipeline.render_pipeline,
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        uniforms: MaskUniforms::from_mask(mask, BLUR_HORIZONTAL_MODE),
+                    },
+                );
+                self.render_pass(
+                    device,
+                    encoder,
+                    MaskPass {
+                        source_texture_view: session.other_texture_view(),
+                        target_texture_view: session.current_texture_view(),
+                        render_pipeline: &self.pipeline.blur_composite_pipeline,
+                        load: wgpu::LoadOp::Load,
+                        uniforms: MaskUniforms::from_mask(mask, BLUR_VERTICAL_MODE),
+                    },
+                );
+            }
+            MaskRenderMode::Pixelate => {
+                self.render_single_pass(device, session, encoder, mask, PIXELATE_MODE);
+            }
+            MaskRenderMode::Highlight => {
+                self.render_single_pass(device, session, encoder, mask, HIGHLIGHT_MODE);
+            }
         }
+    }
+
+    fn render_single_pass(
+        &self,
+        device: &wgpu::Device,
+        session: &mut RenderSession,
+        encoder: &mut wgpu::CommandEncoder,
+        mask: &PreparedMask,
+        mode: u32,
+    ) {
+        self.render_pass(
+            device,
+            encoder,
+            MaskPass {
+                source_texture_view: session.current_texture_view(),
+                target_texture_view: session.other_texture_view(),
+                render_pipeline: &self.pipeline.render_pipeline,
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                uniforms: MaskUniforms::from_mask(mask, mode),
+            },
+        );
+        session.swap_textures();
     }
 
     fn render_pass(
@@ -146,11 +165,7 @@ impl Default for MaskUniforms {
 }
 
 impl MaskUniforms {
-    fn from_mask(mask: &PreparedMask) -> Self {
-        Self::from_mask_with_mode(mask, mask.mode_value())
-    }
-
-    fn from_mask_with_mode(mask: &PreparedMask, mode: u32) -> Self {
+    fn from_mask(mask: &PreparedMask, mode: u32) -> Self {
         Self {
             rect_center: [mask.center.x, mask.center.y],
             rect_size: [mask.size.x, mask.size.y],
