@@ -81,6 +81,13 @@ fn blur_sample(uv: vec2<f32>, direction: vec2<f32>) -> vec4<f32> {
     return color / weight_sum;
 }
 
+fn horizontal_blur_support(uv: vec2<f32>) -> bool {
+    let half_size = uniforms.rect_size * 0.5;
+    let delta = abs(uv - uniforms.rect_center);
+    let vertical_radius = uniforms.effect_size / uniforms.output_size.y;
+    return delta.x <= half_size.x && delta.y <= half_size.y + vertical_radius;
+}
+
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     let base = textureSample(source_texture, source_sampler, uv);
@@ -93,21 +100,19 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     }
 
     if uniforms.mode == 2u {
-        if mask <= 0.0 {
+        if !horizontal_blur_support(uv) {
             return base;
         }
         let blurred = blur_sample(uv, vec2<f32>(1.0, 0.0));
-        let effect = vec4<f32>(blurred.rgb, base.a);
-        return mix(base, effect, mask);
+        return vec4<f32>(blurred.rgb, base.a);
     }
 
     if uniforms.mode == 3u {
         if mask <= 0.0 {
-            return base;
+            discard;
         }
         let blurred = blur_sample(uv, vec2<f32>(0.0, 1.0));
-        let effect = vec4<f32>(blurred.rgb, base.a);
-        return mix(base, effect, mask);
+        return vec4<f32>(blurred.rgb, mask);
     }
 
     let darkness = clamp(uniforms.darkness * uniforms.opacity, 0.0, 1.0);
