@@ -1115,6 +1115,12 @@ impl TimelineConfiguration {
             return None;
         }
 
+        debug_assert!(
+            self.transitions.windows(2).all(|transitions| {
+                transitions[0].segment_index <= transitions[1].segment_index
+            })
+        );
+
         let transition_position = self
             .transitions
             .partition_point(|transition| transition.segment_index as usize <= segment_index);
