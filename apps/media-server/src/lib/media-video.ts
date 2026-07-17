@@ -1092,6 +1092,10 @@ export function buildStreamingDownloadFfmpegArgs(
 		"file,http,https,tcp,tls,crypto,data",
 		"-allowed_extensions",
 		"ALL",
+		...(capabilities.allowedSegmentExtensions
+			? ["-allowed_segment_extensions", "ALL"]
+			: []),
+		...(capabilities.extensionPicky ? ["-extension_picky", "0"] : []),
 		"-i",
 		inputPath,
 		"-map",
@@ -1116,6 +1120,7 @@ async function downloadStreamingVideoToTemp(
 	};
 
 	try {
+		const ffmpegHlsCapabilities = await getFfmpegHlsCapabilities();
 		const inputPath = await materializeStreamingInput(
 			videoUrl,
 			manifestDir,
@@ -1123,7 +1128,11 @@ async function downloadStreamingVideoToTemp(
 		);
 
 		await runFfmpegCommand(
-			buildStreamingDownloadFfmpegArgs(inputPath, tempFile.path),
+			buildStreamingDownloadFfmpegArgs(
+				inputPath,
+				tempFile.path,
+				ffmpegHlsCapabilities,
+			),
 			DOWNLOAD_TIMEOUT_MS,
 			abortSignal,
 		);
