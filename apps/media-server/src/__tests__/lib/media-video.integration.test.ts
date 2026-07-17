@@ -6,6 +6,7 @@ import {
 	readFileSync,
 	rmSync,
 	statSync,
+	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,12 +17,14 @@ import {
 	copyFileToMp4,
 	generatePreviewGif,
 	generateThumbnail,
+	getFfmpegHlsCapabilities,
 	materializeHlsPlaylist,
 	materializeMpdAsHlsPlaylist,
 	materializeMpdManifest,
 	materializeStreamingInput,
 	muxMediaTracksToMp4,
 	normalizeVideoInputExtension,
+	parseFfmpegHlsCapabilities,
 	pickMobileSafeH264Level,
 	processVideo,
 	repairContainer,
@@ -763,16 +766,82 @@ describe("processVideo integration tests", () => {
 });
 
 describe("ffmpeg-backed media utilities integration tests", () => {
-	test("uses FFmpeg 7-compatible options for Loom DASH webm segments", () => {
+	test("uses only legacy HLS options when newer FFmpeg options are unavailable", () => {
+		const capabilities = parseFfmpegHlsCapabilities(`
+			-allowed_extensions <string>
+		`);
 		const args = buildStreamingDownloadFfmpegArgs(
 			"/tmp/input.m3u8",
 			"/tmp/output.mkv",
+			capabilities,
 		);
 
+		expect(capabilities).toEqual({
+			allowedSegmentExtensions: false,
+			extensionPicky: false,
+		});
 		expect(args[args.indexOf("-allowed_extensions") + 1]).toBe("ALL");
 		expect(args).not.toContain("-allowed_segment_extensions");
 		expect(args).not.toContain("-extension_picky");
 	});
+
+	test("adds newer HLS options only when FFmpeg supports them", () => {
+		const capabilities = parseFfmpegHlsCapabilities(`
+			-allowed_extensions <string>
+			-allowed_segment_extensions <string>
+			-extension_picky <boolean>
+		`);
+		const args = buildStreamingDownloadFfmpegArgs(
+			"/tmp/input.m3u8",
+			"/tmp/output.mkv",
+			capabilities,
+		);
+
+		expect(args[args.indexOf("-allowed_segment_extensions") + 1]).toBe("ALL");
+		expect(args[args.indexOf("-extension_picky") + 1]).toBe("0");
+	});
+
+	test("remuxes WebM HLS segments with the installed FFmpeg options", async () => {
+		const workDir = mkdtempSync(join(tmpdir(), "cap-webm-hls-"));
+		try {
+			const segmentPath = join(workDir, "segment.webm");
+			const manifestPath = join(workDir, "input.m3u8");
+			const outputPath = join(workDir, "output.mkv");
+
+			execFileSync("ffmpeg", [
+				"-hide_banner",
+				"-loglevel",
+				"error",
+				"-y",
+				"-i",
+				TEST_VIDEO_WITH_AUDIO,
+				"-t",
+				"1",
+				"-an",
+				"-c:v",
+				"libvpx-vp9",
+				segmentPath,
+			]);
+			writeFileSync(
+				manifestPath,
+				"#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:1.0,\nsegment.webm\n#EXT-X-ENDLIST\n",
+			);
+
+			const capabilities = await getFfmpegHlsCapabilities();
+			const [command = "ffmpeg", ...args] = buildStreamingDownloadFfmpegArgs(
+				manifestPath,
+				outputPath,
+				capabilities,
+			);
+			execFileSync(command, args, { stdio: "pipe" });
+
+			const metadata = await probeVideo(`file://${outputPath}`);
+			expect(metadata.videoCodec).toBe("vp9");
+			expect(metadata.duration).toBeGreaterThan(0);
+		} finally {
+			rmSync(workDir, { recursive: true, force: true });
+		}
+	}, 60000);
 
 	test("repairs a real mp4 container into a probeable file", async () => {
 		const repairedFile = await repairContainer(TEST_VIDEO_WITH_AUDIO);
