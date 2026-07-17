@@ -131,6 +131,7 @@ export default function Teleprompter() {
 			.then(async () => {
 				await commands.setTeleprompterWindowLevel(true);
 				await currentWindow.show();
+				if (isWindows) await commands.refreshWindowContentProtection();
 				await currentWindow.setFocus();
 			})
 			.catch((error) => {
