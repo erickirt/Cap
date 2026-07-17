@@ -9,6 +9,7 @@ import {
 	eq,
 	inArray,
 	isNull,
+	like,
 	lte,
 	notLike,
 	or,
@@ -21,6 +22,7 @@ import {
 } from "@/lib/desktop-segments-finalization";
 import {
 	buildDesktopSegmentsRecoveryMarker,
+	DESKTOP_SEGMENTS_RECOVERY_MARKER_PREFIX,
 	getDesktopSegmentsManifestSignature,
 	parseDesktopSegmentsRecoveryMarker,
 } from "@/lib/desktop-segments-recovery-marker";
@@ -398,6 +400,9 @@ export async function recoverStaleDesktopSegments({
 	const staleBefore = new Date(
 		now.getTime() - DESKTOP_SEGMENTS_RECOVERY_MIN_AGE_MS,
 	);
+	const stabilityBefore = new Date(
+		now.getTime() - DESKTOP_SEGMENTS_RECOVERY_STABILITY_MS,
+	);
 	const candidates = await db()
 		.select({
 			videoId: videos.id,
@@ -409,7 +414,16 @@ export async function recoverStaleDesktopSegments({
 			and(
 				sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.source}, '$.type')) = 'desktopSegments'`,
 				lte(videos.createdAt, staleBefore),
-				lte(videoUploads.updatedAt, staleBefore),
+				or(
+					lte(videoUploads.updatedAt, staleBefore),
+					and(
+						like(
+							videoUploads.processingMessage,
+							`${DESKTOP_SEGMENTS_RECOVERY_MARKER_PREFIX}%`,
+						),
+						lte(videoUploads.updatedAt, stabilityBefore),
+					),
+				),
 				inArray(videoUploads.phase, RECOVERABLE_UPLOAD_PHASES),
 				or(
 					isNull(videoUploads.processingError),
