@@ -24,6 +24,7 @@ const MAX_PROCESS_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const THUMBNAIL_TIMEOUT_MS = 60_000;
 const PREVIEW_GIF_TIMEOUT_MS = 30_000;
 const PROBE_H264_LEVEL_TIMEOUT_MS = 10_000;
+const FFMPEG_HLS_CAPABILITY_TIMEOUT_MS = 10_000;
 const UPLOAD_MAX_RETRIES = 4;
 const UPLOAD_RETRY_BASE_MS = 250;
 const MAX_STDERR_BYTES = 64 * 1024;
@@ -121,6 +122,18 @@ interface DashRepresentationPlaylist {
 	height: number | null;
 	path: string;
 }
+
+export interface FfmpegHlsCapabilities {
+	allowedSegmentExtensions: boolean;
+	extensionPicky: boolean;
+}
+
+const LEGACY_FFMPEG_HLS_CAPABILITIES: FfmpegHlsCapabilities = {
+	allowedSegmentExtensions: false,
+	extensionPicky: false,
+};
+
+let ffmpegHlsCapabilitiesPromise: Promise<FfmpegHlsCapabilities> | undefined;
 
 const DEFAULT_OPTIONS: Required<VideoProcessingOptions> = {
 	maxWidth: 1920,
@@ -1004,9 +1017,72 @@ async function runFfmpegCommand(
 	}
 }
 
+export function parseFfmpegHlsCapabilities(
+	helpText: string,
+): FfmpegHlsCapabilities {
+	return {
+		allowedSegmentExtensions: helpText.includes("-allowed_segment_extensions"),
+		extensionPicky: helpText.includes("-extension_picky"),
+	};
+}
+
+async function detectFfmpegHlsCapabilities(): Promise<FfmpegHlsCapabilities> {
+	const proc = registerSubprocess(
+		spawn({
+			cmd: ["ffmpeg", "-hide_banner", "-h", "demuxer=hls"],
+			stdout: "pipe",
+			stderr: "pipe",
+		}),
+	);
+
+	try {
+		const [stdoutText, stderrText, exitCode] = await withTimeout(
+			Promise.all([
+				readStreamWithLimit(
+					proc.stdout as ReadableStream<Uint8Array>,
+					MAX_STDERR_BYTES,
+				),
+				readStreamWithLimit(
+					proc.stderr as ReadableStream<Uint8Array>,
+					MAX_STDERR_BYTES,
+				),
+				proc.exited,
+			]),
+			FFMPEG_HLS_CAPABILITY_TIMEOUT_MS,
+			() => terminateProcess(proc),
+		);
+
+		if (exitCode !== 0) {
+			throw new Error(
+				`Failed to inspect FFmpeg HLS options: ${stderrText.slice(-1000)}`,
+			);
+		}
+
+		return parseFfmpegHlsCapabilities(`${stdoutText}\n${stderrText}`);
+	} finally {
+		await terminateProcess(proc);
+	}
+}
+
+export async function getFfmpegHlsCapabilities(): Promise<FfmpegHlsCapabilities> {
+	const capabilitiesPromise =
+		ffmpegHlsCapabilitiesPromise ?? detectFfmpegHlsCapabilities();
+	ffmpegHlsCapabilitiesPromise = capabilitiesPromise;
+
+	try {
+		return await capabilitiesPromise;
+	} catch (error) {
+		if (ffmpegHlsCapabilitiesPromise === capabilitiesPromise) {
+			ffmpegHlsCapabilitiesPromise = undefined;
+		}
+		throw error;
+	}
+}
+
 export function buildStreamingDownloadFfmpegArgs(
 	inputPath: string,
 	outputPath: string,
+	capabilities: FfmpegHlsCapabilities = LEGACY_FFMPEG_HLS_CAPABILITIES,
 ): string[] {
 	return [
 		"ffmpeg",
