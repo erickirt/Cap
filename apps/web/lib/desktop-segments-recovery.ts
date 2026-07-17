@@ -7,6 +7,7 @@ import {
 	asc,
 	desc,
 	eq,
+	gte,
 	inArray,
 	isNull,
 	like,
@@ -414,6 +415,7 @@ export async function recoverStaleDesktopSegments({
 		.where(
 			and(
 				sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.source}, '$.type')) = 'desktopSegments'`,
+				gte(videoUploads.startedAt, sql`UTC_TIMESTAMP() - INTERVAL 24 HOUR`),
 				lte(videos.createdAt, staleBefore),
 				or(
 					lte(videoUploads.updatedAt, staleBefore),
@@ -438,9 +440,6 @@ export async function recoverStaleDesktopSegments({
 		.orderBy(
 			desc(
 				sql<number>`CASE WHEN ${videoUploads.processingError} LIKE ${`%${WORKFLOW_UPGRADE_ERROR_FRAGMENT}%`} THEN 1 ELSE 0 END`,
-			),
-			desc(
-				sql<number>`CASE WHEN ${videoUploads.startedAt} >= UTC_TIMESTAMP() - INTERVAL 24 HOUR THEN 1 ELSE 0 END`,
 			),
 			asc(videoUploads.updatedAt),
 		)
