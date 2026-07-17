@@ -237,6 +237,7 @@ async function markCandidateObserved({
 	await db()
 		.update(videoUploads)
 		.set({
+			updatedAt: now,
 			processingMessage: buildDesktopSegmentsRecoveryMarker(
 				signature,
 				now.getTime(),
