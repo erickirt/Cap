@@ -763,16 +763,15 @@ describe("processVideo integration tests", () => {
 });
 
 describe("ffmpeg-backed media utilities integration tests", () => {
-	test("allows Loom DASH webm segments in generated HLS downloads", () => {
+	test("uses FFmpeg 7-compatible options for Loom DASH webm segments", () => {
 		const args = buildStreamingDownloadFfmpegArgs(
 			"/tmp/input.m3u8",
 			"/tmp/output.mkv",
 		);
 
-		expect(args).toContain("-allowed_segment_extensions");
-		expect(args).toContain("-extension_picky");
-		expect(args[args.indexOf("-allowed_segment_extensions") + 1]).toBe("ALL");
-		expect(args[args.indexOf("-extension_picky") + 1]).toBe("0");
+		expect(args[args.indexOf("-allowed_extensions") + 1]).toBe("ALL");
+		expect(args).not.toContain("-allowed_segment_extensions");
+		expect(args).not.toContain("-extension_picky");
 	});
 
 	test("repairs a real mp4 container into a probeable file", async () => {
