@@ -415,7 +415,7 @@ export async function recoverStaleDesktopSegments({
 		.where(
 			and(
 				sql`JSON_UNQUOTE(JSON_EXTRACT(${videos.source}, '$.type')) = 'desktopSegments'`,
-				gte(videoUploads.startedAt, sql`UTC_TIMESTAMP() - INTERVAL 24 HOUR`),
+				gte(videoUploads.startedAt, sql`UTC_TIMESTAMP() - INTERVAL 26 HOUR`),
 				lte(videos.createdAt, staleBefore),
 				or(
 					lte(videoUploads.updatedAt, staleBefore),
