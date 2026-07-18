@@ -1,0 +1,75 @@
+import "server-only";
+
+import { db } from "@cap/database";
+import {
+	agentApiAuthorizationCodes,
+	agentApiIdempotency,
+	agentApiKeys,
+} from "@cap/database/schema";
+import { lt } from "drizzle-orm";
+
+const affectedRows = (result: unknown) =>
+	Array.isArray(result)
+		? ((result[0] as { affectedRows?: number } | undefined)?.affectedRows ?? 0)
+		: ((result as { affectedRows?: number }).affectedRows ?? 0);
+
+const deleteInBatches = async (
+	deleteBatch: () => Promise<unknown>,
+	batchSize: number,
+	maxBatches: number,
+) => {
+	let deleted = 0;
+	for (let batch = 0; batch < maxBatches; batch += 1) {
+		const count = affectedRows(await deleteBatch());
+		deleted += count;
+		if (count < batchSize) break;
+	}
+	return deleted;
+};
+
+export const cleanupExpiredAgentApiRecords = async (input?: {
+	now?: Date;
+	batchSize?: number;
+	maxBatches?: number;
+	keyRetentionMs?: number;
+}) => {
+	const now = input?.now ?? new Date();
+	const batchSize = Math.min(Math.max(input?.batchSize ?? 1_000, 1), 5_000);
+	const maxBatches = Math.min(Math.max(input?.maxBatches ?? 10, 1), 20);
+	const keyRetentionMs = Math.max(
+		input?.keyRetentionMs ?? 30 * 24 * 60 * 60 * 1_000,
+		0,
+	);
+	const expiredKeyCutoff = new Date(now.getTime() - keyRetentionMs);
+	const database = db();
+
+	const authorizationCodes = await deleteInBatches(
+		() =>
+			database
+				.delete(agentApiAuthorizationCodes)
+				.where(lt(agentApiAuthorizationCodes.expiresAt, now))
+				.limit(batchSize),
+		batchSize,
+		maxBatches,
+	);
+	const idempotencyRecords = await deleteInBatches(
+		() =>
+			database
+				.delete(agentApiIdempotency)
+				.where(lt(agentApiIdempotency.expiresAt, now))
+				.limit(batchSize),
+		batchSize,
+		maxBatches,
+	);
+	const accessTokens = await deleteInBatches(
+		() =>
+			database
+				.delete(agentApiKeys)
+				.where(lt(agentApiKeys.expiresAt, expiredKeyCutoff))
+				.limit(batchSize),
+		batchSize,
+		maxBatches,
+	);
+
+	return { authorizationCodes, idempotencyRecords, accessTokens };
+};
