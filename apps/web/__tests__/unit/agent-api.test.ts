@@ -8,6 +8,7 @@ import {
 	decodeAgentCursor,
 	encodeAgentCursor,
 	escapeAgentLikePattern,
+	isAgentHttpUrl,
 	parseAgentDate,
 	parseAgentLimit,
 	parseAgentVtt,
@@ -52,6 +53,13 @@ describe("agent API normalization", () => {
 
 	it("escapes SQL LIKE metacharacters in literal searches", () => {
 		expect(escapeAgentLikePattern("100%_ready!")).toBe("100!%!_ready!!");
+	});
+
+	it("accepts only absolute HTTP developer logo URLs", () => {
+		expect(isAgentHttpUrl("https://cdn.example.com/logo.png")).toBe(true);
+		expect(isAgentHttpUrl("http://localhost:3000/logo.png")).toBe(true);
+		expect(isAgentHttpUrl("javascript:alert(1)")).toBe(false);
+		expect(isAgentHttpUrl("/logo.png")).toBe(false);
 	});
 
 	it("normalizes VTT into millisecond cues and text", () => {

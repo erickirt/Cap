@@ -77,6 +77,7 @@ import {
 	decodeAgentCursor,
 	encodeAgentCursor,
 	escapeAgentLikePattern,
+	isAgentHttpUrl,
 	normalizeAgentMetadata,
 	parseAgentDate,
 	parseAgentLimit,
@@ -3733,10 +3734,14 @@ const AgentManagementHandlersLive = HttpApiBuilder.group(
 							);
 						}
 						const name = payload.name?.trim();
+						const logoUrl =
+							payload.logoUrl === null ? null : payload.logoUrl?.trim();
 						if (
 							(name !== undefined &&
 								(name.length === 0 || name.length > 255)) ||
-							(payload.logoUrl?.length ?? 0) > 1024
+							(logoUrl !== undefined &&
+								logoUrl !== null &&
+								(logoUrl.length > 1024 || !isAgentHttpUrl(logoUrl)))
 						) {
 							return yield* badRequest(
 								requestId,
@@ -3747,7 +3752,7 @@ const AgentManagementHandlersLive = HttpApiBuilder.group(
 							principal,
 							operation: "update_developer_app",
 							idempotencyKey: yield* requestIdempotencyKey,
-							request: { path, ...payload, name },
+							request: { path, ...payload, name, logoUrl },
 							requestId,
 							decodeReplay: decodeMutationResponse,
 							execute: async (tx) => {
@@ -3770,7 +3775,7 @@ const AgentManagementHandlersLive = HttpApiBuilder.group(
 									.set({
 										name,
 										environment: payload.environment,
-										logoUrl: payload.logoUrl,
+										logoUrl,
 										updatedAt: now,
 									})
 									.where(eq(Db.developerApps.id, path.appId));

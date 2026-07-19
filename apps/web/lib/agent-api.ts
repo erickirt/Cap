@@ -42,6 +42,18 @@ export const parseAgentLimit = (value: string | undefined) => {
 export const escapeAgentLikePattern = (value: string) =>
 	value.replace(/[!%_]/g, (match) => `!${match}`);
 
+export const isAgentHttpUrl = (value: string) => {
+	try {
+		const url = new URL(value);
+		return (
+			(url.protocol === "http:" || url.protocol === "https:") &&
+			url.hostname.length > 0
+		);
+	} catch {
+		return false;
+	}
+};
+
 const parseAgentUtcDate = (value: string) => {
 	const match = value.match(
 		/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?Z$/,
