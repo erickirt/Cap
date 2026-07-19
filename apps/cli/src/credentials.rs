@@ -10,7 +10,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{OutputFormat, atomic, write_json};
+#[cfg(unix)]
+use crate::atomic;
+use crate::{OutputFormat, write_json};
 
 pub const DEFAULT_SERVER: &str = "https://cap.so";
 const AGENT_KEYRING_SERVICE: &str = "so.cap.cli";
