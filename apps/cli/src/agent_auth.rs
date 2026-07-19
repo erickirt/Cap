@@ -184,6 +184,15 @@ async fn wait_for_callback(
         .next()
         .ok_or_else(|| "Browser approval was not valid HTTP".to_string())?;
     if method != "GET" {
+        let body = "Authorization request used an invalid HTTP method.\n";
+        let response = format!(
+            "HTTP/1.1 405 Method Not Allowed\r\nAllow: GET\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .map_err(|error| error.to_string())?;
         return Err("Browser approval used an invalid HTTP method".to_string());
     }
     let target = request_line
@@ -479,5 +488,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(callback.await.unwrap().unwrap(), "one_time_code");
+    }
+
+    #[tokio::test]
+    async fn callback_rejects_non_get_requests_with_http_response() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let callback = tokio::spawn(wait_for_callback(
+            listener,
+            "expected_state",
+            Duration::from_secs(2),
+        ));
+        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+        client
+            .write_all(b"POST /callback HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).await.unwrap();
+        assert!(response.starts_with("HTTP/1.1 405 Method Not Allowed\r\n"));
+        assert!(response.contains("\r\nAllow: GET\r\n"));
+        assert!(response.ends_with("Authorization request used an invalid HTTP method.\n"));
+        assert_eq!(
+            callback.await.unwrap().unwrap_err(),
+            "Browser approval used an invalid HTTP method"
+        );
     }
 }
