@@ -451,8 +451,9 @@ const startApiServer = async () => {
 			outgoing.writeHead(response.status, Object.fromEntries(response.headers));
 			outgoing.end(responseBody);
 		} catch (error) {
+			console.error("Agent E2E request failed", error);
 			outgoing.writeHead(500, { "Content-Type": "text/plain" });
-			outgoing.end(error instanceof Error ? error.message : String(error));
+			outgoing.end("Internal Server Error");
 		}
 	});
 	await new Promise<void>((resolveListen, reject) => {

@@ -77,6 +77,17 @@ describe("agent API normalization", () => {
 		expect(agentTranscriptRevision(rendered)).toMatch(/^[a-f0-9]{64}$/);
 	});
 
+	it("removes complete and unterminated VTT tags", () => {
+		const cues = parseAgentVtt(
+			"WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\nSafe <script>alert(1)</script> text\n\n2\n00:00:01.000 --> 00:00:02.000\nBefore <script\n",
+		);
+
+		expect(cues).toEqual([
+			{ startMs: 0, endMs: 1_000, text: "Safe alert(1) text" },
+			{ startMs: 1_000, endMs: 2_000, text: "Before" },
+		]);
+	});
+
 	it("handles representative and large synthetic transcript shapes", () => {
 		for (const bytes of [10_000, 100_000, 500_000]) {
 			const vtt = makeSyntheticVtt(bytes);

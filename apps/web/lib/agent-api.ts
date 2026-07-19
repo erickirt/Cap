@@ -110,11 +110,27 @@ const parseVttTimestamp = (value: string) => {
 	return ((hours * 60 + minutes) * 60 + seconds) * 1000 + milliseconds;
 };
 
+const stripVttCueTags = (value: string) => {
+	const text: string[] = [];
+	let insideTag = false;
+
+	for (const character of value) {
+		if (character === "<") {
+			insideTag = true;
+			continue;
+		}
+		if (insideTag) {
+			if (character === ">") insideTag = false;
+			continue;
+		}
+		text.push(character);
+	}
+
+	return text.join("");
+};
+
 const normalizeCueText = (lines: string[]) =>
-	lines
-		.join("\n")
-		.replace(/<[^>]+>/g, "")
-		.trim();
+	stripVttCueTags(lines.join("\n")).trim();
 
 export const parseAgentVtt = (
 	vtt: string,
