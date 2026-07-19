@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import * as Db from "@cap/database/schema";
 import { Agent } from "@cap/web-domain";
 import { HttpServerRequest } from "@effect/platform";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull, lte, or } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import { Database } from "./Database.ts";
 
@@ -44,6 +44,15 @@ const parseBearerToken = (authorization: string | undefined) => {
 
 const hashToken = (token: string) =>
 	createHash("sha256").update(token).digest("hex");
+
+const agentLastUsedRefreshMs = 5 * 60 * 1000;
+
+export const shouldRefreshAgentLastUsedAt = (
+	lastUsedAt: Date | null,
+	now: Date,
+) =>
+	lastUsedAt === null ||
+	now.getTime() - lastUsedAt.getTime() >= agentLastUsedRefreshMs;
 
 const agentScopes = new Set<Agent.AgentScope>([
 	"caps:read",
@@ -118,6 +127,7 @@ export const AgentHttpAuthMiddlewareLive = Layer.effect(
 								scopes: Db.agentApiKeys.scopes,
 								expiresAt: Db.agentApiKeys.expiresAt,
 								revokedAt: Db.agentApiKeys.revokedAt,
+								lastUsedAt: Db.agentApiKeys.lastUsedAt,
 								id: Db.users.id,
 								email: Db.users.email,
 								activeOrganizationId: Db.users.activeOrganizationId,
@@ -135,6 +145,28 @@ export const AgentHttpAuthMiddlewareLive = Layer.effect(
 					if (!scopes) return yield* authRequired();
 					if (!isAgentReadAccessEnabled(row.email)) {
 						return yield* temporarilyUnavailable();
+					}
+					const now = new Date();
+					if (shouldRefreshAgentLastUsedAt(row.lastUsedAt, now)) {
+						yield* database
+							.use((db) =>
+								db
+									.update(Db.agentApiKeys)
+									.set({ lastUsedAt: now })
+									.where(
+										and(
+											eq(Db.agentApiKeys.id, row.tokenId),
+											or(
+												isNull(Db.agentApiKeys.lastUsedAt),
+												lte(
+													Db.agentApiKeys.lastUsedAt,
+													new Date(now.getTime() - agentLastUsedRefreshMs),
+												),
+											),
+										),
+									),
+							)
+							.pipe(Effect.catchAll(() => Effect.void));
 					}
 					return Agent.AgentPrincipal.of({
 						id: row.id,

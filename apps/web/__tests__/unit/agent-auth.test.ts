@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import { isLegacyAgentKeySource } from "@cap/web-backend";
+import {
+	isLegacyAgentKeySource,
+	shouldRefreshAgentLastUsedAt,
+} from "@cap/web-backend";
 import { describe, expect, it } from "vitest";
 import {
 	buildAgentCallbackUrl,
@@ -153,5 +156,18 @@ describe("legacy agent credentials", () => {
 		expect(isLegacyAgentKeySource("unknown")).toBe(true);
 		expect(isLegacyAgentKeySource("mobile")).toBe(false);
 		expect(isLegacyAgentKeySource("extension")).toBe(false);
+	});
+});
+
+describe("agent credential usage tracking", () => {
+	it("refreshes missing and stale usage timestamps", () => {
+		const now = new Date("2026-07-19T00:00:00.000Z");
+		expect(shouldRefreshAgentLastUsedAt(null, now)).toBe(true);
+		expect(
+			shouldRefreshAgentLastUsedAt(new Date("2026-07-18T23:55:00.000Z"), now),
+		).toBe(true);
+		expect(
+			shouldRefreshAgentLastUsedAt(new Date("2026-07-18T23:55:00.001Z"), now),
+		).toBe(false);
 	});
 });
