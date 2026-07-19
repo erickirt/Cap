@@ -231,6 +231,26 @@ describe("agent API contract", () => {
 		expect(memberSource).toContain("Db.spaceMembers");
 	});
 
+	it("ignores tombstones during organization creation", () => {
+		const source = readFileSync(
+			join(process.cwd(), "app/api/v1/[...route]/route.ts"),
+			"utf8",
+		);
+		const organizationStart = source.indexOf('.handle("createOrganization"');
+		const organizationSource = source.slice(
+			organizationStart,
+			source.indexOf('.handle("updateOrganization"', organizationStart),
+		);
+
+		expect(organizationSource).toContain(
+			"isNull(Db.organizations.tombstoneAt)",
+		);
+		expect(organizationSource).toMatch(
+			/deterministicAgentId\(\s*"organization",\s*principal\.id,\s*idempotencyKey,/,
+		);
+		expect(organizationSource).toContain("organization.tombstoneAt !== null");
+	});
+
 	it("stores only developer key identifiers in idempotency responses", () => {
 		const source = readFileSync(
 			join(process.cwd(), "app/api/v1/[...route]/route.ts"),

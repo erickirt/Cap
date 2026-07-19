@@ -5635,17 +5635,18 @@ const AgentManagementHandlersLive = HttpApiBuilder.group(
 								"Organization name is invalid",
 							);
 						}
+						const idempotencyKey = yield* requestIdempotencyKey;
 						const organizationId = Organisation.OrganisationId.make(
 							deterministicAgentId(
 								"organization",
 								principal.id,
-								name.toLowerCase(),
+								idempotencyKey,
 							),
 						);
 						return yield* runAgentMutation({
 							principal,
 							operation: "create_organization",
-							idempotencyKey: yield* requestIdempotencyKey,
+							idempotencyKey,
 							request: { name },
 							requestId,
 							decodeReplay: decodeMutationResponse,
@@ -5654,7 +5655,10 @@ const AgentManagementHandlersLive = HttpApiBuilder.group(
 									.select({ id: Db.organizations.id })
 									.from(Db.organizations)
 									.where(
-										sql`LOWER(${Db.organizations.name}) = ${name.toLowerCase()}`,
+										and(
+											sql`LOWER(${Db.organizations.name}) = ${name.toLowerCase()}`,
+											isNull(Db.organizations.tombstoneAt),
+										),
 									)
 									.limit(1);
 								if (existingName && existingName.id !== organizationId) {
@@ -5674,6 +5678,7 @@ const AgentManagementHandlersLive = HttpApiBuilder.group(
 									.select({
 										ownerId: Db.organizations.ownerId,
 										name: Db.organizations.name,
+										tombstoneAt: Db.organizations.tombstoneAt,
 									})
 									.from(Db.organizations)
 									.where(eq(Db.organizations.id, organizationId))
@@ -5682,7 +5687,8 @@ const AgentManagementHandlersLive = HttpApiBuilder.group(
 								if (
 									!organization ||
 									organization.ownerId !== principal.id ||
-									organization.name !== name
+									organization.name !== name ||
+									organization.tombstoneAt !== null
 								) {
 									return { state: "conflict" };
 								}
