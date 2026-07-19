@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+	agentMutationRequestHash,
 	isAgentIdempotencyKey,
 	isAgentWriteAccessEnabled,
 } from "@/lib/agent-write";
@@ -33,6 +34,21 @@ describe("agent write safety", () => {
 		);
 		expect(isAgentIdempotencyKey("short")).toBe(false);
 		expect(isAgentIdempotencyKey("contains a secret")).toBe(false);
+	});
+
+	it("keeps mutation identity independent of credential rotation", () => {
+		const request = { videoId: "cap_test", title: "Updated" };
+		const requestHash = agentMutationRequestHash("update_cap", request);
+		expect(agentMutationRequestHash("update_cap", request)).toBe(requestHash);
+		expect(
+			agentMutationRequestHash("update_cap", {
+				...request,
+				title: "Different",
+			}),
+		).not.toBe(requestHash);
+		expect(agentMutationRequestHash("delete_cap", request)).not.toBe(
+			requestHash,
+		);
 	});
 
 	it("completes the mutation and idempotency record in one transaction", () => {

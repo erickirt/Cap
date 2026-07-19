@@ -44,6 +44,9 @@ const getAffectedRows = (result: unknown) => {
 const hash = (value: string) =>
 	createHash("sha256").update(value).digest("hex");
 
+export const agentMutationRequestHash = (operation: string, request: unknown) =>
+	hash(JSON.stringify({ operation, request }));
+
 export const isAgentIdempotencyKey = (value: string | undefined) =>
 	typeof value === "string" &&
 	value.length >= 8 &&
@@ -201,12 +204,9 @@ export const runAgentMutation = <A>(input: {
 			);
 		}
 		const database = yield* Database;
-		const requestHash = hash(
-			JSON.stringify({
-				tokenId: input.principal.tokenId,
-				operation: input.operation,
-				request: input.request,
-			}),
+		const requestHash = agentMutationRequestHash(
+			input.operation,
+			input.request,
 		);
 		const result = yield* database.use((db) =>
 			db.transaction(async (tx) => {
@@ -294,12 +294,9 @@ export const runAgentExternalMutation = <A, E, R>(input: {
 			);
 		}
 		const database = yield* Database;
-		const requestHash = hash(
-			JSON.stringify({
-				tokenId: input.principal.tokenId,
-				operation: input.operation,
-				request: input.request,
-			}),
+		const requestHash = agentMutationRequestHash(
+			input.operation,
+			input.request,
 		);
 		const acquired = yield* database.use((db) =>
 			db.transaction(async (tx) => {
