@@ -94,18 +94,6 @@ const parseScopes = (value: unknown) => {
 export const isLegacyAgentKeySource = (source: string) =>
 	source === "desktop" || source === "unknown";
 
-export const isAgentReadAccessEnabled = (email: string) => {
-	if (process.env.NODE_ENV !== "production") return true;
-	if (process.env.CAP_AGENT_API_READ_ENABLED !== "true") return false;
-	const allowlist = new Set(
-		(process.env.CAP_AGENT_API_ALLOWLIST ?? "")
-			.split(",")
-			.map((entry) => entry.trim().toLowerCase())
-			.filter(Boolean),
-	);
-	return allowlist.has(email.trim().toLowerCase());
-};
-
 export const AgentHttpAuthMiddlewareLive = Layer.effect(
 	Agent.AgentHttpAuthMiddleware,
 	Effect.gen(function* () {
@@ -143,9 +131,6 @@ export const AgentHttpAuthMiddlewareLive = Layer.effect(
 					}
 					const scopes = parseScopes(row.scopes);
 					if (!scopes) return yield* authRequired();
-					if (!isAgentReadAccessEnabled(row.email)) {
-						return yield* temporarilyUnavailable();
-					}
 					const now = new Date();
 					if (shouldRefreshAgentLastUsedAt(row.lastUsedAt, now)) {
 						yield* database
@@ -196,9 +181,6 @@ export const AgentHttpAuthMiddlewareLive = Layer.effect(
 				);
 				if (!row) return yield* authRequired();
 				if (!isLegacyAgentKeySource(row.source)) return yield* authRequired();
-				if (!isAgentReadAccessEnabled(row.email)) {
-					return yield* temporarilyUnavailable();
-				}
 
 				return Agent.AgentPrincipal.of({
 					id: row.id,

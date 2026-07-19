@@ -147,20 +147,3 @@ export const buildAgentCallbackUrl = (
 	if (params.error) url.searchParams.set("error", params.error);
 	return url.toString();
 };
-
-export const isAgentReadAccessEnabled = (input: {
-	nodeEnv: string | undefined;
-	enabled: string | undefined;
-	allowlist: string | undefined;
-	email: string;
-}) => {
-	if (input.nodeEnv !== "production") return true;
-	if (input.enabled !== "true") return false;
-	const allowedEmails = new Set(
-		(input.allowlist ?? "")
-			.split(",")
-			.map((email) => email.trim().toLowerCase())
-			.filter(Boolean),
-	);
-	return allowedEmails.has(input.email.trim().toLowerCase());
-};

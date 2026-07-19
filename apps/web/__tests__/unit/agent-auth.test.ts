@@ -10,7 +10,6 @@ import {
 	hashAgentSecret,
 	isAgentCodeVerifier,
 	isAgentLoopbackRedirectUri,
-	isAgentReadAccessEnabled,
 	parseAgentAuthorizationRequest,
 	parseAgentScopes,
 	verifyAgentCodeChallenge,
@@ -109,47 +108,6 @@ describe("agent browser authorization", () => {
 		expect(hashAgentSecret(token)).not.toContain(token);
 	});
 });
-
-describe("agent API dark launch", () => {
-	it("requires both the production switch and exact allowlist membership", () => {
-		expect(
-			isAgentReadAccessEnabled({
-				nodeEnv: "production",
-				enabled: "true",
-				allowlist: "agent-test@cap.so",
-				email: "agent-test@cap.so",
-			}),
-		).toBe(true);
-		expect(
-			isAgentReadAccessEnabled({
-				nodeEnv: "production",
-				enabled: "false",
-				allowlist: "agent-test@cap.so",
-				email: "agent-test@cap.so",
-			}),
-		).toBe(false);
-		expect(
-			isAgentReadAccessEnabled({
-				nodeEnv: "production",
-				enabled: "true",
-				allowlist: "another@cap.so",
-				email: "agent-test@cap.so",
-			}),
-		).toBe(false);
-	});
-
-	it("stays available in local and test environments", () => {
-		expect(
-			isAgentReadAccessEnabled({
-				nodeEnv: "test",
-				enabled: undefined,
-				allowlist: undefined,
-				email: "developer@cap.so",
-			}),
-		).toBe(true);
-	});
-});
-
 describe("legacy agent credentials", () => {
 	it("accepts desktop-era keys without extending mobile or extension keys", () => {
 		expect(isLegacyAgentKeySource("desktop")).toBe(true);
