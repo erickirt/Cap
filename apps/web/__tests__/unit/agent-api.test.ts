@@ -7,6 +7,7 @@ import {
 	agentTranscriptRevision,
 	decodeAgentCursor,
 	encodeAgentCursor,
+	escapeAgentLikePattern,
 	parseAgentDate,
 	parseAgentLimit,
 	parseAgentVtt,
@@ -47,6 +48,10 @@ describe("agent API normalization", () => {
 		expect(parseAgentDate("not-a-date")).toBeUndefined();
 		expect(parseAgentDate("2026-07-18T13:00:00+01:00")).toBeUndefined();
 		expect(parseAgentDate("2026-02-30T12:00:00Z")).toBeUndefined();
+	});
+
+	it("escapes SQL LIKE metacharacters in literal searches", () => {
+		expect(escapeAgentLikePattern("100%_ready!")).toBe("100!%!_ready!!");
 	});
 
 	it("normalizes VTT into millisecond cues and text", () => {

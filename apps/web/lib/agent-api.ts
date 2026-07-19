@@ -39,6 +39,9 @@ export const parseAgentLimit = (value: string | undefined) => {
 	return Math.min(parsed, 100);
 };
 
+export const escapeAgentLikePattern = (value: string) =>
+	value.replace(/[!%_]/g, (match) => `!${match}`);
+
 const parseAgentUtcDate = (value: string) => {
 	const match = value.match(
 		/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?Z$/,

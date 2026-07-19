@@ -55,7 +55,6 @@ import {
 	gt,
 	inArray,
 	isNull,
-	like,
 	lt,
 	ne,
 	or,
@@ -77,6 +76,7 @@ import {
 	agentTranscriptRevision,
 	decodeAgentCursor,
 	encodeAgentCursor,
+	escapeAgentLikePattern,
 	normalizeAgentMetadata,
 	parseAgentDate,
 	parseAgentLimit,
@@ -745,7 +745,9 @@ const listCaps = Effect.fn("Agent.listCaps")(function* (
 				? ne(Db.videos.ownerId, principal.id)
 				: undefined,
 			isNull(Db.organizations.tombstoneAt),
-			search ? like(Db.videos.name, `%${search}%`) : undefined,
+			search
+				? sql`${Db.videos.name} LIKE ${`%${escapeAgentLikePattern(search)}%`} ESCAPE '!'`
+				: undefined,
 			updatedAfter ? gt(Db.videos.updatedAt, updatedAfter) : undefined,
 			cursorFilter,
 		];
