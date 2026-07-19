@@ -1676,6 +1676,21 @@ agentE2e("Cap agent local Docker E2E", () => {
 			],
 		);
 		await connection.execute(
+			`INSERT INTO agent_api_operations
+				(id, userId, kind, resourceId, state, payload, updatedAt, completedAt)
+			 VALUES
+				('op_e2e_old', ?, 'duplicate_cap', ?, 'succeeded', ?, DATE_SUB(NOW(), INTERVAL 31 DAY), DATE_SUB(NOW(), INTERVAL 31 DAY)),
+				('op_e2e_run', ?, 'duplicate_cap', ?, 'running', ?, DATE_SUB(NOW(), INTERVAL 31 DAY), NULL)`,
+			[
+				userId,
+				videoId,
+				JSON.stringify({ videoId }),
+				userId,
+				videoId,
+				JSON.stringify({ videoId }),
+			],
+		);
+		await connection.execute(
 			`INSERT INTO agent_api_keys
 				(id, userId, tokenHash, name, scopes, expiresAt, revokedAt)
 			 VALUES
@@ -1719,24 +1734,31 @@ agentE2e("Cap agent local Docker E2E", () => {
 		const deleted = asObject(cleanupBody.deleted);
 		expect(Number(deleted.authorizationCodes)).toBeGreaterThanOrEqual(1);
 		expect(Number(deleted.idempotencyRecords)).toBeGreaterThanOrEqual(1);
+		expect(Number(deleted.operations)).toBeGreaterThanOrEqual(1);
 		expect(Number(deleted.accessTokens)).toBeGreaterThanOrEqual(2);
 		const [remaining] = await connection.execute<RowDataPacket[]>(
 			`SELECT
 				(SELECT COUNT(*) FROM agent_api_authorization_codes WHERE id = 'cod_e2e_live') AS liveCodes,
 				(SELECT COUNT(*) FROM agent_api_idempotency WHERE id = 'ide_e2e_live') AS liveIdempotency,
+				(SELECT COUNT(*) FROM agent_api_operations WHERE id = 'op_e2e_ready') AS recentOperations,
+				(SELECT COUNT(*) FROM agent_api_operations WHERE id = 'op_e2e_run') AS runningOperations,
 				(SELECT COUNT(*) FROM agent_api_keys WHERE id = 'key_e2e_live2') AS liveKeys,
 				(SELECT COUNT(*) FROM agent_api_keys WHERE id = 'key_e2e_rvnew') AS recentRevokedKeys,
 				(SELECT COUNT(*) FROM agent_api_authorization_codes WHERE id = 'cod_e2e_expired') AS expiredCodes,
 				(SELECT COUNT(*) FROM agent_api_idempotency WHERE id = 'ide_e2e_expired') AS expiredIdempotency,
+				(SELECT COUNT(*) FROM agent_api_operations WHERE id = 'op_e2e_old') AS oldOperations,
 				(SELECT COUNT(*) FROM agent_api_keys WHERE id = 'key_e2e_old') AS expiredKeys,
 				(SELECT COUNT(*) FROM agent_api_keys WHERE id = 'key_e2e_rvold') AS oldRevokedKeys`,
 		);
 		expect(Number(remaining[0]?.liveCodes)).toBe(1);
 		expect(Number(remaining[0]?.liveIdempotency)).toBe(1);
+		expect(Number(remaining[0]?.recentOperations)).toBe(1);
+		expect(Number(remaining[0]?.runningOperations)).toBe(1);
 		expect(Number(remaining[0]?.liveKeys)).toBe(1);
 		expect(Number(remaining[0]?.recentRevokedKeys)).toBe(1);
 		expect(Number(remaining[0]?.expiredCodes)).toBe(0);
 		expect(Number(remaining[0]?.expiredIdempotency)).toBe(0);
+		expect(Number(remaining[0]?.oldOperations)).toBe(0);
 		expect(Number(remaining[0]?.expiredKeys)).toBe(0);
 		expect(Number(remaining[0]?.oldRevokedKeys)).toBe(0);
 	});
