@@ -397,6 +397,21 @@ describe("agent API contract", () => {
 		expect(decoded.videos[0]?.id).toBe("video_synthetic");
 	});
 
+	it("bounds folder deletion traversal", () => {
+		const source = readFileSync(
+			join(process.cwd(), "app/api/v1/[...route]/route.ts"),
+			"utf8",
+		);
+		const deleteFolderStart = source.indexOf('.handle("deleteFolder"');
+		const deleteFolderSource = source.slice(
+			deleteFolderStart,
+			source.indexOf('.handle("createSpace"', deleteFolderStart),
+		);
+
+		expect(deleteFolderSource).toContain("const seenFolderIds = new Set");
+		expect(deleteFolderSource).not.toContain("folderIds.includes");
+	});
+
 	it("validates and atomically merges public collection customization", () => {
 		const source = readFileSync(
 			join(process.cwd(), "app/api/v1/[...route]/route.ts"),

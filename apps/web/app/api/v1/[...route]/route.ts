@@ -7958,6 +7958,7 @@ const AgentManagementHandlersLive = HttpApiBuilder.group(
 									.for("update");
 								if (!folder) return { state: "not_found" };
 								const folderIds = [folder.id];
+								const seenFolderIds = new Set(folderIds);
 								for (let offset = 0; offset < folderIds.length; offset += 100) {
 									if (folderIds.length > 1_000) return { state: "conflict" };
 									const parents = folderIds.slice(offset, offset + 100);
@@ -7965,11 +7966,11 @@ const AgentManagementHandlersLive = HttpApiBuilder.group(
 										.select({ id: Db.folders.id })
 										.from(Db.folders)
 										.where(inArray(Db.folders.parentId, parents));
-									folderIds.push(
-										...children
-											.map((child) => child.id)
-											.filter((id) => !folderIds.includes(id)),
-									);
+									for (const child of children) {
+										if (seenFolderIds.has(child.id)) continue;
+										seenFolderIds.add(child.id);
+										folderIds.push(child.id);
+									}
 								}
 								if (folder.spaceId === null) {
 									await tx
