@@ -1677,16 +1677,24 @@ agentE2e("Cap agent local Docker E2E", () => {
 		);
 		await connection.execute(
 			`INSERT INTO agent_api_keys
-				(id, userId, tokenHash, name, scopes, expiresAt)
+				(id, userId, tokenHash, name, scopes, expiresAt, revokedAt)
 			 VALUES
-				('key_e2e_old', ?, ?, 'Expired cleanup key', ?, DATE_SUB(NOW(), INTERVAL 31 DAY)),
-				('key_e2e_live2', ?, ?, 'Live cleanup key', ?, DATE_ADD(NOW(), INTERVAL 1 DAY))`,
+				('key_e2e_old', ?, ?, 'Expired cleanup key', ?, DATE_SUB(NOW(), INTERVAL 31 DAY), NULL),
+				('key_e2e_live2', ?, ?, 'Live cleanup key', ?, DATE_ADD(NOW(), INTERVAL 1 DAY), NULL),
+				('key_e2e_rvold', ?, ?, 'Old revoked cleanup key', ?, DATE_ADD(NOW(), INTERVAL 1 DAY), DATE_SUB(NOW(), INTERVAL 31 DAY)),
+				('key_e2e_rvnew', ?, ?, 'Recent revoked cleanup key', ?, DATE_ADD(NOW(), INTERVAL 1 DAY), NOW())`,
 			[
 				userId,
 				"5".repeat(64),
 				JSON.stringify(["caps:read"]),
 				userId,
 				"6".repeat(64),
+				JSON.stringify(["caps:read"]),
+				userId,
+				"7".repeat(64),
+				JSON.stringify(["caps:read"]),
+				userId,
+				"8".repeat(64),
 				JSON.stringify(["caps:read"]),
 			],
 		);
@@ -1711,22 +1719,26 @@ agentE2e("Cap agent local Docker E2E", () => {
 		const deleted = asObject(cleanupBody.deleted);
 		expect(Number(deleted.authorizationCodes)).toBeGreaterThanOrEqual(1);
 		expect(Number(deleted.idempotencyRecords)).toBeGreaterThanOrEqual(1);
-		expect(Number(deleted.accessTokens)).toBeGreaterThanOrEqual(1);
+		expect(Number(deleted.accessTokens)).toBeGreaterThanOrEqual(2);
 		const [remaining] = await connection.execute<RowDataPacket[]>(
 			`SELECT
 				(SELECT COUNT(*) FROM agent_api_authorization_codes WHERE id = 'cod_e2e_live') AS liveCodes,
 				(SELECT COUNT(*) FROM agent_api_idempotency WHERE id = 'ide_e2e_live') AS liveIdempotency,
 				(SELECT COUNT(*) FROM agent_api_keys WHERE id = 'key_e2e_live2') AS liveKeys,
+				(SELECT COUNT(*) FROM agent_api_keys WHERE id = 'key_e2e_rvnew') AS recentRevokedKeys,
 				(SELECT COUNT(*) FROM agent_api_authorization_codes WHERE id = 'cod_e2e_expired') AS expiredCodes,
 				(SELECT COUNT(*) FROM agent_api_idempotency WHERE id = 'ide_e2e_expired') AS expiredIdempotency,
-				(SELECT COUNT(*) FROM agent_api_keys WHERE id = 'key_e2e_old') AS expiredKeys`,
+				(SELECT COUNT(*) FROM agent_api_keys WHERE id = 'key_e2e_old') AS expiredKeys,
+				(SELECT COUNT(*) FROM agent_api_keys WHERE id = 'key_e2e_rvold') AS oldRevokedKeys`,
 		);
 		expect(Number(remaining[0]?.liveCodes)).toBe(1);
 		expect(Number(remaining[0]?.liveIdempotency)).toBe(1);
 		expect(Number(remaining[0]?.liveKeys)).toBe(1);
+		expect(Number(remaining[0]?.recentRevokedKeys)).toBe(1);
 		expect(Number(remaining[0]?.expiredCodes)).toBe(0);
 		expect(Number(remaining[0]?.expiredIdempotency)).toBe(0);
 		expect(Number(remaining[0]?.expiredKeys)).toBe(0);
+		expect(Number(remaining[0]?.oldRevokedKeys)).toBe(0);
 	});
 
 	it("revokes every session only as the final destructive account action", async () => {

@@ -6,7 +6,7 @@ import {
 	agentApiIdempotency,
 	agentApiKeys,
 } from "@cap/database/schema";
-import { lt } from "drizzle-orm";
+import { lt, or } from "drizzle-orm";
 
 const affectedRows = (result: unknown) =>
 	Array.isArray(result)
@@ -40,7 +40,7 @@ export const cleanupExpiredAgentApiRecords = async (input?: {
 		input?.keyRetentionMs ?? 30 * 24 * 60 * 60 * 1_000,
 		0,
 	);
-	const expiredKeyCutoff = new Date(now.getTime() - keyRetentionMs);
+	const keyRetentionCutoff = new Date(now.getTime() - keyRetentionMs);
 	const database = db();
 
 	const authorizationCodes = await deleteInBatches(
@@ -65,7 +65,12 @@ export const cleanupExpiredAgentApiRecords = async (input?: {
 		() =>
 			database
 				.delete(agentApiKeys)
-				.where(lt(agentApiKeys.expiresAt, expiredKeyCutoff))
+				.where(
+					or(
+						lt(agentApiKeys.expiresAt, keyRetentionCutoff),
+						lt(agentApiKeys.revokedAt, keyRetentionCutoff),
+					),
+				)
 				.limit(batchSize),
 		batchSize,
 		maxBatches,
