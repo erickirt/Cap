@@ -32,6 +32,7 @@ vi.mock("workflow", () => ({
 vi.mock("server-only", () => ({}));
 
 import {
+	getAiContentGuidelines,
 	getAiLanguageInstruction,
 	shouldReplaceVideoTitle,
 } from "@/workflows/generate-ai";
@@ -133,5 +134,43 @@ describe("getAiLanguageInstruction", () => {
 
 	it("uses the selected language name", () => {
 		expect(getAiLanguageInstruction("es")).toContain("Spanish");
+	});
+});
+
+describe("getAiContentGuidelines", () => {
+	it("prioritizes subject, intention, and standalone understanding", () => {
+		const { summary } = getAiContentGuidelines(114);
+
+		expect(summary).toContain("understand the video without watching it");
+		expect(summary).toContain("subject and the speaker's intention first");
+		expect(summary).toContain(
+			"outcomes, decisions, action items, and next steps",
+		);
+		expect(summary).toContain("meaning and useful information");
+		expect(summary).toContain("minor UI actions");
+		expect(summary).toContain("never omit information required");
+		expect(summary).toContain("rather than enumerating every utterance");
+	});
+
+	it("scales summary length without padding", () => {
+		expect(getAiContentGuidelines(20).summary).toContain(
+			"no more than 35 words",
+		);
+		expect(getAiContentGuidelines(114).summary).toContain("50-90 words");
+		expect(getAiContentGuidelines(300).summary).toContain("80-150 words");
+		expect(getAiContentGuidelines(1200).summary).toContain("150-250 words");
+		expect(getAiContentGuidelines(3600).summary).toContain("250-400 words");
+		expect(getAiContentGuidelines(114).summary).toContain(
+			"Do not pad the summary",
+		);
+	});
+
+	it("omits chapters for videos shorter than two minutes", () => {
+		expect(getAiContentGuidelines(119).chapters).toContain(
+			'empty "chapters" array',
+		);
+		expect(getAiContentGuidelines(120).chapters).toContain(
+			"fewest chapters needed",
+		);
 	});
 });
