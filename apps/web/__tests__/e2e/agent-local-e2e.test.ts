@@ -838,7 +838,9 @@ agentE2e("Cap agent local Docker E2E", () => {
 		);
 		expect(uploads[0]?.phase).toBe("processing");
 		const rawFileKey = String(uploads[0]?.rawFileKey);
-		expect(rawFileKey).toBe(`${userId}/${uploadedVideoId}/raw-upload.mp4`);
+		expect(rawFileKey).toMatch(
+			new RegExp(`^${userId}/${uploadedVideoId}/verified-upload-[^.]+\\.mp4$`),
+		);
 
 		const { processVideoWorkflow } = await import("@/workflows/process-video");
 		const result = await processVideoWorkflow({
