@@ -149,7 +149,22 @@ describe("getAiContentGuidelines", () => {
 		expect(summary).toContain("meaning and useful information");
 		expect(summary).toContain("minor UI actions");
 		expect(summary).toContain("never omit information required");
-		expect(summary).toContain("rather than enumerating every utterance");
+	});
+
+	it("uses a personal voice for the primary speaker", () => {
+		const { summary } = getAiContentGuidelines(300);
+
+		expect(summary).toContain('use "I" and "my"');
+		expect(summary).toContain(
+			'Never describe the primary voice as "the speaker"',
+		);
+		expect(summary).toContain("use names only when the transcript identifies");
+		expect(summary).toContain('write "I review the proposal"');
+		expect(summary).toContain('instead of "The speaker reviews the proposal"');
+		expect(summary).toContain(
+			"Do not introduce names, projects, or personal details",
+		);
+		expect(summary).not.toContain("robot-dealer");
 	});
 
 	it("scales summary length without padding", () => {

@@ -301,9 +301,11 @@ export function getAiContentGuidelines(videoDuration: number): {
 - Then include only the essential explanation, outcomes, decisions, action items, and next steps needed to understand or act on the video.
 - Prioritize meaning and useful information over chronological retelling.
 - Omit filler, greetings, reactions, apologies, repetition, incidental conversation, minor UI actions, and timestamps unless a timestamp is essential to the viewer.
-- Use the speaker's perspective when it is clear, but do not invent intent, outcomes, or actions.
+- Write from the primary speaker's point of view. For a single-person video, use "I" and "my". Use "we" only when the speaker clearly represents a team or several participants share the discussion.
+- Never describe the primary voice as "the speaker", "the presenter", "the user", "they", or any similar detached label.
+- If multiple speakers need to be distinguished, use names only when the transcript identifies them unambiguously. Otherwise summarize the discussion directly without inventing names or identities.
 - Be concise, but never omit information required to understand or act on the video. Do not pad the summary to reach a target length.
-- For example, summarize a short drawing-feature test as "I test the drawing and highlighting tools, including how highlights behave on moving elements" rather than enumerating every utterance and interaction.
+- Convert detached narration into first person. For example, write "I review the proposal" instead of "The speaker reviews the proposal". Do not introduce names, projects, or personal details that are not present in the transcript.
 - ${lengthInstruction}`,
 		chapters:
 			videoDuration < 120
