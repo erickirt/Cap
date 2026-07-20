@@ -8,7 +8,7 @@ vi.mock("@cap/env", () => ({
 	serverEnv: () => ({}),
 }));
 
-vi.mock("@cap/web-backend", () => ({
+vi.mock("@cap/web-backend/src/Storage/index", () => ({
 	Storage: {},
 }));
 
@@ -17,8 +17,8 @@ vi.mock("@/lib/groq-client", () => ({
 	getGroqClient: vi.fn(() => null),
 }));
 
-vi.mock("@/lib/server", () => ({
-	runPromise: vi.fn(),
+vi.mock("@/lib/workflow-runtime", () => ({
+	runWorkflowPromise: vi.fn(),
 }));
 
 vi.mock("@/lib/video-storage", () => ({
@@ -41,6 +41,12 @@ describe("shouldReplaceVideoTitle", () => {
 		expect(
 			shouldReplaceVideoTitle({
 				currentTitle: "Cap Recording - 15 May 2026",
+				nextAiTitle: "Quarterly Roadmap Review",
+			}),
+		).toBe(true);
+		expect(
+			shouldReplaceVideoTitle({
+				currentTitle: "Cap 2026-07-20 at 10.37.55",
 				nextAiTitle: "Quarterly Roadmap Review",
 			}),
 		).toBe(true);
@@ -89,6 +95,12 @@ describe("shouldReplaceVideoTitle", () => {
 			shouldReplaceVideoTitle({
 				currentTitle: "Customer Demo For Acme",
 				previousAiTitle: "Old Generated Title",
+				nextAiTitle: "New Generated Title",
+			}),
+		).toBe(false);
+		expect(
+			shouldReplaceVideoTitle({
+				currentTitle: "Cap 2026 Roadmap",
 				nextAiTitle: "New Generated Title",
 			}),
 		).toBe(false);
