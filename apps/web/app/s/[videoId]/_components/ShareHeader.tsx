@@ -28,6 +28,10 @@ import type { Spaces } from "@/app/(org)/dashboard/dashboard-data";
 import { useCurrentUser } from "@/app/Layout/AuthContext";
 import { SignedImageUrl } from "@/components/SignedImageUrl";
 import { UpgradeModal } from "@/components/UpgradeModal";
+import {
+	copyRichVideoLink,
+	videoPreviewImageUrl,
+} from "@/lib/video-share-clipboard";
 import { usePublicEnv } from "@/utils/public-env";
 import { navigateWithTransition } from "@/utils/view-transition";
 import type { SharePageBranding, VideoData } from "../types";
@@ -244,6 +248,13 @@ export const ShareHeader = ({
 		return `${m}:${String(s).padStart(2, "0")}`;
 	};
 
+	const copyShareLink = (url: string) =>
+		copyRichVideoLink({
+			url,
+			title: displayTitle || "Cap Recording",
+			previewImageUrl: videoPreviewImageUrl(webUrl, data.id),
+		});
+
 	const handleCopyClick = () => {
 		const video = document.querySelector("video");
 		const currentTime = video ? Math.floor(video.currentTime) : 0;
@@ -252,7 +263,7 @@ export const ShareHeader = ({
 			setCapturedTime(currentTime);
 			setShowCopyOptions(true);
 		} else {
-			navigator.clipboard.writeText(getVideoLink());
+			copyShareLink(getVideoLink());
 			setLinkCopied(true);
 			setTimeout(() => setLinkCopied(false), 2000);
 		}
@@ -262,7 +273,7 @@ export const ShareHeader = ({
 		const link = withTimestamp
 			? `${getVideoLink()}?t=${capturedTime}`
 			: getVideoLink();
-		navigator.clipboard.writeText(link);
+		copyShareLink(link);
 		setShowCopyOptions(false);
 		setLinkCopied(true);
 		setTimeout(() => setLinkCopied(false), 2000);
