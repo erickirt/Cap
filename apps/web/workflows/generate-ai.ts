@@ -2,7 +2,7 @@ import { db } from "@cap/database";
 import { organizations, videos } from "@cap/database/schema";
 import type { VideoMetadata } from "@cap/database/types";
 import { serverEnv } from "@cap/env";
-import { Storage } from "@cap/web-backend";
+import { Storage } from "@cap/web-backend/src/Storage/index";
 import {
 	AI_GENERATION_LANGUAGE_AUTO,
 	type AiGenerationLanguage,
@@ -10,12 +10,12 @@ import {
 	parseAiGenerationLanguage,
 	type Video,
 } from "@cap/web-domain";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import { FatalError } from "workflow";
 import { GROQ_MODEL, getGroqClient } from "@/lib/groq-client";
-import { runPromise } from "@/lib/server";
 import { decodeStorageVideo } from "@/lib/video-storage";
+import { runWorkflowPromise } from "@/lib/workflow-runtime";
 
 interface GenerateAiWorkflowPayload {
 	videoId: string;
@@ -46,7 +46,7 @@ interface AiResult {
 
 const MAX_CHARS_PER_CHUNK = 24000;
 const GENERATED_TITLE_PATTERN =
-	/^(Cap (Recording|Upload) - .+|Untitled|\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}|.+ \((Display|Window|Area|Camera)\) \d{4}-\d{2}-\d{2} \d{2}:\d{2} [AP]M)$/;
+	/^(Cap (Recording|Upload) - .+|Cap \d{4}-\d{2}-\d{2} at \d{2}[.:]\d{2}[.:]\d{2}|Untitled|\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}|.+ \((Display|Window|Area|Camera)\) \d{4}-\d{2}-\d{2} \d{2}:\d{2} [AP]M)$/;
 
 export function shouldReplaceVideoTitle({
 	currentTitle,
@@ -77,24 +77,35 @@ export async function generateAiWorkflow(payload: GenerateAiWorkflowPayload) {
 
 	const { videoId, userId } = payload;
 
-	const videoData = await validateAndSetProcessing(videoId);
-
-	const transcript = await fetchTranscript(videoId, userId, videoData.video);
-
-	if (!transcript) {
-		await markSkipped(videoId, videoData.metadata);
-		return {
-			success: true,
-			message: "Transcript empty or too short - skipped",
-		};
+	let videoData: VideoData;
+	try {
+		videoData = await validateAndSetProcessing(videoId);
+	} catch (error) {
+		await markError(videoId);
+		throw error;
 	}
 
-	const result = await generateWithAi(
-		transcript,
-		videoData.aiGenerationLanguage,
-	);
+	try {
+		const transcript = await fetchTranscript(videoId, userId, videoData.video);
 
-	await saveResults(videoId, videoData, result);
+		if (!transcript) {
+			await markSkipped(videoId, videoData.metadata);
+			return {
+				success: true,
+				message: "Transcript empty or too short - skipped",
+			};
+		}
+
+		const result = await generateWithAi(
+			transcript,
+			videoData.aiGenerationLanguage,
+		);
+
+		await saveResults(videoId, videoData, result);
+	} catch (error) {
+		await markError(videoId);
+		throw error;
+	}
 
 	return { success: true, message: "AI generation completed successfully" };
 }
@@ -159,7 +170,7 @@ async function fetchTranscript(
 			decodeStorageVideo(video),
 		);
 		return yield* bucket.getObject(`${userId}/${videoId}/transcription.vtt`);
-	}).pipe(runPromise);
+	}).pipe(runWorkflowPromise);
 
 	if (Option.isNone(vtt)) {
 		return null;
@@ -176,6 +187,26 @@ async function fetchTranscript(
 	}
 
 	return { segments, text };
+}
+
+async function markError(videoId: string): Promise<void> {
+	"use step";
+
+	await db()
+		.update(videos)
+		.set({
+			metadata: sql`JSON_SET(COALESCE(${videos.metadata}, JSON_OBJECT()), '$.aiGenerationStatus', 'ERROR')`,
+		})
+		.where(
+			and(
+				eq(videos.id, videoId as Video.VideoId),
+				sql`NOT (
+					COALESCE(JSON_UNQUOTE(JSON_EXTRACT(${videos.metadata}, '$.aiGenerationStatus')), '') = 'COMPLETE'
+					AND JSON_EXTRACT(${videos.metadata}, '$.summary') IS NOT NULL
+					AND JSON_EXTRACT(${videos.metadata}, '$.chapters') IS NOT NULL
+				)`,
+			),
+		);
 }
 
 async function markSkipped(
