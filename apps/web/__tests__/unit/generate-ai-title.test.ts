@@ -34,8 +34,36 @@ vi.mock("server-only", () => ({}));
 import {
 	getAiContentGuidelines,
 	getAiLanguageInstruction,
+	parseAiResponse,
 	shouldReplaceVideoTitle,
 } from "@/workflows/generate-ai";
+
+describe("parseAiResponse", () => {
+	it("parses JSON wrapped in model prose", () => {
+		expect(
+			parseAiResponse(
+				'Here is the requested JSON:\n{"title":"Workflow review","summary":"I explain the workflow.","chapters":[]}',
+			),
+		).toEqual({
+			title: "Workflow review",
+			summary: "I explain the workflow.",
+			chapters: [],
+		});
+	});
+
+	it("rejects malformed or incomplete AI output", () => {
+		expect(() => parseAiResponse("I could not produce JSON")).toThrow();
+		expect(() =>
+			parseAiResponse('{"title":"Workflow review","summary":"'),
+		).toThrow();
+	});
+
+	it("rejects empty required fields instead of inventing fallbacks", () => {
+		expect(() =>
+			parseAiResponse('{"title":"Generated Title","summary":"","chapters":[]}'),
+		).toThrow();
+	});
+});
 
 describe("shouldReplaceVideoTitle", () => {
 	it("replaces default Cap titles", () => {
@@ -75,6 +103,15 @@ describe("shouldReplaceVideoTitle", () => {
 		).toBe(true);
 	});
 
+	it("replaces the legacy fallback after retry metadata is cleared", () => {
+		expect(
+			shouldReplaceVideoTitle({
+				currentTitle: "Generated Title",
+				nextAiTitle: "Quarterly Roadmap Review",
+			}),
+		).toBe(true);
+	});
+
 	it("replaces source-derived desktop titles", () => {
 		expect(
 			shouldReplaceVideoTitle({
@@ -109,6 +146,13 @@ describe("shouldReplaceVideoTitle", () => {
 			shouldReplaceVideoTitle({
 				currentTitle: "Acme App",
 				sourceName: "Acme App",
+				nextAiTitle: "New Generated Title",
+				titleManuallyEdited: true,
+			}),
+		).toBe(false);
+		expect(
+			shouldReplaceVideoTitle({
+				currentTitle: "Generated Title",
 				nextAiTitle: "New Generated Title",
 				titleManuallyEdited: true,
 			}),
