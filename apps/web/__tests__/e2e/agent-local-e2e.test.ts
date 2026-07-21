@@ -482,7 +482,6 @@ agentE2e("Cap agent local Docker E2E", () => {
 			NEXT_PUBLIC_WEB_URL: "http://127.0.0.1",
 			NEXT_PUBLIC_IS_CAP: "false",
 			NODE_ENV: "test",
-			CAP_AGENT_API_WRITE_ENABLED: "true",
 			CAP_AWS_BUCKET: bucket,
 			CAP_AWS_REGION: "us-east-1",
 			CAP_AWS_ACCESS_KEY: "capS3root",

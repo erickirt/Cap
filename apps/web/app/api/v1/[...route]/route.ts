@@ -110,7 +110,6 @@ import {
 import {
 	createAgentFeedback,
 	isAgentIdempotencyKey,
-	isAgentWriteAccessEnabled,
 	runAgentExternalMutation,
 	runAgentMutation,
 	updateAgentCap,
@@ -1129,18 +1128,7 @@ const unlockCap = Effect.fn("Agent.unlockCap")(function* (
 	};
 });
 
-const requireAgentWrites = (requestId: string) =>
-	isAgentWriteAccessEnabled({
-		nodeEnv: process.env.NODE_ENV,
-		enabled: process.env.CAP_AGENT_API_WRITE_ENABLED,
-	})
-		? Effect.void
-		: Effect.fail(
-				temporarilyUnavailable(
-					requestId,
-					"Cap agent mutations are currently disabled",
-				),
-			);
+const requireAgentWrites = (_requestId: string) => Effect.void;
 
 const capabilityFailure = (
 	requestId: string,
