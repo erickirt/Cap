@@ -8,11 +8,31 @@ use tracing::trace;
 
 use crate::{App, ArcLock, recording::StartRecordingInputs, windows::ShowCapWindow};
 
+#[cfg(debug_assertions)]
+use tauri::Emitter;
+
+#[cfg(debug_assertions)]
+use crate::camera::CameraPreviewState;
+
+#[cfg(debug_assertions)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CaptureArea {
+    screen: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureMode {
     Screen(String),
     Window(String),
+    #[cfg(debug_assertions)]
+    Area(Box<CaptureArea>),
+    #[cfg(debug_assertions)]
+    CameraOnly,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -26,6 +46,18 @@ pub enum DeepLinkAction {
         mode: RecordingMode,
     },
     StopRecording,
+    #[cfg(debug_assertions)]
+    PauseRecording,
+    #[cfg(debug_assertions)]
+    ResumeRecording,
+    #[cfg(debug_assertions)]
+    OpenCamera {
+        camera: DeviceOrModelID,
+    },
+    #[cfg(debug_assertions)]
+    SetCameraPreviewState {
+        state: CameraPreviewState,
+    },
     OpenEditor {
         project_path: PathBuf,
     },
@@ -176,6 +208,26 @@ impl DeepLinkAction {
                         .find(|(w, _)| w.name == name)
                         .map(|(w, _)| ScreenCaptureTarget::Window { id: w.id })
                         .ok_or(format!("No window with name \"{}\"", &name))?,
+                    #[cfg(debug_assertions)]
+                    CaptureMode::Area(area) => {
+                        if area.width <= 0.0 || area.height <= 0.0 {
+                            return Err("Area width and height must be positive".to_string());
+                        }
+                        let screen = cap_recording::screen_capture::list_displays()
+                            .into_iter()
+                            .find(|(display, _)| display.name == area.screen)
+                            .map(|(display, _)| display.id)
+                            .ok_or(format!("No screen with name \"{}\"", &area.screen))?;
+                        ScreenCaptureTarget::Area {
+                            screen,
+                            bounds: scap_targets::bounds::LogicalBounds::new(
+                                scap_targets::bounds::LogicalPosition::new(area.x, area.y),
+                                scap_targets::bounds::LogicalSize::new(area.width, area.height),
+                            ),
+                        }
+                    }
+                    #[cfg(debug_assertions)]
+                    CaptureMode::CameraOnly => ScreenCaptureTarget::CameraOnly,
                 };
 
                 let inputs = StartRecordingInputs {
@@ -191,6 +243,48 @@ impl DeepLinkAction {
             }
             DeepLinkAction::StopRecording => {
                 crate::recording::stop_recording(app.clone(), app.state()).await
+            }
+            #[cfg(debug_assertions)]
+            DeepLinkAction::PauseRecording => {
+                crate::recording::pause_recording(app.clone(), app.state()).await
+            }
+            #[cfg(debug_assertions)]
+            DeepLinkAction::ResumeRecording => {
+                crate::recording::resume_recording(app.clone(), app.state()).await
+            }
+            #[cfg(debug_assertions)]
+            DeepLinkAction::OpenCamera { camera } => {
+                crate::set_camera_input(
+                    app.clone(),
+                    app.state::<ArcLock<App>>(),
+                    Some(camera),
+                    None,
+                )
+                .await?;
+
+                if crate::general_settings::GeneralSettingsStore::native_camera_preview_enabled(app)
+                {
+                    crate::set_native_camera_preview_enabled(
+                        app.clone(),
+                        app.state::<ArcLock<App>>(),
+                        true,
+                    )
+                    .await?;
+                }
+
+                app.emit("instant-mode-harness-camera-opened", ())
+                    .map_err(|err| err.to_string())?;
+                for delay_ms in [250, 750, 1500] {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    app.emit("instant-mode-harness-camera-opened", ())
+                        .map_err(|err| err.to_string())?;
+                }
+
+                Ok(())
+            }
+            #[cfg(debug_assertions)]
+            DeepLinkAction::SetCameraPreviewState { state } => {
+                crate::set_camera_preview_state(app.state(), state).await
             }
             DeepLinkAction::OpenEditor { project_path } => {
                 crate::open_project_from_path(Path::new(&project_path), app.clone())
