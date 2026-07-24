@@ -310,6 +310,138 @@ mod tests {
         );
     }
 
+    #[cfg(debug_assertions)]
+    #[test]
+    fn parses_open_camera_action_url() {
+        let value = serde_json::json!({
+            "open_camera": {
+                "camera": { "DeviceID": "camera-1" }
+            }
+        })
+        .to_string();
+        let url = Url::parse_with_params("cap-desktop://action", &[("value", value)]).unwrap();
+
+        assert_eq!(
+            DeepLinkAction::try_from(&url),
+            Ok(DeepLinkAction::OpenCamera {
+                camera: DeviceOrModelID::DeviceID("camera-1".to_string())
+            })
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn parses_camera_preview_state_action_url() {
+        let value = serde_json::json!({
+            "set_camera_preview_state": {
+                "state": {
+                    "size": 400.0,
+                    "shape": "full",
+                    "mirrored": true,
+                    "background_blur": "heavy"
+                }
+            }
+        })
+        .to_string();
+        let url = Url::parse_with_params("cap-desktop://action", &[("value", value)]).unwrap();
+
+        assert_eq!(
+            DeepLinkAction::try_from(&url),
+            Ok(DeepLinkAction::SetCameraPreviewState {
+                state: CameraPreviewState {
+                    size: 400.0,
+                    shape: crate::camera::CameraPreviewShape::Full,
+                    mirrored: true,
+                    background_blur: cap_project::BackgroundBlurMode::Heavy,
+                }
+            })
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn parses_pause_and_resume_action_urls() {
+        let pause_url = Url::parse("cap-desktop://action?value=%22pause_recording%22").unwrap();
+        let resume_url = Url::parse("cap-desktop://action?value=%22resume_recording%22").unwrap();
+
+        assert_eq!(
+            DeepLinkAction::try_from(&pause_url),
+            Ok(DeepLinkAction::PauseRecording)
+        );
+        assert_eq!(
+            DeepLinkAction::try_from(&resume_url),
+            Ok(DeepLinkAction::ResumeRecording)
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn parses_area_recording_action_url() {
+        let value = serde_json::json!({
+            "start_recording": {
+                "capture_mode": {
+                    "area": {
+                        "screen": "Built-in Retina Display",
+                        "x": 10.0,
+                        "y": 20.0,
+                        "width": 800.0,
+                        "height": 600.0
+                    }
+                },
+                "camera": { "DeviceID": "camera-1" },
+                "mic_label": "microphone-1",
+                "capture_system_audio": false,
+                "mode": "instant"
+            }
+        })
+        .to_string();
+        let url = Url::parse_with_params("cap-desktop://action", &[("value", value)]).unwrap();
+
+        assert_eq!(
+            DeepLinkAction::try_from(&url),
+            Ok(DeepLinkAction::StartRecording {
+                capture_mode: CaptureMode::Area(Box::new(CaptureArea {
+                    screen: "Built-in Retina Display".to_string(),
+                    x: 10.0,
+                    y: 20.0,
+                    width: 800.0,
+                    height: 600.0,
+                })),
+                camera: Some(DeviceOrModelID::DeviceID("camera-1".to_string())),
+                mic_label: Some("microphone-1".to_string()),
+                capture_system_audio: false,
+                mode: RecordingMode::Instant,
+            })
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn parses_camera_only_recording_action_url() {
+        let value = serde_json::json!({
+            "start_recording": {
+                "capture_mode": "camera_only",
+                "camera": { "DeviceID": "camera-1" },
+                "mic_label": "microphone-1",
+                "capture_system_audio": false,
+                "mode": "studio"
+            }
+        })
+        .to_string();
+        let url = Url::parse_with_params("cap-desktop://action", &[("value", value)]).unwrap();
+
+        assert_eq!(
+            DeepLinkAction::try_from(&url),
+            Ok(DeepLinkAction::StartRecording {
+                capture_mode: CaptureMode::CameraOnly,
+                camera: Some(DeviceOrModelID::DeviceID("camera-1".to_string())),
+                mic_label: Some("microphone-1".to_string()),
+                capture_system_audio: false,
+                mode: RecordingMode::Studio,
+            })
+        );
+    }
+
     #[test]
     fn parses_start_recording_action_url() {
         let url = Url::parse(
